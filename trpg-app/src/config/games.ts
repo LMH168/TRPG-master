@@ -121,6 +121,23 @@ export const SCENARIO_REGISTRY: Scenario[] = [
       '收音机里突然传来一个颤抖的声音：「它……它跟着我……请帮帮我……」<span class="text-[#b0a0d0] italic">信号断了。</span>',
     ],
   },
+  {
+    id: 'book-hunter',
+    name: '追书人',
+    nameEn: 'The Book-Hunter',
+    systemId: 'coc',
+    description: '调查员受命调查一起简单的失踪案。道格拉斯·金博尔离奇失踪一年后，他的侄子雇用了调查员来追回失窃的藏书——并查明他的叔叔是否尚在人世。',
+    difficulty: '入门',
+    playerCount: '1-2 人',
+    estimatedTime: '2-3 小时',
+    storyLabel: '案件档案 #1927-01',
+    subtitle: 'THE BOOK-HUNTER',
+    storyPages: [
+      '密歇根州，阿诺兹堡市。托马斯·金博尔最近遭遇了一件怪事——他叔叔的五本藏书被人偷了。',
+      '这些书并不值钱，但他的叔叔道格拉斯一年前就已经失踪，没有留下任何痕迹。托马斯想知道叔叔是否还活着。',
+      '调查员们沿着线索来到公墓附近。<span class="text-[#b0a0d0] italic">远处传来翻动书页的沙沙声，似乎来自墓碑的方向。</span>',
+    ],
+  },
   // 龙与地下城 — 预设模组
   {
     id: 'lost-mine',

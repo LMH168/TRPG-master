@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { useState, useMemo } from 'react'
-import { ArrowLeft, Plus, Minus, Search, Check, Shield, Heart, Brain, Zap, Eye, Maximize2, Lightbulb, BookOpen, UserCheck, ChevronDown } from 'lucide-react'
+import { ArrowLeft, Plus, Minus, Search, Check, Shield, Heart, Brain, Zap, Eye, Maximize2, Lightbulb, BookOpen, UserCheck, ChevronDown, X, Info } from 'lucide-react'
 import { ALL_OCCUPATIONS, OCCUPATION_GROUPS, getOccupationById } from '@/data/occupations'
 import { ALL_SKILLS, getSkillById, calculateBaseValue } from '@/data/skills'
 import { ATTRIBUTE_LABELS, calculateOccupationSkillPoints, calculateInterestSkillPoints, deriveStats, type Attributes, type InvestigatorInfo } from '@/data/character-model'
@@ -111,6 +111,7 @@ export default function CharacterPage() {
   const [activeGroup, setActiveGroup] = useState<string | null>(null)
   const [skillTab, setSkillTab] = useState<'occupation' | 'interest'>('occupation')
   const [showGroupPicker, setShowGroupPicker] = useState(false)
+  const [detailOcc, setDetailOcc] = useState<OccupationDefinition | null>(null)
 
   const selectedOcc = useMemo(() => {
     return info.occupationId ? getOccupationById(info.occupationId) : null
@@ -285,20 +286,28 @@ export default function CharacterPage() {
             <div className="grid grid-cols-2 gap-2 max-h-[320px] overflow-y-auto pr-0.5">
               {filteredOccupations.map(occ => {
                 const selected = info.occupationId === occ.id
+                const skillNames = occ.skillIds.map(id => getSkillById(id)?.name).filter(Boolean) as string[]
                 return (
                   <div key={occ.id}
-                    onClick={() => setInfo(i => ({ ...i, occupationId: occ.id }))}
-                    className={`px-2.5 py-3 bg-input border rounded-[6px] text-center cursor-pointer active:scale-[0.96] transition-all ${
+                    className={`group relative px-2.5 py-3 bg-input border rounded-[6px] text-center cursor-pointer active:scale-[0.96] transition-all ${
                       selected ? 'border-brass bg-[#fdfaf4] shadow-[0_0_0_2px_rgba(184,151,106,0.15)]' : 'border-border-light'
                     }`}>
-                    <div className="text-[20px] mb-1">{occ.icon}</div>
-                    <div className="text-[12px] font-semibold text-text-primary">{occ.name}</div>
-                    <div className="text-[9px] text-text-dim mt-0.5 leading-[1.3]">{occ.shortDesc}</div>
-                    {selected && (
-                      <div className="mt-1 inline-block px-2 py-0.5 bg-brass/10 text-brass-dark text-[9px] rounded-full font-semibold">
-                        已选择
-                      </div>
-                    )}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setDetailOcc(occ); }}
+                      className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-[rgba(255,255,255,0.7)] border border-border-light flex items-center justify-center text-text-dim hover:text-text-body transition-all opacity-0 group-hover:opacity-100"
+                    >
+                      <Info className="w-3 h-3" />
+                    </button>
+                    <div onClick={() => setInfo(i => ({ ...i, occupationId: occ.id }))}>
+                      <div className="text-[20px] mb-1">{occ.icon}</div>
+                      <div className="text-[12px] font-semibold text-text-primary">{occ.name}</div>
+                      <div className="text-[9px] text-text-dim mt-0.5 leading-[1.3]">{occ.shortDesc}</div>
+                      {selected && (
+                        <div className="mt-1 inline-block px-2 py-0.5 bg-brass/10 text-brass-dark text-[9px] rounded-full font-semibold">
+                          已选择
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )
               })}
@@ -521,6 +530,73 @@ export default function CharacterPage() {
             </div>
           </div>
         </div>
+      )}
+
+            {/* ═══════════════ Occupation Detail Modal ═══════════════ */}
+      {detailOcc && (
+        <>
+          <div className="fixed inset-0 bg-black/50 z-30 animate-fade-in" onClick={() => setDetailOcc(null)} />
+          <div className="fixed inset-x-0 bottom-0 z-40 animate-slide-up">
+            <div className="bg-page border border-border-light rounded-t-xl px-5 pt-5 pb-8 max-h-[80vh] overflow-y-auto">
+              <div className="flex items-start justify-between mb-5">
+                <div className="flex items-center gap-3">
+                  <span className="text-[32px]">{detailOcc.icon}</span>
+                  <div>
+                    <h3 className="text-[18px] font-bold text-text-primary">{detailOcc.name}</h3>
+                    <p className="text-xs text-text-muted font-mono">{detailOcc.shortDesc}</p>
+                  </div>
+                </div>
+                <button onClick={() => setDetailOcc(null)}
+                  className="w-8 h-8 rounded-full bg-card border border-border-light flex items-center justify-center text-text-muted active:bg-panel">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="space-y-3.5">
+                <div className="bg-input border border-border-light rounded-[6px] p-3.5">
+                  <div className="text-[11px] font-semibold text-brass-dark uppercase tracking-[0.08em] mb-2.5">基础信息</div>
+                  <div className="flex items-center gap-6 text-sm">
+                    <div>
+                      <span className="text-[11px] text-text-muted block">信用范围</span>
+                      <span className="font-bold text-text-primary">{detailOcc.creditRange}</span>
+                    </div>
+                    <div>
+                      <span className="text-[11px] text-text-muted block">技能点数</span>
+                      <span className="font-bold font-mono text-text-primary">{detailOcc.skillPoints}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-input border border-border-light rounded-[6px] p-3.5">
+                  <div className="text-[11px] font-semibold text-brass-dark uppercase tracking-[0.08em] mb-2.5">职业技能 ({detailOcc.skillIds.length})</div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {detailOcc.skillIds.map(id => {
+                      const skill = getSkillById(id)
+                      return (
+                        <div key={id} className="flex items-center gap-2 px-2.5 py-1.5 bg-card border border-border-light rounded-[4px]">
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[12px] font-medium text-text-primary">{skill?.name || id}</div>
+                            <div className="text-[9px] text-text-dim font-mono">{skill?.nameEn}</div>
+                          </div>
+                          <div className="text-[10px] font-mono bg-panel px-1.5 py-0.5 rounded text-text-muted">
+                            {skill && (typeof skill.base === 'number' ? skill.base + '%' : skill.base)}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={() => { setInfo(i => ({ ...i, occupationId: detailOcc.id })); setDetailOcc(null) }}
+                className="mt-4 w-full flex items-center justify-center gap-2 py-3 rounded-sm bg-brass text-white text-sm font-semibold active:bg-brass-dark transition-all"
+              >
+                选择 {detailOcc.name}
+              </button>
+            </div>
+          </div>
+        </>
       )}
 
       {/* ═══════════════ Bottom action bar ═══════════════ */}

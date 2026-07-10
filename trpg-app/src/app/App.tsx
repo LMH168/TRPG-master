@@ -4,12 +4,12 @@ import PhoneLayout from '@/shared/layouts/PhoneLayout'
 
 const LoginPage = lazy(() => import('@/routes/login/LoginPage'))
 const GameSelectionPage = lazy(() => import('@/routes/games/GameSelectionPage'))
-const SystemSelectionPage = lazy(() => import('@/routes/system/SystemSelectionPage'))
-const ScenarioSelectionPage = lazy(() => import('@/routes/scenarios/ScenarioSelectionPage'))
-const StoryPage = lazy(() => import('@/routes/story/StoryPage'))
-const CharacterPage = lazy(() => import('@/routes/character/CharacterPage'))
+const SystemSelectionPage = lazy(() => import('@/routes/games/trpg/SystemSelectionPage'))
+const ScenarioSelectionPage = lazy(() => import('@/routes/games/trpg/ScenarioSelectionPage'))
+const StoryPage = lazy(() => import('@/routes/games/trpg/StoryPage'))
+const CharacterPage = lazy(() => import('@/routes/games/trpg/CharacterPage'))
 const LobbyPage = lazy(() => import('@/routes/lobby/LobbyPage'))
-const RoomPage = lazy(() => import('@/routes/room/RoomPage'))
+const RoomPage = lazy(() => import('@/routes/games/trpg/RoomPage'))
 
 function LoadingFallback() {
   return (
