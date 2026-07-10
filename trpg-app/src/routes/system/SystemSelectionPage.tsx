@@ -58,7 +58,7 @@ export default function SystemSelectionPage() {
             <div
               key={sys.id}
               onClick={() => {
-                if (isReady) navigate('/story')
+                if (isReady) navigate(`/games/${gameId}/scenarios/${sys.id}`)
               }}
               className={`
                 bg-card border border-border-light rounded-md p-5

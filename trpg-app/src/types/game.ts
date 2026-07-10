@@ -8,6 +8,20 @@ export interface GameSystem {
   status: SystemStatus
 }
 
+export interface Scenario {
+  id: string
+  name: string
+  nameEn: string
+  description: string
+  systemId: string
+  difficulty: '入门' | '进阶' | '挑战'
+  playerCount: string
+  estimatedTime: string
+  storyLabel: string
+  subtitle: string
+  storyPages: string[]
+}
+
 export interface GameManifest {
   id: string
   name: string

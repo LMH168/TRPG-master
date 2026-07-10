@@ -5,6 +5,7 @@ import PhoneLayout from '@/shared/layouts/PhoneLayout'
 const LoginPage = lazy(() => import('@/routes/login/LoginPage'))
 const GameSelectionPage = lazy(() => import('@/routes/games/GameSelectionPage'))
 const SystemSelectionPage = lazy(() => import('@/routes/system/SystemSelectionPage'))
+const ScenarioSelectionPage = lazy(() => import('@/routes/scenarios/ScenarioSelectionPage'))
 const StoryPage = lazy(() => import('@/routes/story/StoryPage'))
 const CharacterPage = lazy(() => import('@/routes/character/CharacterPage'))
 const LobbyPage = lazy(() => import('@/routes/lobby/LobbyPage'))
@@ -27,6 +28,7 @@ function App() {
           <Route path="/login" element={<LoginPage />} />
           <Route path="/games" element={<GameSelectionPage />} />
           <Route path="/games/:gameId" element={<SystemSelectionPage />} />
+          <Route path="/games/:gameId/scenarios/:systemId" element={<ScenarioSelectionPage />} />
           <Route path="/story" element={<StoryPage />} />
           <Route path="/character" element={<CharacterPage />} />
           <Route path="/lobby" element={<LobbyPage />} />

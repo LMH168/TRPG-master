@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { ScrollText, Clock, Ghost, Theater, ShieldCheck } from 'lucide-react'
+import { ScrollText, Clock, Ghost, Theater } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { GAME_REGISTRY } from '@/config/games'
 import Badge from '@/shared/components/Badge'
