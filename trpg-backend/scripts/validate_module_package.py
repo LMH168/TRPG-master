@@ -126,10 +126,13 @@ def validate(package: dict[str, Any]) -> list[str]:
         indexes[collection_name] = set()
         for index, item in enumerate(collection):
             item_path = f"content.{collection_name}[{index}]"
-            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            if not isinstance(item, dict):
+                errors.append(f"{item_path} must be an object")
+                continue
+            item_id = item.get("id")
+            if not isinstance(item_id, str):
                 errors.append(f"{item_path} must have a string id")
                 continue
-            item_id = item["id"]
             if item_id in all_ids:
                 errors.append(f"duplicate id {item_id}: {all_ids[item_id]} and {item_path}")
             all_ids[item_id] = item_path
@@ -192,12 +195,16 @@ def validate(package: dict[str, Any]) -> list[str]:
             errors.append(f"{path} must be an array")
             return
         for index, effect in enumerate(effects):
-            effect_type = effect.get("type") if isinstance(effect, dict) else None
+            if not isinstance(effect, dict):
+                errors.append(f"{path}[{index}] must be an object")
+                continue
+            effect_type = effect.get("type")
             if effect_type not in effect_types:
                 errors.append(f"{path}[{index}] uses unregistered effect type {effect_type}")
                 continue
-            if isinstance(effect, dict) and "then" in effect:
-                check_effects(effect["then"], f"{path}[{index}].then")
+            nested_effects = effect.get("then")
+            if nested_effects is not None:
+                check_effects(nested_effects, f"{path}[{index}].then")
 
     for index, clue in enumerate(content.get("clues", [])):
         check_effects(clue.get("effects"), f"content.clues[{index}].effects")
@@ -228,6 +235,9 @@ def validate(package: dict[str, Any]) -> list[str]:
         errors.append("normalization_decisions must be an array")
     else:
         for index, decision in enumerate(decisions):
+            if not isinstance(decision, dict):
+                errors.append(f"normalization_decisions[{index}] must be an object")
+                continue
             if decision.get("status") != "resolved":
                 errors.append(f"normalization_decisions[{index}] is not resolved")
             for field in ("decision", "policy", "source_refs"):
