@@ -2,7 +2,11 @@
 
 本文定义模组解析 Agent 的开发目标：把用户上传的模组自动转换为经过校验、可以被规则引擎、AI 主持和游戏编排器直接加载的 `ModulePackage`。
 
+空框架：[`module-package.template.json`](module-package.template.json)
+
 黄金样例：[`paper-chase/module-package.json`](paper-chase/module-package.json)
+
+框架对照：[`module-package-review.md`](module-package-review.md)
 
 ## 1. 核心结论
 

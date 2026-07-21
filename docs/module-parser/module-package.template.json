@@ -1,0 +1,83 @@
+{
+  "package_schema_version": "1.0.0",
+  "package_id": "<module-package-id>",
+  "package_status": "template",
+  "source_manifest": {
+    "filename": "<source-filename>",
+    "page_count": null,
+    "language": "<BCP-47-language>",
+    "document_type": "<scenario-document-type>",
+    "text_extraction": "<extraction-method>",
+    "layout_reviewed": false,
+    "runtime_included": false
+  },
+  "module": {
+    "module_id": "<stable-module-id>",
+    "title": "<module-title>",
+    "original_title": null,
+    "ruleset_ref": {
+      "system_id": "<ruleset-id>",
+      "version": "<ruleset-version>",
+      "required_capabilities": [],
+      "required_condition_types": [],
+      "required_effect_types": []
+    },
+    "setting": {
+      "era": null,
+      "primary_location": null,
+      "themes": [],
+      "tone": []
+    },
+    "player_count": {
+      "investigators_min": 1,
+      "investigators_max": 1,
+      "keeper_count": 1
+    },
+    "premise": "<player-facing-premise>",
+    "entry_scene_id": "<scene-id>"
+  },
+  "keeper_brief": {
+    "core_truth": "<keeper-only-core-truth>",
+    "experience_goal": "<intended-player-experience>",
+    "tone": [],
+    "must_preserve": [],
+    "must_not_reveal_before_granted": []
+  },
+  "runtime_defaults": {
+    "clue_visibility": "locked_until_granted",
+    "missing_checkpoint_outcome": "no_effect",
+    "trigger_once": true,
+    "trigger_priority": 100
+  },
+  "content": {
+    "facts": [],
+    "scenes": [],
+    "entities": [],
+    "clues": [],
+    "checkpoints": [],
+    "sanity_events": [],
+    "triggers": [],
+    "endings": []
+  },
+  "initial_state": {
+    "current_scene_id": "<scene-id>",
+    "discovered_scene_ids": [],
+    "granted_clue_ids": [],
+    "completed_checkpoint_ids": [],
+    "fired_trigger_ids": [],
+    "active_ending_id": null,
+    "clock": {
+      "day": 0,
+      "time_of_day": "<initial-time-of-day>"
+    },
+    "variables": {}
+  },
+  "assets": [],
+  "normalization_decisions": [],
+  "validation": {
+    "status": "pending",
+    "validator_version": "module-package-validator/0.1.0",
+    "checks": [],
+    "errors": []
+  }
+}

@@ -6,6 +6,8 @@
 
 产物契约：[`Module Parser Agent 产物契约`](../parser-runtime-contract.md)
 
+框架对照：[`ModulePackage 空框架与《追书人》成品`](../module-package-review.md)
+
 ## 1. 当前结论
 
 《追书人》PDF 共 6 页，已经被整理为 `ModulePackage 1.0.0`。该包不再是等待玩家审核的 Draft，而是规则引擎、AI 主持和游戏编排器共同使用的第一个黄金预设模组。
