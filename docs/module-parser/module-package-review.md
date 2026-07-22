@@ -1,4 +1,4 @@
-# ModulePackage 1.1 框架与《追书人》成品对照
+# ModulePackage 框架与《追书人》成品对照
 
 工作项：[Issue #98](https://github.com/1024XEngineer/TRPG-master/issues/98)
 
@@ -8,9 +8,11 @@
 
 产物契约：[`parser-runtime-contract.md`](parser-runtime-contract.md)
 
+字段对齐：[`module-content-alignment.md`](module-content-alignment.md)
+
 ## 1. 评审结论
 
-`ModulePackage 1.1` 保留了 1.0 的调查叙事骨架，并补充角色配置、物理地点、时间线、状态轨道、遭遇、资源、谜题、随机表和预生成角色。
+`ModulePackage` 保留了原有的调查叙事骨架，并补充角色配置、物理地点、时间线、状态轨道、遭遇、资源、谜题、随机表和预生成角色。
 
 Parser Agent 的正式目标是生成一个通过自动门禁、可直接创建游戏实例的 `ready ModulePackage`。它不能只把复杂玩法写进 `keeper_notes`，也不能把未决问题交给玩家审核。
 
@@ -199,4 +201,4 @@ AI 主持可以提出行动和叙事，但不能自行改变 Track、跳过 Time
   -> ready ModulePackage 或 failed ImportJob
 ```
 
-`ModulePackage 1.1` 是后续 Loader、规则引擎、AI 主持和 Parser Agent 共同对齐的协议。《追书人》是该协议的首个可运行黄金样例，而不是协议能力的上限。
+`ModulePackage` 是后续 Loader、规则引擎、AI 主持和 Parser Agent 共同对齐的协议。《追书人》是该协议的首个可运行黄金样例，而不是协议能力的上限。

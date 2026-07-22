@@ -6,12 +6,14 @@
 
 框架评审：[`module-package-review.md`](module-package-review.md)
 
+字段对齐：[`module-content-alignment.md`](module-content-alignment.md)
+
 ## 1. 核心结论
 
 `ModuleDraft` 只存在于 Agent 内部过程。正式导入只有两种结果：
 
 ```text
-ready  -> 输出可直接运行的 ModulePackage 1.1
+ready  -> 输出可直接运行的 ModulePackage
 failed -> 不创建可运行模组，返回结构化错误
 ```
 
@@ -359,7 +361,7 @@ runtime_use
 
 一个包只有通过以下检查才能成为 `ready`：
 
-- [ ] 顶层结构符合 `ModulePackage 1.1`；
+- [ ] 顶层结构符合 `ModulePackage`，且 `package_schema_version` 为受支持版本；
 - [ ] 文档分段、来源覆盖和权利状态完整；
 - [ ] 所有对象 ID 唯一且引用存在；
 - [ ] 入口场景、角色配置和初始状态有效；
