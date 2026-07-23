@@ -63,14 +63,10 @@ class PlayerViewProjector:
                 continue
             for timeline_event in timeline.get("events", []):
                 schedule = timeline_event.get("schedule", {})
-                if (
-                    state.current_scene_id in timeline_event.get("scene_ids", [])
-                    and schedule.get("time_of_day", state.clock.get("time_of_day"))
-                    == state.clock.get("time_of_day")
-                ):
-                    checkpoint_ids.extend(
-                        timeline_event.get("available_checkpoint_ids", [])
-                    )
+                if state.current_scene_id in timeline_event.get("scene_ids", []) and schedule.get(
+                    "time_of_day", state.clock.get("time_of_day")
+                ) == state.clock.get("time_of_day"):
+                    checkpoint_ids.extend(timeline_event.get("available_checkpoint_ids", []))
 
         options: list[CheckpointOption] = []
         for checkpoint_id in dict.fromkeys(checkpoint_ids):
@@ -116,9 +112,7 @@ class PlayerViewProjector:
         )
 
     @staticmethod
-    def _prerequisites_met(
-        state: GameState, prerequisites: list[dict[str, Any]]
-    ) -> bool:
+    def _prerequisites_met(state: GameState, prerequisites: list[dict[str, Any]]) -> bool:
         for condition in prerequisites:
             kind = condition.get("type")
             if kind == "clue_not_owned":

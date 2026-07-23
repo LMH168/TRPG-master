@@ -135,9 +135,7 @@ class ActionExecutor:
             "sourceRevision": source_revision,
         }
         request_hash = self._hash(command)
-        replayed = await self._replay_processed(
-            db, room_session_id, request_id, request_hash
-        )
+        replayed = await self._replay_processed(db, room_session_id, request_id, request_hash)
         if replayed is not None:
             return replayed
 
@@ -152,11 +150,7 @@ class ActionExecutor:
                 f"状态版本已变化：客户端 {source_revision}，服务端 {state.revision}"
             )
         pending = next(
-            (
-                item
-                for item in state.pending_checks
-                if item.check_request_id == check_request_id
-            ),
+            (item for item in state.pending_checks if item.check_request_id == check_request_id),
             None,
         )
         if pending is None:
@@ -171,13 +165,9 @@ class ActionExecutor:
                 state, runtime_module, actor, pending, events, narration_facts
             )
         else:
-            outcome = self._resolve_san_check(
-                state, runtime_module, actor, pending, events
-            )
+            outcome = self._resolve_san_check(state, runtime_module, actor, pending, events)
         state.pending_checks = [
-            item
-            for item in state.pending_checks
-            if item.check_request_id != check_request_id
+            item for item in state.pending_checks if item.check_request_id != check_request_id
         ]
         self._evaluate_endings(state, runtime_module, events)
         state.revision += 1
@@ -285,9 +275,7 @@ class ActionExecutor:
         checkpoint = runtime_module.get("checkpoints", intent.checkpoint_id)
         if checkpoint is None or checkpoint.get("scene_id") != state.current_scene_id:
             raise RuntimeConflictError("Checkpoint 不属于当前场景")
-        if not self._conditions_met(
-            checkpoint.get("prerequisites", []), state, runtime_module, {}
-        ):
+        if not self._conditions_met(checkpoint.get("prerequisites", []), state, runtime_module, {}):
             raise RuntimeConflictError("Checkpoint 前置条件尚未满足")
         skills = list(checkpoint["skills"])
         skill_id = intent.skill_id or skills[0]
@@ -328,9 +316,7 @@ class ActionExecutor:
             raise RuntimeConflictError("Checkpoint 已不存在")
         roll = self.dice.d100()
         grade = self._check_grade(roll, pending.target_value)
-        succeeded = self._meets_difficulty(
-            grade, pending.difficulty, pending.target_value
-        )
+        succeeded = self._meets_difficulty(grade, pending.difficulty, pending.target_value)
         state.last_check = {
             "kind": "skill",
             "checkpoint_id": pending.checkpoint_id,
@@ -389,9 +375,7 @@ class ActionExecutor:
         pending: PendingCheck,
         events: list[RuntimeEvent],
     ) -> str:
-        sanity_event = runtime_module.get(
-            "sanity_events", pending.sanity_event_id or ""
-        )
+        sanity_event = runtime_module.get("sanity_events", pending.sanity_event_id or "")
         if sanity_event is None:
             raise RuntimeConflictError("SAN 事件已不存在")
         roll = self.dice.d100()
@@ -487,9 +471,7 @@ class ActionExecutor:
                 )
             elif effect_type == "request_san_check":
                 sanity_id = str(effect["sanity_event_id"])
-                if not any(
-                    item.sanity_event_id == sanity_id for item in state.pending_checks
-                ):
+                if not any(item.sanity_event_id == sanity_id for item in state.pending_checks):
                     sanity_event = runtime_module.get("sanity_events", sanity_id)
                     if sanity_event is None:
                         raise RuntimeConflictError(f"未知 SAN 事件：{sanity_id}")
@@ -510,14 +492,10 @@ class ActionExecutor:
                         )
                     )
             elif effect_type == "trigger_ending":
-                self._activate_ending(
-                    state, runtime_module, str(effect["ending_id"]), events
-                )
+                self._activate_ending(state, runtime_module, str(effect["ending_id"]), events)
             elif effect_type == "move_entity":
                 entity_id = str(effect["entity_id"])
-                state.entity_states.setdefault(entity_id, {})["scene_id"] = effect[
-                    "scene_id"
-                ]
+                state.entity_states.setdefault(entity_id, {})["scene_id"] = effect["scene_id"]
                 events.append(
                     RuntimeEvent(
                         event_type="entity.moved",
@@ -547,18 +525,14 @@ class ActionExecutor:
             elif effect_type == "roll_cost":
                 amount = self.dice.expression(str(effect["expression"]))
                 currency = str(effect.get("currency", "USD"))
-                actor.currency[currency] = max(
-                    0, actor.currency.get(currency, 0) - amount
-                )
+                actor.currency[currency] = max(0, actor.currency.get(currency, 0) - amount)
                 state.variables["last_cost"] = {
                     "amount": amount,
                     "currency": currency,
                 }
             elif effect_type == "conditional_state_change":
                 when = effect.get("when", {})
-                if self._get_path(state, str(when.get("path", ""))) == when.get(
-                    "equals"
-                ):
+                if self._get_path(state, str(when.get("path", ""))) == when.get("equals"):
                     self._apply_effects(
                         state,
                         runtime_module,
@@ -618,17 +592,14 @@ class ActionExecutor:
         for condition in conditions:
             kind = condition["type"]
             if kind == "state_eq":
-                matched = self._get_path(state, str(condition["path"])) == condition.get(
-                    "value"
-                )
+                matched = self._get_path(state, str(condition["path"])) == condition.get("value")
             elif kind == "clue_not_owned":
                 matched = condition["clue_id"] not in state.granted_clue_ids
             elif kind == "check_fumble":
                 matched = bool(
                     state.last_check
                     and state.last_check.get("grade") == "fumble"
-                    and state.last_check.get("checkpoint_id")
-                    == condition.get("checkpoint_id")
+                    and state.last_check.get("checkpoint_id") == condition.get("checkpoint_id")
                 )
             elif kind == "player_choice":
                 matched = state.variables.get("player.choice") == condition.get("value")
@@ -640,11 +611,7 @@ class ActionExecutor:
                     and condition.get("target") == "group.ghouls"
                 )
             elif kind == "temporary_insanity_during_ghoul_crowd":
-                matched = bool(
-                    state.variables.get(
-                        "temporary_insanity_during_ghoul_crowd", False
-                    )
-                )
+                matched = bool(state.variables.get("temporary_insanity_during_ghoul_crowd", False))
             else:
                 raise RuntimeConflictError(f"未实现的 Condition：{kind}")
             if not matched:
@@ -744,17 +711,13 @@ class ActionExecutor:
             ),
             None,
         )
-        next_encounter_id = (
-            str(active_encounter["id"]) if active_encounter is not None else None
-        )
+        next_encounter_id = str(active_encounter["id"]) if active_encounter is not None else None
         if state.active_encounter_id != next_encounter_id:
             state.active_encounter_id = next_encounter_id
             events.append(
                 RuntimeEvent(
                     event_type=(
-                        "encounter.started"
-                        if next_encounter_id is not None
-                        else "encounter.ended"
+                        "encounter.started" if next_encounter_id is not None else "encounter.ended"
                     ),
                     payload={"encounterId": next_encounter_id},
                     visibility="room",
@@ -833,9 +796,7 @@ class ActionExecutor:
         return ranks[grade] >= required
 
     @staticmethod
-    def _state_bucket(
-        state: GameState, path: str
-    ) -> tuple[dict[str, Any], str] | None:
+    def _state_bucket(state: GameState, path: str) -> tuple[dict[str, Any], str] | None:
         candidates: list[tuple[str, dict[str, dict[str, Any]]]] = [
             ("location.", state.location_states),
             ("npc.", state.entity_states),
@@ -911,9 +872,7 @@ class ActionExecutor:
                         player_id=player_id,
                         character_id=next(iter(state.actors)),
                         check_type=(
-                            "san"
-                            if runtime_event.event_type == "san.resolved"
-                            else "skill"
+                            "san" if runtime_event.event_type == "san.resolved" else "skill"
                         ),
                         skill_or_stat=payload.get("skillId", "SAN"),
                         checkpoint_id=payload.get("checkpointId"),
@@ -972,9 +931,7 @@ class ActionExecutor:
             room.phase = "Completed"
             room.ended_at = now
         ending = runtime_module.get("endings", state.active_ending_id or "") or {}
-        summary = await db.scalar(
-            select(RoomSummary).where(RoomSummary.room_id == state.room_id)
-        )
+        summary = await db.scalar(select(RoomSummary).where(RoomSummary.room_id == state.room_id))
         actor = state.actors[next(iter(state.actors))]
         structured = {
             "endingId": state.active_ending_id,

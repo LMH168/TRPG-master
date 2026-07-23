@@ -51,9 +51,7 @@ async def ensure_seed_content(db: AsyncSession) -> None:
         # RoomSession 仍固定自己的快照，可继续回放。
         scenario = await db.get(Scenario, BUILTIN_SCENARIO_ID)
         if scenario is not None and scenario.current_revision_id is not None:
-            revision = await db.get(
-                ScenarioRevision, scenario.current_revision_id
-            )
+            revision = await db.get(ScenarioRevision, scenario.current_revision_id)
             if revision is not None and revision.rights_status != "cleared":
                 revision.status = "rights_blocked"
         await db.commit()

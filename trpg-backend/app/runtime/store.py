@@ -92,9 +92,7 @@ class SQLAlchemyGameStateStore:
 
     async def load(self, db: AsyncSession, room_session_id: str) -> GameState:
         snapshot = await db.scalar(
-            select(GameStateSnapshot).where(
-                GameStateSnapshot.room_session_id == room_session_id
-            )
+            select(GameStateSnapshot).where(GameStateSnapshot.room_session_id == room_session_id)
         )
         if snapshot is None:
             raise RuntimeStateNotFoundError("游戏状态不存在")
@@ -103,9 +101,7 @@ class SQLAlchemyGameStateStore:
         state.revision = snapshot.revision
         return state
 
-    async def snapshot(
-        self, db: AsyncSession, room_session_id: str
-    ) -> GameStateSnapshot:
+    async def snapshot(self, db: AsyncSession, room_session_id: str) -> GameStateSnapshot:
         snapshot = await db.scalar(
             select(GameStateSnapshot)
             .where(GameStateSnapshot.room_session_id == room_session_id)

@@ -39,9 +39,7 @@ class TurnOrchestrator:
             raise ValueError("游戏会话不存在")
         state = await self.store.load(db, session.id)
         runtime_module = await self.store.module_for_session(db, session)
-        view = self.projector.project(
-            state, runtime_module, actor_id=player_input.actor_id
-        )
+        view = self.projector.project(state, runtime_module, actor_id=player_input.actor_id)
 
         async def execute_action(intent: Intent):
             request = ActionRequest(
@@ -56,13 +54,9 @@ class TurnOrchestrator:
             updated_state, runtime_module, actor_id=player_input.actor_id
         )
         try:
-            narration = await self.keeper.narrate(
-                player_input, updated_view, action
-            )
+            narration = await self.keeper.narrate(player_input, updated_view, action)
         except Exception:
-            narration = await FakeKeeper().narrate(
-                player_input, updated_view, action
-            )
+            narration = await FakeKeeper().narrate(player_input, updated_view, action)
         updated_view = await self._record_narration(
             db,
             updated_state,
@@ -98,21 +92,15 @@ class TurnOrchestrator:
             raise ValueError("游戏会话不存在")
         state = await self.store.load(db, session.id)
         runtime_module = await self.store.module_for_session(db, session)
-        view = self.projector.project(
-            state, runtime_module, actor_id=player_input.actor_id
-        )
+        view = self.projector.project(state, runtime_module, actor_id=player_input.actor_id)
         try:
             narration = await self.keeper.narrate(player_input, view, action)
         except Exception:
             narration = await FakeKeeper().narrate(player_input, view, action)
-        view = await self._record_narration(
-            db, state, runtime_module, player_input, narration.text
-        )
+        view = await self._record_narration(db, state, runtime_module, player_input, narration.text)
         return TurnResult(action=action, narration=narration, view=view)
 
-    async def current_view(
-        self, db: AsyncSession, *, room_id: str, actor_id: str
-    ) -> PlayerView:
+    async def current_view(self, db: AsyncSession, *, room_id: str, actor_id: str) -> PlayerView:
         session = await self.store.active_session(db, room_id)
         if session is None:
             raise ValueError("房间没有进行中的游戏")
@@ -147,6 +135,4 @@ class TurnOrchestrator:
             )
         )
         await db.commit()
-        return self.projector.project(
-            state, runtime_module, actor_id=player_input.actor_id
-        )
+        return self.projector.project(state, runtime_module, actor_id=player_input.actor_id)

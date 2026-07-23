@@ -2,7 +2,7 @@
  * 钉住「目前还是桩」的那些接口。
  *
  * 这类用例的作用不是保护现状，而是**当它们变红时提醒我们去接**：队友把
- * 掷骰检定 / 模组导入 / 复盘摘要真正实现之后，这里会失败，我们就知道该把
+ * 模组导入或常用角色卡真正实现之后，这里会失败，我们就知道该把
  * 对应的客户端接入补上，而不是等到某天有人手工发现"后端早就能用了"。
  */
 import assert from 'node:assert/strict'
@@ -29,11 +29,16 @@ function assertNotImplemented(hint: string) {
   }
 }
 
-test('复盘摘要仍是 NOT_IMPLEMENTED（依赖 AI 编排）', async () => {
+test('复盘摘要已是真实现，游戏尚未结束时返回状态冲突', async () => {
   const room = await createRoomWithModule('stub')
   await assert.rejects(
     () => room.host.sdk.rooms.getSummary(room.roomId, room.reconnectToken),
-    assertNotImplemented('这条变红说明复盘摘要已经实现（或者坏了），该去看客户端要不要接')
+    (error: unknown) => {
+      assert.ok(error instanceof ApiError)
+      assert.equal(error.code, 'CONFLICT')
+      assert.equal(error.status, 409)
+      return true
+    }
   )
 })
 

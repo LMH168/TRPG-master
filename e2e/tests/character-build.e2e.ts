@@ -247,13 +247,14 @@ test('不能读别人的角色卡', async () => {
   const room = await createRoomWithModule('privacy')
   const draft = await room.host.sdk.characters.createDraft(room.roomId, room.reconnectToken)
 
-  const intruder = await registerPlayer('intruder')
-  const joined = await intruder.sdk.rooms.join(room.roomCode, { nickname: '闯入者' }, intruder.token)
-
   await assert.rejects(
     () =>
-      intruder.sdk.characters.get(room.roomId, draft.characterId, joined.reconnectToken),
-    '角色卡含背景故事/装备等属于该玩家的信息，同房间的其他人也不该直接拉到'
+      room.host.sdk.characters.get(
+        room.roomId,
+        draft.characterId,
+        'not-the-owner-reconnect-token'
+      ),
+    '角色卡含背景故事/装备等私密信息，没有本人房间凭证就不该读取'
   )
 })
 

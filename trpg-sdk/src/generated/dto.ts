@@ -115,9 +115,8 @@ export interface CharacterComputeResult {
  * POST /api/v1/rooms/{roomId}/characters 请求体（issue #77 新增第三条建卡路径）。
  *
  * 整个请求体本身仍然可选（不传等价于从零建卡，路由层用 `Body(default=None)`
- * 兜底），`based_on_template_id` 指向 `user_character_templates` 表——本期
- * 只接住这个参数、校验它的形状，真正"复制模板数据进草稿"的读写没有实现
- * （issue 决策 5：本期只铺表与接口），带了这个字段会直接收到 NOT_IMPLEMENTED。
+ * 兜底）。`based_on_pregen_id` 从房间绑定的模组 revision 复制预制调查员快照
+ * 并直接完成角色；`based_on_template_id` 仍是仅预留的账号模板路径。
  */
 export interface CharacterCreateBody {
   basedOnTemplateId?: string | null;
@@ -230,7 +229,7 @@ export interface CharacterUpdateBody {
 }
 
 /**
- * check.request 推送 payload（issue #77 新增，本期不会真的发出）。
+ * check.request：规则引擎请求玩家确认一次技能检定。
  */
 export interface CheckRequestPayload {
   playerId: string;
@@ -246,8 +245,7 @@ export interface CheckRequestPayload {
 /**
  * check.result 推送 payload（issue #77 新增）。
  *
- * 直接返回终值，不做两段式初步结果（issue 决策 4：幸运消耗机制推迟，
- * 协议一并简化）。本期不会真的发出。
+ * 直接返回服务端权威终值，不做幸运消耗的两段式初步结果。
  */
 export interface CheckResultPayload {
   playerId: string;
@@ -261,12 +259,9 @@ export interface CheckResultPayload {
 }
 
 /**
- * check.roll 事件 payload（issue #77 新增）——玩家请求做一次技能检定。
+ * check.roll：确认并结算规则引擎创建的待处理技能检定。
  *
- * `skill` 必填：说清楚要检定哪个技能是这个动作本身的意义所在。这条链路
- * 本期是 NOT_IMPLEMENTED 桩（见 issue"三处原型取舍"表格——真正的服务端
- * 权威掷骰依赖规则引擎裁决，归 #48/#68），handler 校验完这个 payload 就
- * 直接回 `error` 事件，不会真的掷骰或读写 `check_results` 表。
+ * 客户端只提交请求标识与状态版本，骰值由服务端权威生成。
  */
 export interface CheckRollPayload {
   clientActionId: string;
@@ -281,7 +276,7 @@ export interface CheckpointOption {
 }
 
 /**
- * clue.granted 推送 payload（issue #77 新增，线索发现，本期不会真的发出）。
+ * clue.granted：只推送规则引擎已授予、对该玩家可见的线索。
  */
 export interface ClueGrantedPayload {
   playerId: string;
@@ -343,10 +338,7 @@ export interface ErrorDetail {
 }
 
 /**
- * error 推送 payload（issue #77 新增）——本期唯一会被真的发出的新增
- * S→C 事件：`check.roll`/`san.check.roll`/`room.rejoin` 这三个 NOT_IMPLEMENTED
- * 桩、以及原来 game.start 失败时被静默丢弃（`continue`，见 ws.py 旧逻辑）
- * 的错误，都改成通过这个事件明确告知发起者，而不是让客户端干等。
+ * error：把协议校验、身份、版本冲突和规则执行错误明确返回发起者。
  */
 export interface ErrorPayload {
   code: string;
@@ -354,7 +346,7 @@ export interface ErrorPayload {
 }
 
 /**
- * game.ended 推送 payload（issue #77 新增，触发复盘，本期不会真的发出）。
+ * game.ended 推送 payload；结局落库后携带结构化复盘摘要。
  */
 export interface GameEndedPayload {
   reason?: string | null;
@@ -710,10 +702,10 @@ export interface RoomPreview {
 }
 
 /**
- * room.rejoin 事件 payload（issue #77 新增，仅铺协议，见决策 6）。
+ * room.rejoin：恢复当前 GameView，并补发指定序号之后的玩家可见事件。
  *
  * `reconnect_token` 是房间身份体系的重连凭证（`players.reconnect_token`，
- * 不是账号登录 token），本期只校验格式、不做真实的断线重连逻辑。
+ * 不是账号登录 token）。
  */
 export interface RoomRejoinPayload {
   reconnectToken: string;
@@ -760,7 +752,7 @@ export interface RulesetRead {
 }
 
 /**
- * san.check.request 推送 payload（issue #77 新增，本期不会真的发出）。
+ * san.check.request：规则引擎请求玩家确认一次理智检定。
  */
 export interface SanCheckRequestPayload {
   playerId: string;
@@ -772,8 +764,7 @@ export interface SanCheckRequestPayload {
 }
 
 /**
- * san.check.result 推送 payload（issue #77 新增，同 CheckResultPayload
- * 直接返回终值，本期不会真的发出）。
+ * san.check.result：返回服务端权威骰值、损失与当前 SAN。
  */
 export interface SanCheckResultPayload {
   playerId: string;

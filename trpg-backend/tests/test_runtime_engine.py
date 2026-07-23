@@ -104,9 +104,7 @@ def test_skill_and_san_checks_only_use_server_dice() -> None:
         events,
     )
 
-    grade = executor._resolve_skill_check(
-        state, runtime, actor, pending, events, narration_facts
-    )
+    grade = executor._resolve_skill_check(state, runtime, actor, pending, events, narration_facts)
 
     assert grade in {"critical", "extreme", "hard", "regular"}
     assert events[-1].payload["rollValue"] == 20
@@ -120,9 +118,7 @@ def test_skill_and_san_checks_only_use_server_dice() -> None:
         target_value=actor.current_san,
         reason="看见道格拉斯",
     )
-    san_outcome = executor._resolve_san_check(
-        state, runtime, actor, san_pending, events
-    )
+    san_outcome = executor._resolve_san_check(state, runtime, actor, san_pending, events)
 
     assert san_outcome == "san_failure"
     assert events[-1].payload["rollValue"] == 80
@@ -204,9 +200,7 @@ def test_scene_entry_trigger_and_dialogue_reach_peaceful_ending() -> None:
 def test_all_package_condition_and_effect_types_are_executable() -> None:
     runtime, state = _runtime_state()
     executor = ActionExecutor(dice=FixedDiceRoller([2, 3, 4]))
-    required_conditions = set(
-        runtime.package.module.ruleset_ref.required_condition_types
-    )
+    required_conditions = set(runtime.package.module.ruleset_ref.required_condition_types)
     required_effects = set(runtime.package.module.ruleset_ref.required_effect_types)
     conditions = _first_by_type(runtime.package_json["content"], required_conditions)
     effects = _first_by_type(runtime.package_json["content"], required_effects)
@@ -221,9 +215,7 @@ def test_all_package_condition_and_effect_types_are_executable() -> None:
     }
     state.variables["player.choice"] = "follow_douglas_underground"
     state.variables["temporary_insanity_during_ghoul_crowd"] = True
-    attack_context = {
-        "intent": {"kind": "choice", "choice_id": "attack_ghouls"}
-    }
+    attack_context = {"intent": {"kind": "choice", "choice_id": "attack_ghouls"}}
     for condition_type, condition in conditions.items():
         context = attack_context if condition_type == "player_attacks" else {}
         assert executor._conditions_met([condition], state, runtime, context)
@@ -364,23 +356,13 @@ async def test_action_executor_is_idempotent_and_detects_stale_state(
     assert replayed.resolution == "replayed"
     assert replayed.state_revision == first.state_revision
 
-    stale = request.model_copy(
-        update={"request_id": "stale-request", "source_revision": 0}
-    )
+    stale = request.model_copy(update={"request_id": "stale-request", "source_revision": 0})
     with pytest.raises(StaleRevisionError):
         await executor.execute(db_session, stale)
 
-    state = await SQLAlchemyGameStateStore().load(
-        db_session, view.room_session_id
-    )
-    session = await SQLAlchemyGameStateStore().active_session(
-        db_session, room["roomId"]
-    )
+    state = await SQLAlchemyGameStateStore().load(db_session, view.room_session_id)
+    session = await SQLAlchemyGameStateStore().active_session(db_session, room["roomId"])
     assert session is not None
-    runtime = await SQLAlchemyGameStateStore().module_for_session(
-        db_session, session
-    )
-    projected = PlayerViewProjector().project(
-        state, runtime, actor_id=character.id
-    )
+    runtime = await SQLAlchemyGameStateStore().module_for_session(db_session, session)
+    projected = PlayerViewProjector().project(state, runtime, actor_id=character.id)
     assert projected.state_revision == 1

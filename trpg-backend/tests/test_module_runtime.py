@@ -46,9 +46,7 @@ def test_loader_rejects_broken_references_and_unregistered_effects() -> None:
     runtime = loader.load_default(allow_uncleared=True)
     package = deepcopy(runtime.package_json)
     package["module"]["entry_scene_id"] = "scene.missing"
-    package["content"]["checkpoints"][0]["on_success"].append(
-        {"type": "keeper_rewrites_state"}
-    )
+    package["content"]["checkpoints"][0]["on_success"].append({"type": "keeper_rewrites_state"})
 
     with pytest.raises(ModulePackageError) as exc_info:
         loader.load_dict(package, allow_uncleared=True)
@@ -91,9 +89,7 @@ async def test_selecting_pregen_copies_a_complete_character_snapshot(
         json={"moduleId": module["id"]},
         headers=reconnect(room["reconnectToken"]),
     )
-    detail = (
-        await client.get(f"/api/v1/modules/{module['id']}")
-    ).json()["data"]
+    detail = (await client.get(f"/api/v1/modules/{module['id']}")).json()["data"]
     pregen = detail["pregens"][0]
 
     created = await client.post(

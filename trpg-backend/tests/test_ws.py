@@ -292,9 +292,7 @@ def test_action_submit_broadcasts_narration_to_room_only(sync_client: TestClient
             }
         )
         ws_a.receive_json()  # session.bound
-        ws_a.send_json(
-            {"type": "game.start", "playerId": room_a["playerId"], "payload": {}}
-        )
+        ws_a.send_json({"type": "game.start", "playerId": room_a["playerId"], "payload": {}})
         ws_a.receive_json()  # opening narration
         view_a = ws_a.receive_json()
         assert view_a["type"] == "game.view"
@@ -306,9 +304,7 @@ def test_action_submit_broadcasts_narration_to_room_only(sync_client: TestClient
             }
         )
         ws_b.receive_json()  # session.bound
-        ws_b.send_json(
-            {"type": "game.start", "playerId": room_b["playerId"], "payload": {}}
-        )
+        ws_b.send_json({"type": "game.start", "playerId": room_b["playerId"], "payload": {}})
         ws_b.receive_json()  # opening narration
         view_b = ws_b.receive_json()
         assert view_b["type"] == "game.view"

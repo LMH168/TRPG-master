@@ -56,9 +56,7 @@ def _envelope(
     event_id: str | None = None,
     sequence: int | None = None,
 ) -> dict:
-    payload_data = (
-        payload.model_dump(by_alias=True) if hasattr(payload, "model_dump") else payload
-    )
+    payload_data = payload.model_dump(by_alias=True) if hasattr(payload, "model_dump") else payload
     return ServerEnvelope(
         type=event_type,
         payload=payload_data,
@@ -123,9 +121,7 @@ async def _send_current_view(
     except (RuntimeConflictError, ValueError):
         return
     payload = GameViewPayload(**view.model_dump())
-    await websocket.send_json(
-        _envelope("game.view", payload, sequence=view.event_sequence)
-    )
+    await websocket.send_json(_envelope("game.view", payload, sequence=view.event_sequence))
 
 
 def _runtime_event_envelope(
@@ -148,9 +144,7 @@ def _runtime_event_envelope(
             reason=payload["reason"],
             state_revision=state_revision,
         )
-        return _envelope(
-            "check.request", model, event_id=event_id, sequence=sequence
-        )
+        return _envelope("check.request", model, event_id=event_id, sequence=sequence)
     elif event.event_type == "san.requested":
         model = SanCheckRequestPayload(
             player_id=player_id,
@@ -160,9 +154,7 @@ def _runtime_event_envelope(
             reason=payload["reason"],
             state_revision=state_revision,
         )
-        return _envelope(
-            "san.check.request", model, event_id=event_id, sequence=sequence
-        )
+        return _envelope("san.check.request", model, event_id=event_id, sequence=sequence)
     elif event.event_type == "check.resolved":
         model = CheckResultPayload(
             player_id=player_id,
@@ -174,9 +166,7 @@ def _runtime_event_envelope(
             result=payload["grade"],
             state_revision=state_revision,
         )
-        return _envelope(
-            "check.result", model, event_id=event_id, sequence=sequence
-        )
+        return _envelope("check.result", model, event_id=event_id, sequence=sequence)
     elif event.event_type == "san.resolved":
         model = SanCheckResultPayload(
             player_id=player_id,
@@ -188,9 +178,7 @@ def _runtime_event_envelope(
             current_san=payload["currentSan"],
             state_revision=state_revision,
         )
-        return _envelope(
-            "san.check.result", model, event_id=event_id, sequence=sequence
-        )
+        return _envelope("san.check.result", model, event_id=event_id, sequence=sequence)
     elif event.event_type == "clue.granted":
         model = ClueGrantedPayload(
             player_id=player_id,
@@ -198,9 +186,7 @@ def _runtime_event_envelope(
             clue_name=payload["name"],
             description=payload.get("description"),
         )
-        return _envelope(
-            "clue.granted", model, event_id=event_id, sequence=sequence
-        )
+        return _envelope("clue.granted", model, event_id=event_id, sequence=sequence)
     elif event.event_type == "game.ended":
         model = GameEndedPayload(
             reason=payload.get("summary"),
@@ -209,9 +195,7 @@ def _runtime_event_envelope(
             summary=payload.get("summary"),
             state_revision=state_revision,
         )
-        return _envelope(
-            "game.ended", model, event_id=event_id, sequence=sequence
-        )
+        return _envelope("game.ended", model, event_id=event_id, sequence=sequence)
     return None
 
 
@@ -362,9 +346,7 @@ async def _handle_roll(
 
 
 @router.websocket("/ws/{room_id}")
-async def room_socket(
-    websocket: WebSocket, room_id: str, token: str | None = None
-) -> None:
+async def room_socket(websocket: WebSocket, room_id: str, token: str | None = None) -> None:
     async with async_session_factory() as db:
         try:
             await auth_service.get_me(db, token)
@@ -401,9 +383,7 @@ async def room_socket(
                             bound_player_id = client_envelope.player_id
                             bound_reconnect_token = payload.reconnect_token
                             assert bound_player_id is not None
-                            await _send_current_view(
-                                db, websocket, room_id, bound_player_id
-                            )
+                            await _send_current_view(db, websocket, room_id, bound_player_id)
                         else:
                             return
                         continue
@@ -413,14 +393,10 @@ async def room_socket(
 
                     if event_type == "player.ready":
                         payload = PlayerReadyPayload.model_validate(raw_payload)
-                        await room_service.set_player_ready(
-                            db, bound_player_id, payload.ready
-                        )
+                        await room_service.set_player_ready(db, bound_player_id, payload.ready)
                     elif event_type == "game.start":
                         GameStartPayload.model_validate(raw_payload)
-                        view = await room_service.begin_game(
-                            db, room_id, bound_player_id
-                        )
+                        view = await room_service.begin_game(db, room_id, bound_player_id)
                         await manager.broadcast(
                             room_id,
                             _envelope(
@@ -471,9 +447,7 @@ async def room_socket(
                     elif event_type == "room.rejoin":
                         payload = RoomRejoinPayload.model_validate(raw_payload)
                         if payload.reconnect_token != bound_reconnect_token:
-                            await _send_error(
-                                websocket, "UNAUTHORIZED", "重连凭证不匹配"
-                            )
+                            await _send_error(websocket, "UNAUTHORIZED", "重连凭证不匹配")
                             continue
                         await _replay_missed_events(
                             db,
@@ -482,19 +456,13 @@ async def room_socket(
                             player_id=bound_player_id,
                             last_sequence=payload.last_event_sequence or 0,
                         )
-                        await _send_current_view(
-                            db, websocket, room_id, bound_player_id
-                        )
+                        await _send_current_view(db, websocket, room_id, bound_player_id)
                 except ValidationError as exc:
-                    logger.warning(
-                        "ws_invalid_message", event_type=event_type, error=str(exc)
-                    )
+                    logger.warning("ws_invalid_message", event_type=event_type, error=str(exc))
                 except StaleRevisionError as exc:
                     await _send_error(websocket, "STALE_REVISION", str(exc))
                     if bound_player_id is not None:
-                        await _send_current_view(
-                            db, websocket, room_id, bound_player_id
-                        )
+                        await _send_current_view(db, websocket, room_id, bound_player_id)
                 except (
                     RuntimeConflictError,
                     room_service.RoomNotFoundError,
@@ -511,6 +479,4 @@ async def room_socket(
         manager.remove(room_id, websocket)
         if bound_player_id is not None:
             async with async_session_factory() as db:
-                await room_service.set_player_connected(
-                    db, bound_player_id, False
-                )
+                await room_service.set_player_connected(db, bound_player_id, False)

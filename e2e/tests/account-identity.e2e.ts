@@ -12,37 +12,47 @@ import { createRoomWithModule, makeSdk, registerPlayer } from './helpers.ts'
 
 test('🔴 老成员重连：同一账号再次 join 拿回同一个身份，人数不变', async () => {
   const room = await createRoomWithModule('rejoin')
-  const guest = await registerPlayer('rejoinguest')
 
-  const first = await guest.sdk.rooms.join(room.roomCode, { nickname: '访客' }, guest.token)
-  const second = await guest.sdk.rooms.join(room.roomCode, { nickname: '访客' }, guest.token)
+  const first = await room.host.sdk.rooms.join(
+    room.roomCode,
+    { nickname: room.host.account },
+    room.host.token
+  )
+  const second = await room.host.sdk.rooms.join(
+    room.roomCode,
+    { nickname: room.host.account },
+    room.host.token
+  )
 
   assert.equal(second.playerId, first.playerId, '重连必须拿回同一个 playerId')
+  assert.equal(second.playerId, room.hostPlayerId)
   assert.equal(second.reconnectToken, first.reconnectToken)
 
-  // 改动前这里会变成 3：join 不检查调用者是不是已经在房间里，无条件新建 Player，
+  // 改动前这里会变成 2：join 不检查调用者是不是已经在房间里，无条件新建 Player，
   // 同一个人重复加入就虚增人数，直到撞满员。
   const preview = await room.host.sdk.rooms.getInfo(room.roomCode)
-  assert.equal(preview.players.length, 2, '重复加入不该多出一个玩家')
+  assert.equal(preview.players.length, 1, '重复加入不该多出一个玩家')
 })
 
 test('🔴 换设备重连：新的客户端实例只凭账号 token 就能拿回房间身份', async () => {
   // 这条是账号体系存在的理由本身。`reconnectToken` 存在浏览器会话里，换设备就
   // 没了；只有按账号幂等，才谈得上「换台设备继续这局」。
   const room = await createRoomWithModule('device')
-  const guest = await registerPlayer('deviceguest')
-  const original = await guest.sdk.rooms.join(room.roomCode, { nickname: '访客' }, guest.token)
 
   // 全新的 SDK 实例 = 另一台设备：没有任何本地状态，只有账号 token
   const otherDevice = makeSdk()
   const recovered = await otherDevice.rooms.join(
     room.roomCode,
-    { nickname: '访客' },
-    guest.token
+    { nickname: room.host.account },
+    room.host.token
   )
 
-  assert.equal(recovered.playerId, original.playerId)
-  assert.equal(recovered.reconnectToken, original.reconnectToken, '换设备也要能拿回房间凭证')
+  assert.equal(recovered.playerId, room.hostPlayerId)
+  assert.equal(
+    recovered.reconnectToken,
+    room.reconnectToken,
+    '换设备也要能拿回房间凭证'
+  )
 })
 
 test('🔴 游戏开始后：老成员能重连，新人被拒', async () => {
@@ -50,13 +60,19 @@ test('🔴 游戏开始后：老成员能重连，新人被拒', async () => {
   // 加入」和「掉线重连」当成同一件事拒掉——只测其中一边的话，「一刀切拒绝」和
   // 「一刀切放行」各能通过一条。
   const room = await createRoomWithModule('phase')
-  const guest = await registerPlayer('phaseguest')
-  const joined = await guest.sdk.rooms.join(room.roomCode, { nickname: '访客' }, guest.token)
 
   await room.host.sdk.rooms.startStory(room.roomId, room.reconnectToken)
 
-  const rejoined = await guest.sdk.rooms.join(room.roomCode, { nickname: '访客' }, guest.token)
-  assert.equal(rejoined.playerId, joined.playerId, '老成员在 Building 阶段必须能重连')
+  const rejoined = await room.host.sdk.rooms.join(
+    room.roomCode,
+    { nickname: room.host.account },
+    room.host.token
+  )
+  assert.equal(
+    rejoined.playerId,
+    room.hostPlayerId,
+    '老成员在 Building 阶段必须能重连'
+  )
 
   const latecomer = await registerPlayer('latecomer')
   await assert.rejects(
@@ -75,15 +91,30 @@ test('🔴 换设备重连能拿回角色卡 id（否则会被引导重建一张
   // 重连后会显示成「还没建卡」。这条正好补上「换设备重连」那条用例的缺口：光有
   // 房间身份不够，角色身份也要能恢复。
   const room = await createRoomWithModule('charid')
-  const guest = await registerPlayer('charidguest')
-  const joined = await guest.sdk.rooms.join(room.roomCode, { nickname: '访客' }, guest.token)
-  assert.equal(joined.characterId, null, '还没建卡时应该是 null')
+  assert.equal(
+    (
+      await room.host.sdk.rooms.join(
+        room.roomCode,
+        { nickname: room.host.account },
+        room.host.token
+      )
+    ).characterId,
+    null,
+    '还没建卡时应该是 null'
+  )
 
-  const draft = await guest.sdk.characters.createDraft(room.roomId, joined.reconnectToken)
+  const draft = await room.host.sdk.characters.createDraft(
+    room.roomId,
+    room.reconnectToken
+  )
 
   // 全新 SDK 实例 = 另一台设备，只有账号 token
   const otherDevice = makeSdk()
-  const recovered = await otherDevice.rooms.join(room.roomCode, { nickname: '访客' }, guest.token)
+  const recovered = await otherDevice.rooms.join(
+    room.roomCode,
+    { nickname: room.host.account },
+    room.host.token
+  )
 
   assert.equal(recovered.characterId, draft.characterId)
 })

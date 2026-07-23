@@ -21,9 +21,7 @@ def _player_safe_action(action: ActionResult) -> ActionResult:
     """移除只供规则引擎使用的事件和隐藏 Fact 标识后再交给模型/会话存储。"""
     return action.model_copy(
         update={
-            "events": [
-                event for event in action.events if event.visibility != "keeper"
-            ],
+            "events": [event for event in action.events if event.visibility != "keeper"],
             "narration_facts": [],
         }
     )
@@ -71,17 +69,12 @@ class FakeKeeper:
                 )
             if event.event_type == "scene.changed":
                 description = (
-                    event.payload.get("playerDescription")
-                    or view.scene.player_description
+                    event.payload.get("playerDescription") or view.scene.player_description
                 )
-                return NarrationOutput(
-                    text=str(description)
-                )
+                return NarrationOutput(text=str(description))
             if event.event_type == "clue.granted":
                 clue_text = event.payload.get("description") or event.payload.get("name")
-                return NarrationOutput(
-                    text=f"你获得了新的线索：{clue_text}。"
-                )
+                return NarrationOutput(text=f"你获得了新的线索：{clue_text}。")
             if event.event_type == "check.resolved":
                 return NarrationOutput(
                     text=(
@@ -131,26 +124,18 @@ class FakeKeeper:
                 choice_id="follow_douglas_underground",
             )
         if any(word in text for word in ("攻击食尸鬼", "攻击怪物")):
-            return Intent(
-                kind="choice", summary="攻击食尸鬼群", choice_id="attack_ghouls"
-            )
+            return Intent(kind="choice", summary="攻击食尸鬼群", choice_id="attack_ghouls")
         if any(word in text for word in ("逃走", "逃离", "离开")):
             return Intent(kind="choice", summary="逃离现场", choice_id="flee")
         if any(word in text for word in ("叫名字", "道格拉斯")) and view.scene.scene_id == (
             "scene.confrontation"
         ):
-            return Intent(
-                kind="choice", summary="呼喊道格拉斯的名字", choice_id="call_name"
-            )
+            return Intent(kind="choice", summary="呼喊道格拉斯的名字", choice_id="call_name")
         if any(word in text for word in ("交谈", "对话", "听他说", "礼貌")):
             return Intent(
                 kind="dialogue",
                 summary="与眼前的人物进行非敌对对话",
-                target_id=(
-                    view.visible_entities[0].entity_id
-                    if view.visible_entities
-                    else None
-                ),
+                target_id=(view.visible_entities[0].entity_id if view.visible_entities else None),
             )
         if view.checkpoint_options and any(
             word in text

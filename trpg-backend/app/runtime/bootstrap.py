@@ -17,14 +17,9 @@ def get_turn_orchestrator() -> TurnOrchestrator:
     store = SQLAlchemyGameStateStore()
     executor = ActionExecutor(store=store)
     if settings.keeper_provider == "deepseek":
-        if not (
-            settings.keeper_model
-            and settings.keeper_base_url
-            and settings.keeper_api_key
-        ):
+        if not (settings.keeper_model and settings.keeper_base_url and settings.keeper_api_key):
             raise RuntimeError(
-                "启用 DeepSeek Keeper 需要 KEEPER_MODEL、KEEPER_BASE_URL、"
-                "KEEPER_API_KEY"
+                "启用 DeepSeek Keeper 需要 KEEPER_MODEL、KEEPER_BASE_URL、KEEPER_API_KEY"
             )
         keeper = AgentsSDKKeeper(
             model=settings.keeper_model,

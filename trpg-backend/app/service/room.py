@@ -392,15 +392,11 @@ async def begin_game(db: AsyncSession, room_id: str, player_id: str) -> PlayerVi
         raise CharacterIncompleteError("房主尚未完成角色卡")
 
     store = SQLAlchemyGameStateStore()
-    _, state, runtime_module = await store.start_room(
-        db, room=room, character=character
-    )
+    _, state, runtime_module = await store.start_room(db, room=room, character=character)
     room.phase = "InGame"
     room.started_at = datetime.now(UTC)
     await db.commit()
-    return PlayerViewProjector().project(
-        state, runtime_module, actor_id=character.id
-    )
+    return PlayerViewProjector().project(state, runtime_module, actor_id=character.id)
 
 
 async def list_my_rooms(db: AsyncSession, user: User) -> list[MyRoomSummary]:
@@ -605,9 +601,7 @@ async def get_module_detail(db: AsyncSession, module_id: str) -> ModuleDetailRea
                 occupation=(pregen.data or {}).get("occupation"),
                 summary=(pregen.data or {}).get("summary"),
                 attributes=(pregen.data or {}).get("stat_block", {}).get("attributes", {}),
-                derived_stats=(pregen.data or {})
-                .get("stat_block", {})
-                .get("derived_stats", {}),
+                derived_stats=(pregen.data or {}).get("stat_block", {}).get("derived_stats", {}),
                 skills=(pregen.data or {}).get("stat_block", {}).get("skills", {}),
             )
             for pregen in pregens
@@ -655,9 +649,7 @@ async def get_summary(
 ) -> RoomSummaryRead:
     """返回结局时由规则引擎生成的确定性结构化复盘。"""
     await require_room_member(db, room_id, reconnect_token)
-    summary = await db.scalar(
-        select(RoomSummary).where(RoomSummary.room_id == room_id)
-    )
+    summary = await db.scalar(select(RoomSummary).where(RoomSummary.room_id == room_id))
     if summary is None:
         raise RoomConflictError("本局尚未生成复盘")
     return RoomSummaryRead(

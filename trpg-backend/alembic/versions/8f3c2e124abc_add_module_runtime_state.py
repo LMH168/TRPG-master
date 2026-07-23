@@ -31,9 +31,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["scenario_id"], ["scenarios.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "scenario_id", "checksum", name="uq_scenario_revisions_checksum"
-        ),
+        sa.UniqueConstraint("scenario_id", "checksum", name="uq_scenario_revisions_checksum"),
     )
     with op.batch_alter_table("scenarios") as batch_op:
         batch_op.add_column(sa.Column("current_revision_id", sa.Uuid(), nullable=True))
@@ -82,9 +80,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["room_session_id"], ["room_sessions.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "room_session_id", "request_id", name="uq_processed_command_request"
-        ),
+        sa.UniqueConstraint("room_session_id", "request_id", name="uq_processed_command_request"),
     )
     op.create_table(
         "agent_sessions",
@@ -114,9 +110,7 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("CURRENT_TIMESTAMP"),
         ),
-        sa.ForeignKeyConstraint(
-            ["session_id"], ["agent_sessions.session_id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["session_id"], ["agent_sessions.session_id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(
