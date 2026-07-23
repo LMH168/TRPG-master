@@ -233,8 +233,7 @@ export class RoomSocket {
 
   private send(type: string, playerId: string, payload: unknown): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.warn(`[RoomSocket] not connected, dropped: ${type}`, payload);
-      return;
+      throw new Error('实时连接已断开，消息未发送，请等待重连后重试');
     }
     this.ws.send(JSON.stringify({ type, playerId, payload }));
   }

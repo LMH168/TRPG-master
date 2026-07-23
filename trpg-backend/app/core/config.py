@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     keeper_model: str | None = None
     keeper_base_url: str | None = None
     keeper_api_key: str | None = None
+    # 单次 AI 主持阶段的最长等待时间。超过后行动不会进入规则引擎，客户端会收到
+    # 可重试错误；叙事阶段超时则使用确定性兜底文本，避免房间永久卡在等待状态。
+    keeper_timeout_seconds: float = 30.0
 
     # 允许跨域请求的前端来源列表，交给 main.py 里的 CORSMiddleware 使用。
     # 本地默认放行 Vite 开发服务器的默认端口 9877。

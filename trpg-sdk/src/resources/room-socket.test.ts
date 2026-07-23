@@ -87,3 +87,16 @@ test('waitForOpen：连接失败时 reject 的是 Error，且 cause 是原始 Ev
     ws.close();
   }
 });
+
+test('发送时连接未建立：抛出错误而不是静默丢弃消息', () => {
+  const socket = new RoomSocket('ws://127.0.0.1');
+  assert.throws(
+    () =>
+      socket.submitAction('player-1', {
+        clientActionId: 'action-1',
+        utterance: '调查书架',
+        sourceRevision: 1,
+      }),
+    /消息未发送/
+  );
+});

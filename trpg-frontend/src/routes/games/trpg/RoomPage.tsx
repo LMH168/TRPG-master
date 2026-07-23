@@ -93,8 +93,18 @@ export default function RoomPage() {
   }, [messages])
 
   useEffect(() => {
+    if (!waiting) return
+    const timer = window.setTimeout(() => {
+      setWaiting(false)
+      setError('AI 主持响应时间过长，请检查连接后重新发送。')
+    }, 40_000)
+    return () => window.clearTimeout(timer)
+  }, [waiting])
+
+  useEffect(() => {
     if (!roomId || !playerId) return
     let cancelled = false
+    let reconnectTimer: number | null = null
     const off = onWsMessage((envelope) => {
       if (envelope.sequence != null) {
         lastSequenceRef.current = Math.max(lastSequenceRef.current, envelope.sequence)
@@ -173,20 +183,42 @@ export default function RoomPage() {
       }
     })
 
-    const socket = connectWebSocket(roomId)
-    waitForWsOpen(socket)
-      .then(() => {
-        if (cancelled) return
-        sdk.roomSocket.joinRoom(playerId, {
-          reconnectToken: reconnectToken || '',
-          roomCode,
-          nickname: nickname || '玩家',
+    const connectAndJoin = (): void => {
+      const socket = connectWebSocket(roomId)
+      socket.addEventListener(
+        'close',
+        () => {
+          if (cancelled) return
+          setWaiting(false)
+          setError('实时连接已断开，正在重新连接…')
+          if (reconnectTimer == null) {
+            reconnectTimer = window.setTimeout(() => {
+              reconnectTimer = null
+              connectAndJoin()
+            }, 1500)
+          }
+        },
+        { once: true }
+      )
+      waitForWsOpen(socket)
+        .then(() => {
+          if (cancelled) return
+          sdk.roomSocket.joinRoom(playerId, {
+            reconnectToken: reconnectToken || '',
+            roomCode,
+            nickname: nickname || '玩家',
+          })
+          setError('')
         })
-      })
-      .catch(() => setError('实时连接失败，请稍后重试'))
+        .catch(() => {
+          if (!cancelled) setError('实时连接失败，正在重试…')
+        })
+    }
+    connectAndJoin()
 
     return () => {
       cancelled = true
+      if (reconnectTimer != null) window.clearTimeout(reconnectTimer)
       off()
     }
   }, [roomId, playerId, reconnectToken, roomCode, nickname])
@@ -196,15 +228,21 @@ export default function RoomPage() {
     const utterance = input.trim()
     if (!utterance || !playerId || !view || view.pendingCheck || view.activeEndingId) return
     const clientActionId = crypto.randomUUID()
+    try {
+      sdk.roomSocket.submitAction(playerId, {
+        clientActionId,
+        utterance,
+        sourceRevision: view.stateRevision,
+      })
+    } catch (err) {
+      setWaiting(false)
+      setError(err instanceof Error ? err.message : '消息发送失败，请稍后重试')
+      return
+    }
     appendOnce(null, {
       id: clientActionId,
       kind: 'player',
       text: utterance,
-    })
-    sdk.roomSocket.submitAction(playerId, {
-      clientActionId,
-      utterance,
-      sourceRevision: view.stateRevision,
     })
     setInput('')
     setWaiting(true)
@@ -218,10 +256,16 @@ export default function RoomPage() {
       checkRequestId: view.pendingCheck.checkRequestId,
       sourceRevision: view.stateRevision,
     }
-    if (view.pendingCheck.kind === 'san') {
-      sdk.roomSocket.rollSanCheck(playerId, payload)
-    } else {
-      sdk.roomSocket.rollCheck(playerId, payload)
+    try {
+      if (view.pendingCheck.kind === 'san') {
+        sdk.roomSocket.rollSanCheck(playerId, payload)
+      } else {
+        sdk.roomSocket.rollCheck(playerId, payload)
+      }
+    } catch (err) {
+      setWaiting(false)
+      setError(err instanceof Error ? err.message : '检定请求发送失败，请稍后重试')
+      return
     }
     setWaiting(true)
     setError('')

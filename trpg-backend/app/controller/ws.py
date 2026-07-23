@@ -40,6 +40,7 @@ from app.models.room import Character
 from app.runtime.bootstrap import get_turn_orchestrator
 from app.runtime.contracts import PlayerInput, RuntimeEvent, TurnResult
 from app.runtime.engine import RuntimeConflictError, StaleRevisionError
+from app.runtime.orchestrator import KeeperUnavailableError
 from app.service import auth as auth_service
 from app.service import room as room_service
 from app.service.ws_manager import manager
@@ -489,6 +490,9 @@ async def room_socket(websocket: WebSocket, room_id: str, token: str | None = No
                     await _send_error(websocket, "STALE_REVISION", str(exc))
                     if bound_player_id is not None:
                         await _send_current_view(db, websocket, room_id, bound_player_id)
+                except KeeperUnavailableError as exc:
+                    await db.rollback()
+                    await _send_error(websocket, "KEEPER_TIMEOUT", str(exc))
                 except (
                     RuntimeConflictError,
                     room_service.RoomNotFoundError,

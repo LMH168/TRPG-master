@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +24,10 @@ from app.runtime.store import SQLAlchemyGameStateStore
 logger = structlog.get_logger()
 
 
+class KeeperUnavailableError(RuntimeError):
+    """AI 主持在裁决前不可用；本次玩家行动尚未进入规则引擎，可以安全重试。"""
+
+
 class TurnOrchestrator:
     def __init__(
         self,
@@ -30,11 +36,13 @@ class TurnOrchestrator:
         executor: ActionExecutor | None = None,
         projector: PlayerViewProjector | None = None,
         keeper: KeeperAgentPort | None = None,
+        keeper_timeout_seconds: float = 30.0,
     ) -> None:
         self.store = store or SQLAlchemyGameStateStore()
         self.executor = executor or ActionExecutor(store=self.store)
         self.projector = projector or PlayerViewProjector()
         self.keeper = keeper or FakeKeeper()
+        self.keeper_timeout_seconds = keeper_timeout_seconds
 
     async def open_game(
         self,
@@ -52,7 +60,8 @@ class TurnOrchestrator:
         view = self.projector.project(state, runtime_module, actor_id=actor_id)
         premise = runtime_module.package.module.premise
         try:
-            narration = await self.keeper.opening(view, premise)
+            async with asyncio.timeout(self.keeper_timeout_seconds):
+                narration = await self.keeper.opening(view, premise)
         except Exception as exc:
             logger.warning(
                 "keeper_opening_fallback",
@@ -95,18 +104,29 @@ class TurnOrchestrator:
             return await self.executor.execute(db, request)
 
         decision_context = self._keeper_decision_context(state, runtime_module, view)
-        action = await self.keeper.run_action(
-            player_input,
-            view,
-            decision_context,
-            execute_action,
-        )
+        try:
+            async with asyncio.timeout(self.keeper_timeout_seconds):
+                action = await self.keeper.run_action(
+                    player_input,
+                    view,
+                    decision_context,
+                    execute_action,
+                )
+        except TimeoutError as exc:
+            logger.warning(
+                "keeper_action_timeout",
+                room_session_id=player_input.room_session_id,
+                request_id=player_input.request_id,
+                timeout_seconds=self.keeper_timeout_seconds,
+            )
+            raise KeeperUnavailableError("AI 主持响应超时，本次行动尚未执行，请重新发送。") from exc
         updated_state = await self.store.load(db, session.id)
         updated_view = self.projector.project(
             updated_state, runtime_module, actor_id=player_input.actor_id
         )
         try:
-            narration = await self.keeper.narrate(player_input, updated_view, action)
+            async with asyncio.timeout(self.keeper_timeout_seconds):
+                narration = await self.keeper.narrate(player_input, updated_view, action)
         except Exception as exc:
             logger.warning(
                 "keeper_narration_fallback",
@@ -144,14 +164,10 @@ class TurnOrchestrator:
             if runtime_module.get("entities", entity_id) is not None
         ]
         knowledge_fact_ids = {
-            fact_id
-            for entity in entities
-            for fact_id in entity.get("knowledge_fact_ids", [])
+            fact_id for entity in entities for fact_id in entity.get("knowledge_fact_ids", [])
         }
         knowledge_clue_ids = {
-            clue_id
-            for entity in entities
-            for clue_id in entity.get("knowledge_clue_ids", [])
+            clue_id for entity in entities for clue_id in entity.get("knowledge_clue_ids", [])
         }
         trigger_ids = current_scene.get("trigger_ids", [])
         active_timeline_ids = set(state.active_timeline_ids)
@@ -177,8 +193,7 @@ class TurnOrchestrator:
                 ],
             },
             "availableCheckpoints": [
-                runtime_module.get("checkpoints", checkpoint_id)
-                for checkpoint_id in checkpoint_ids
+                runtime_module.get("checkpoints", checkpoint_id) for checkpoint_id in checkpoint_ids
             ],
             "relevantTriggers": [
                 runtime_module.get("triggers", trigger_id)
@@ -231,7 +246,8 @@ class TurnOrchestrator:
         runtime_module = await self.store.module_for_session(db, session)
         view = self.projector.project(state, runtime_module, actor_id=player_input.actor_id)
         try:
-            narration = await self.keeper.narrate(player_input, view, action)
+            async with asyncio.timeout(self.keeper_timeout_seconds):
+                narration = await self.keeper.narrate(player_input, view, action)
         except Exception as exc:
             logger.warning(
                 "keeper_narration_fallback",

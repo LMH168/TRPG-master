@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 
 import pytest
@@ -387,3 +388,51 @@ def test_action_submit_broadcasts_narration_to_room_only(sync_client: TestClient
     assert replayed_narration["type"] == "narration.push"
     assert replayed_view["type"] == "game.view"
     assert envelope_b["type"] == "game.view"
+
+
+def test_action_timeout_returns_retryable_error_without_executing(
+    sync_client: TestClient, monkeypatch
+) -> None:
+    token = register_and_login(sync_client, "timeout_host")
+    room = create_room(sync_client, token)
+    advance_to_building(sync_client, room)
+    complete_character(sync_client, room["roomId"], room["reconnectToken"])
+
+    class SlowKeeper(FakeKeeper):
+        async def run_action(self, player_input, view, decision_context, execute_action):
+            await asyncio.sleep(1)
+            return await super().run_action(player_input, view, decision_context, execute_action)
+
+    orchestrator = get_turn_orchestrator()
+
+    with sync_client.websocket_connect(f"/ws/{room['roomId']}?token={token}") as ws:
+        ws.send_json(
+            {
+                "type": "room.join",
+                "playerId": room["playerId"],
+                "payload": {"reconnectToken": room["reconnectToken"]},
+            }
+        )
+        ws.receive_json()  # session.bound
+        ws.send_json({"type": "game.start", "playerId": room["playerId"], "payload": {}})
+        ws.receive_json()  # opening narration
+        view = ws.receive_json()
+
+        monkeypatch.setattr(orchestrator, "keeper", SlowKeeper())
+        monkeypatch.setattr(orchestrator, "keeper_timeout_seconds", 0.01)
+        ws.send_json(
+            {
+                "type": "action.submit",
+                "playerId": room["playerId"],
+                "payload": {
+                    "clientActionId": str(uuid.uuid4()),
+                    "utterance": "调查书架",
+                    "sourceRevision": view["payload"]["stateRevision"],
+                },
+            }
+        )
+        error = ws.receive_json()
+
+    assert error["type"] == "error"
+    assert error["payload"]["code"] == "KEEPER_TIMEOUT"
+    assert "尚未执行" in error["payload"]["message"]

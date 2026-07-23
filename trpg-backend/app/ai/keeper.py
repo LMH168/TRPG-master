@@ -202,11 +202,13 @@ class AgentsSDKKeeper:
         base_url: str,
         api_key: str,
         engine,
+        request_timeout_seconds: float = 30.0,
     ) -> None:
         self.model_name = model
         self.base_url = base_url
         self.api_key = api_key
         self.engine = engine
+        self.request_timeout_seconds = request_timeout_seconds
 
     def _model(self):
         try:
@@ -216,7 +218,11 @@ class AgentsSDKKeeper:
             raise RuntimeError("请安装 openai-agents[sqlalchemy] 后再启用真实 Keeper") from exc
         return OpenAIChatCompletionsModel(
             model=self.model_name,
-            openai_client=AsyncOpenAI(base_url=self.base_url, api_key=self.api_key),
+            openai_client=AsyncOpenAI(
+                base_url=self.base_url,
+                api_key=self.api_key,
+                timeout=self.request_timeout_seconds,
+            ),
         )
 
     async def opening(self, view: PlayerView, premise: str) -> NarrationOutput:
@@ -363,6 +369,13 @@ class AgentsSDKKeeper:
             name="KeeperAgent",
             instructions=(
                 "根据玩家安全的 ActionResult 和 PlayerView，用简洁中文叙述结果。"
+                "当前 PlayerView 是这一回合唯一且完整的玩家可见事实；"
+                "visibleEntities 是当前场景全部可见人物与生物，scene 是当前真实地点。"
+                "不得创造、延续或默认存在 PlayerView 中没有的人物、生物、物件、出口、"
+                "地点、关系、对话、冲突或环境变化，即使历史对话曾经提到它们也不行。"
+                "如果玩家试图与当前不存在的目标互动，且 ActionResult 没有建立该目标，"
+                "应明确说明当前场景没有看到该目标，并根据 PlayerView 提示可见对象。"
+                "只有 ActionResult.events 明确记录的变化才可以叙述为已经发生；"
                 "不得补充输入中没有的真相、线索、骰值或状态变化。"
                 "只输出直接展示给玩家的叙事正文，不要输出 JSON、字段名或代码块。"
             ),

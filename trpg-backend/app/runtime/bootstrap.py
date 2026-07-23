@@ -26,6 +26,7 @@ def get_turn_orchestrator() -> TurnOrchestrator:
             base_url=settings.keeper_base_url,
             api_key=settings.keeper_api_key,
             engine=engine,
+            request_timeout_seconds=settings.keeper_timeout_seconds,
         )
     else:
         keeper = FakeKeeper()
@@ -34,4 +35,5 @@ def get_turn_orchestrator() -> TurnOrchestrator:
         executor=executor,
         projector=PlayerViewProjector(),
         keeper=keeper,
+        keeper_timeout_seconds=settings.keeper_timeout_seconds,
     )

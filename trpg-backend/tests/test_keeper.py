@@ -121,6 +121,8 @@ async def test_deepseek_narration_uses_plain_text_output(monkeypatch):
 
     assert narration.text == "门外传来轻轻的敲门声。"
     assert "output_type" not in captured
+    assert "visibleEntities 是当前场景全部可见人物与生物" in str(captured["instructions"])
+    assert "即使历史对话曾经提到它们也不行" in str(captured["instructions"])
 
 
 async def test_keeper_private_decision_context_is_not_written_to_player_session(monkeypatch):
