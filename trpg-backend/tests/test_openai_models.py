@@ -523,6 +523,20 @@ class InvalidTurnDecisionClient:
         return {"kind": "single_action", "adjudication": {"summary": "缺少字段"}}
 
 
+class LegacyNarrativeTurnDecisionClient:
+    """模拟 DeepSeek 仍返回旧版纯叙事单动作格式。"""
+
+    async def generate(self, **_kwargs):
+        return {
+            "kind": "single_action",
+            "adjudication": {
+                "summary": "询问接下来做什么",
+                "target": "scene",
+                "narrative_only": True,
+            },
+        }
+
+
 @pytest.mark.parametrize("step_count", [1, 2, 3, 4, 5])
 async def test_prompt_turn_decision_accepts_single_and_variable_plan_lengths(
     step_count: int,
@@ -586,6 +600,38 @@ async def test_invalid_turn_decision_is_retryable_model_output_error() -> None:
 
     assert raised.value.code == "MODEL_OUTPUT_UNREADABLE"
     assert raised.value.retryable is True
+
+
+async def test_legacy_narrative_decision_is_normalized_without_persistent_effects() -> None:
+    """旧版纯叙事格式应恢复普通对话，但不能生成任何持久结果。"""
+    module = load_paper_chase()
+    state = conversation_state(module)
+    store = InMemoryEngineStore()
+    store.register_room(module_content=module, initial_state=state)
+    player_input = PlayerInput(
+        room_id=state.room_id,
+        player_id="player_1",
+        actor_id="actor_1",
+        client_action_id="legacy-narrative",
+        utterance="现在我们该做些什么",
+    )
+    view = await PlayerViewProjector(RuleEngineService(store)).project(player_input)
+
+    decision = await PromptHostTurnDecisionModel(LegacyNarrativeTurnDecisionClient()).generate(
+        HostAgentContext(
+            player_input=player_input,
+            player_view=view,
+            recent_history=RecentTurnContext.empty(
+                player_input=player_input,
+                player_view=view,
+            ),
+        )
+    )
+
+    assert isinstance(decision, SingleActionDecision)
+    assert decision.adjudication.persistence_intent == "none"
+    assert decision.adjudication.target.id == view.scene.id
+    assert [effect.type for effect in decision.adjudication.success_effects] == ["narrative_only"]
 
 
 async def test_responses_client_posts_strict_schema_and_parses_output() -> None:

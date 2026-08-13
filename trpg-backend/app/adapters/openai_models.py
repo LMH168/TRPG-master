@@ -508,6 +508,7 @@ class PromptHostTurnDecisionModel:
             ),
             input_payload=context.to_json_dict(),
         )
+        raw = _normalize_legacy_narrative_decision(raw, context=context)
         # 单动作与 ActionPlan 步骤共享同一持久结果字段约束；普通 narrative_only
         # Fake 输出由辅助函数按兼容规则放行，持久动作则必须显式声明。
         try:
@@ -527,6 +528,53 @@ class PromptHostTurnDecisionModel:
                 "主持模型返回了无法解读的结果，本次动作未生效，请重试",
                 retryable=True,
             ) from exc
+
+
+def _normalize_legacy_narrative_decision(
+    raw: object,
+    *,
+    context: HostAgentContext,
+) -> object:
+    """将旧模型的纯叙事单动作安全归一化为当前裁决契约。
+
+    这里只兼容明确带 ``narrative``/``narrative_only`` 且不包含任何权威效果的输出；
+    持久状态、物品或位置变化仍必须由模型提供完整的新契约，避免绕过 #315 校验。
+    """
+
+    if not isinstance(raw, dict) or raw.get("kind") != "single_action":
+        return raw
+    adjudication = raw.get("adjudication")
+    if not isinstance(adjudication, dict):
+        return raw
+    legacy_marker = "narrative" in adjudication or "narrative_only" in adjudication
+    if not legacy_marker:
+        return raw
+    if (
+        adjudication.get("rule_decision") is not None
+        or adjudication.get("persistence_intent") not in (None, "none")
+        or adjudication.get("success_effects")
+        or adjudication.get("failure_effects")
+    ):
+        return raw
+
+    summary = adjudication.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        summary = context.player_input.utterance
+    return {
+        "kind": "single_action",
+        "adjudication": {
+            "request_id": "application-owned",
+            "source_revision": context.player_view.revision,
+            "actor_id": context.player_input.actor_id,
+            "summary": summary,
+            "target": {"kind": "location", "id": context.player_view.scene.id},
+            "method": {"family": "action", "description": summary},
+            "persistence_intent": "none",
+            "check": {"mode": "none", "candidates": []},
+            "success_effects": [{"type": "narrative_only"}],
+            "failure_effects": [],
+        },
+    }
 
 
 class PromptActionPlanStepAdjudicator:
