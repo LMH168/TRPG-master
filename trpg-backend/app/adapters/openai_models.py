@@ -10,6 +10,7 @@ import structlog
 from collaboration_framework.contracts import (
     ActionAdjudication,
     ActionPlanPolicy,
+    ContractError,
     HostTurnDecision,
     Intent,
     JsonObject,
@@ -509,8 +510,23 @@ class PromptHostTurnDecisionModel:
         )
         # 单动作与 ActionPlan 步骤共享同一持久结果字段约束；普通 narrative_only
         # Fake 输出由辅助函数按兼容规则放行，持久动作则必须显式声明。
-        _require_explicit_persistence_intent(raw)
-        return HostTurnDecisionParser.parse(raw, policy=self._policy)
+        try:
+            _require_explicit_persistence_intent(raw)
+            return HostTurnDecisionParser.parse(raw, policy=self._policy)
+        except TurnExecutionError:
+            raise
+        except ContractError as exc:
+            # 模型已返回 JSON，但结构不符合主持决策契约；这是模型输出故障，
+            # 不能归咎于玩家输入，也不应以不可重试的 TURN_CONTRACT_INVALID 结束。
+            logger.warning(
+                "host_turn_decision_validation_failed",
+                validation_reason=str(exc)[:512],
+            )
+            raise TurnExecutionError(
+                "MODEL_OUTPUT_UNREADABLE",
+                "主持模型返回了无法解读的结果，本次动作未生效，请重试",
+                retryable=True,
+            ) from exc
 
 
 class PromptActionPlanStepAdjudicator:
