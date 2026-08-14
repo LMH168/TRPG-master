@@ -14,6 +14,7 @@ from app.adapters.qwen_models import QwenChatCompletionsJsonClient
 from app.adapters.sqlalchemy_action_plan_store import SqlAlchemyActionPlanRunStore
 from app.adapters.sqlalchemy_engine_store import SqlAlchemyEngineStore
 from app.adapters.sqlalchemy_recent_history import SqlAlchemyRecentHistorySource
+from app.adapters.sqlalchemy_turn_store import SqlAlchemyTurnStore
 
 __all__ = [
     "OpenAIResponsesJsonClient",
@@ -28,4 +29,5 @@ __all__ = [
     "SqlAlchemyEngineStore",
     "SqlAlchemyActionPlanRunStore",
     "SqlAlchemyRecentHistorySource",
+    "SqlAlchemyTurnStore",
 ]

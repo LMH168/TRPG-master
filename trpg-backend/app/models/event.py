@@ -61,6 +61,10 @@ class Event(Base):
     room_id: Mapped[str] = mapped_column(
         Uuid(as_uuid=False), ForeignKey("rooms.id"), nullable=False
     )
+    # 回放旧数据不伪造身份；v2 最终叙事事件必须关联真实 Turn。
+    turn_id: Mapped[str | None] = mapped_column(
+        Uuid(as_uuid=False), ForeignKey("turn_records.turn_id"), nullable=True, index=True
+    )
     player_id: Mapped[str | None] = mapped_column(
         Uuid(as_uuid=False), ForeignKey("players.id"), nullable=True
     )

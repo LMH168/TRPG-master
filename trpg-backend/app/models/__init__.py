@@ -34,6 +34,12 @@ from app.models.engine import (
 from app.models.event import CheckResult, Event
 from app.models.replay import ModuleImportJob, RoomSummary
 from app.models.room import Character, CharacterPortrait, Note, Player, Room
+from app.models.turn import (
+    NarrationOutboxRecord,
+    RoomTurnReservation,
+    TurnCommitReceiptRecord,
+    TurnRecordModel,
+)
 from app.models.user import User, UserCharacterTemplate, UserSession
 
 __all__ = [
@@ -63,15 +69,19 @@ __all__ = [
     "ModuleWinCondition",
     "ModuleVersion",
     "Note",
+    "NarrationOutboxRecord",
     "Player",
     "PendingCheckDecisionRecord",
     "Room",
     "RoomActionReservation",
+    "RoomTurnReservation",
     "RoomSummary",
     "Scenario",
     "ScenarioScene",
     "User",
     "UserCharacterTemplate",
     "UserSession",
+    "TurnCommitReceiptRecord",
+    "TurnRecordModel",
     "World",
 ]
