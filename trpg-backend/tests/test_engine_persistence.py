@@ -82,7 +82,7 @@ def test_engine_tables_and_constraints_are_registered() -> None:
     assert "ck_game_events_visibility" in _constraint_names("game_events", CheckConstraint)
     assert {
         tuple(index.columns.keys()) for index in Base.metadata.tables["game_events"].indexes
-    } == {("room_id", "client_action_id")}
+    } == {("room_id", "client_action_id"), ("turn_id",)}
 
     assert "uq_characters_room_player" in _constraint_names("characters", UniqueConstraint)
     assert "ck_characters_version_positive" in _constraint_names("characters", CheckConstraint)

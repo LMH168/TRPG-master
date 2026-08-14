@@ -47,6 +47,7 @@ from app.dto import (
     portrait,
     replay,
     room,
+    turn,
     ws,
 )
 
@@ -86,6 +87,9 @@ _MODELS: list[type[BaseModel]] = [
     room.ModuleRead,
     room.RoomPreview,
     room.MyRoomSummary,
+    # 可靠回合查询与断线恢复（issue #6）
+    turn.TurnErrorRead,
+    turn.TurnRead,
     # character（issue #59 + issue #77 卡库）
     character.EquipmentItem,
     character.CharacterUpdateBody,

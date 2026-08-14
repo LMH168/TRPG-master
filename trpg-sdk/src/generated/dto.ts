@@ -558,7 +558,9 @@ export type ErrorCode =
   | "ITEM_VERSION_CONFLICT"
   | "ITEM_ALREADY_TAKEN"
   | "ENDING_UNAVAILABLE"
-  | "ENDING_DRAFT_STALE";
+  | "ENDING_DRAFT_STALE"
+  | "TURN_NOT_FOUND"
+  | "TURN_RESUME_UNAVAILABLE";
 
 /**
  * 错误信息的具体内容，只在 success=false 时出现在 error 字段里。
@@ -1476,6 +1478,28 @@ export interface TurnBeginPayload {
   playerId: string;
 }
 
+/**
+ * 玩家目标进入 Engine 权威提交边界的程度。
+ */
+export type TurnCommitState = "not_committed" | "partially_committed" | "committed";
+
+/**
+ * 可以安全显示给当前玩家的脱敏错误。
+ */
+export interface TurnErrorRead {
+  code: string;
+  stage: TurnErrorStage;
+  retryable: boolean;
+  publicMessage: string;
+  occurredAt: string;
+}
+
+/**
+ * 错误发生的稳定阶段；不得把内部函数名暴露给客户端。
+ */
+export type TurnErrorStage =
+  "receive" | "planning" | "validation" | "adjudication" | "execution" | "narration" | "delivery" | "recovery";
+
 export interface TurnFailedPayload {
   correlationId: string;
   code: string;
@@ -1494,9 +1518,70 @@ export interface TurnPhaseChangedPayload {
     | "generating_narration";
 }
 
+/**
+ * 刷新、重连和重复请求时的最终恢复来源。
+ */
+export interface TurnRead {
+  turnId: string;
+  roomId: string;
+  clientActionId: string;
+  status: TurnStatus;
+  commitState: TurnCommitState;
+  resumePoint: TurnResumePoint;
+  waitingReason: TurnWaitingReason;
+  recoveryAction: TurnRecoveryAction;
+  phaseVersion: number;
+  error?: TurnErrorRead | null;
+  pendingDecision?: {
+    [k: string]: unknown;
+  } | null;
+  narration?: {
+    [k: string]: unknown;
+  } | null;
+  messageId?: string | null;
+  playerView?: {
+    [k: string]: unknown;
+  } | null;
+  viewRevision?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string | null;
+}
+
+/**
+ * 客户端根据持久状态可以安全执行的下一步。
+ */
+export type TurnRecoveryAction =
+  "wait" | "retry_same_input" | "choose_skill" | "choose_post_roll" | "fetch_result" | "submit_new_input" | "none";
+
+/**
+ * 服务重建或玩家重试时唯一允许继续的位置。
+ */
+export type TurnResumePoint =
+  "planning" | "adjudicating" | "executing" | "narrating" | "delivering" | "awaiting_player" | "none";
+
 export interface TurnStartedPayload {
   correlationId: string;
 }
+
+/**
+ * 一次玩家输入在回合协调器中的持久化阶段。
+ */
+export type TurnStatus =
+  | "received"
+  | "planning"
+  | "adjudicating"
+  | "executing"
+  | "awaiting_narration"
+  | "delivering"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+/**
+ * 回合暂停等待玩家输入的公开原因。
+ */
+export type TurnWaitingReason = "skill_choice" | "post_roll_decision" | "none";
 
 /**
  * PATCH /api/v1/auth/me 请求体

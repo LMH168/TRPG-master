@@ -20,6 +20,7 @@ from app.adapters import (
     SqlAlchemyActionPlanRunStore,
     SqlAlchemyEngineStore,
     SqlAlchemyRecentHistorySource,
+    SqlAlchemyTurnStore,
 )
 from app.controller import ws as ws_controller
 from app.core.action_plan_turn import build_action_plan_turn_application
@@ -134,6 +135,13 @@ def action_plan_store_factory() -> Callable[[], SqlAlchemyActionPlanRunStore]:
     """构造使用测试数据库的独立 ActionPlan Store。"""
 
     return lambda: SqlAlchemyActionPlanRunStore(TestSessionLocal)
+
+
+@pytest.fixture
+def turn_store_factory() -> Callable[[], SqlAlchemyTurnStore]:
+    """构造使用测试数据库的可靠回合 Store。"""
+
+    return lambda: SqlAlchemyTurnStore(TestSessionLocal)
 
 
 @pytest.fixture

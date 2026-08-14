@@ -132,6 +132,10 @@ class GameEvent(Base):
     room_id: Mapped[str] = mapped_column(
         Uuid(as_uuid=False), ForeignKey("game_sessions.room_id"), nullable=False
     )
+    # 历史事件保持 NULL；可靠回合路径产生的新事件必须由 Engine 写入真实 turn_id。
+    turn_id: Mapped[str | None] = mapped_column(
+        Uuid(as_uuid=False), ForeignKey("turn_records.turn_id"), nullable=True, index=True
+    )
     sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
     event_id: Mapped[str] = mapped_column(String(100), nullable=False)
     client_action_id: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -361,6 +365,10 @@ class ActionPlanRunRecord(Base):
 
     room_id: Mapped[str] = mapped_column(
         Uuid(as_uuid=False), ForeignKey("game_sessions.room_id"), nullable=False
+    )
+    # ActionPlan 仍只负责步骤游标，turn_id 仅把步骤归属到统一回合。
+    turn_id: Mapped[str | None] = mapped_column(
+        Uuid(as_uuid=False), ForeignKey("turn_records.turn_id"), nullable=True, index=True
     )
     parent_action_id: Mapped[str] = mapped_column(String(200), nullable=False)
     plan_id: Mapped[str] = mapped_column(String(100), nullable=False)
