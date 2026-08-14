@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "id": "fault.narrator-before",
+  "category": "fault-recovery",
+  "description": "Narrator 失败时只重试叙事，不重新执行 Engine。",
+  "turns": [{"client_action_id": "fault-narrator", "utterance": "观察房间"}],
+  "faults": [{"point": "narrator", "timing": "before", "occurrence": 1}],
+  "expectation": {"terminal_statuses": ["completed"]}
+}

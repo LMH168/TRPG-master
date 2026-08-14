@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "conversation.follow-up",
+  "category": "conversation",
+  "description": "普通对话后的连续追问保持同一场景上下文。",
+  "initial_state": {
+    "module": "paper-chase",
+    "aliases": {
+      "@player": "player",
+      "@caretaker": "thomas"
+    }
+  },
+  "turns": [
+    {
+      "client_action_id": "baseline-conversation-1",
+      "utterance": "询问守墓人最近有没有异常",
+      "host_output": {
+        "target": {"kind": "entity", "id": "@caretaker"},
+        "method": {"family": "talk", "description": "与守墓人交谈"},
+        "persistence_intent": "none",
+        "success_effects": [{"type": "narrative_only"}]
+      }
+    },
+    {
+      "client_action_id": "baseline-conversation-2",
+      "utterance": "继续追问他昨晚听见了什么",
+      "host_output": {
+        "target": {"kind": "entity", "id": "@caretaker"},
+        "method": {"family": "talk", "description": "继续追问守墓人"},
+        "persistence_intent": "none",
+        "success_effects": [{"type": "narrative_only"}]
+      }
+    }
+  ],
+  "expectation": {
+    "terminal_statuses": ["completed"],
+    "forbidden_event_types": ["turn.failed"]
+  }
+}

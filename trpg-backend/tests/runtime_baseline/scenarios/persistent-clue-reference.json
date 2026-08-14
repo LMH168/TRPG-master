@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "id": "persistent.clue-reference",
+  "category": "persistent-state",
+  "description": "发现线索后，后续输入仍能从权威状态引用该线索。",
+  "initial_state": {
+    "module": "paper-chase",
+    "aliases": {"@clue": "cemetery_dance_report"}
+  },
+  "turns": [
+    {
+      "client_action_id": "baseline-reveal-clue",
+      "utterance": "确认旧报中关于墓地舞蹈的报道",
+      "host_output": {
+        "target": {"kind": "information", "id": "@clue"},
+        "method": {"family": "investigate", "description": "阅读旧报"},
+        "persistence_intent": "none",
+        "success_effects": [
+          {"type": "reveal_information", "information_id": "@clue", "scope": "party"}
+        ]
+      }
+    },
+    {
+      "client_action_id": "baseline-reference-clue",
+      "utterance": "回想刚才发现的墓地舞蹈报道",
+      "host_output": {
+        "target": {"kind": "information", "id": "@clue"},
+        "method": {"family": "recall", "description": "引用已发现线索"},
+        "persistence_intent": "none",
+        "success_effects": [{"type": "narrative_only"}]
+      }
+    }
+  ],
+  "expectation": {
+    "terminal_statuses": ["completed"],
+    "required_state": {
+      "discovered_facts": ["cemetery_dance_report"]
+    }
+  }
+}
