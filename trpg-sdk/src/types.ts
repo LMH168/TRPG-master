@@ -34,6 +34,9 @@ export type {
   JoinRoomBody as JoinRoomInput,
   RoomPlayerRead as RoomPlayerSummary,
   RoomPreview,
+  // 可靠回合查询契约（issue #6）；资源方法在客户端切换 PR 中接入。
+  TurnErrorRead,
+  TurnRead,
   // 角色建卡（Character）模块 —— 对应后端 dto/character.py
   EquipmentItem as CharacterEquipmentItem,
   CharacterUpdateBody as UpdateCharacterInput,
