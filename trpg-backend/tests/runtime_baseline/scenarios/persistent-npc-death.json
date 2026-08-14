@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "id": "persistent.npc-death",
+  "category": "persistent-state",
+  "description": "NPC 死亡必须成为权威状态，后续回合不能恢复存活。",
+  "initial_state": {
+    "module": "paper-chase",
+    "aliases": {"@npc": "melodias"},
+    "state": {"scene_id": "cemetery"}
+  },
+  "turns": [
+    {
+      "client_action_id": "baseline-kill-npc",
+      "utterance": "在冲突中杀死梅洛迪亚斯",
+      "host_output": {
+        "target": {"kind": "entity", "id": "@npc"},
+        "method": {"family": "kill", "description": "致命攻击"},
+        "persistence_intent": "character_state",
+        "success_effects": [
+          {
+            "type": "change_entity_state",
+            "entity_id": "@npc",
+            "key": "consciousness",
+            "value": "dead"
+          }
+        ]
+      }
+    },
+    {
+      "client_action_id": "baseline-observe-dead-npc",
+      "utterance": "确认梅洛迪亚斯的状态",
+      "host_output": {
+        "target": {"kind": "entity", "id": "@npc"},
+        "method": {"family": "observe", "description": "观察 NPC 状态"},
+        "persistence_intent": "none",
+        "success_effects": [{"type": "narrative_only"}]
+      }
+    }
+  ],
+  "expectation": {
+    "terminal_statuses": ["completed"],
+    "required_state": {"entity.melodias.consciousness": "dead"}
+  }
+}

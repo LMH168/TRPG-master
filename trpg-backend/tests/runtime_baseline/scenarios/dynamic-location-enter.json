@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "id": "dynamic.location-enter",
+  "category": "dynamic-content",
+  "description": "普通动态地点可以原子创建、进入并在后续回合继续引用。",
+  "initial_state": {
+    "module": "paper-chase",
+    "aliases": {"@inn": "runtime-town-inn"}
+  },
+  "turns": [
+    {
+      "client_action_id": "baseline-enter-inn",
+      "utterance": "前往镇上一间普通旅馆",
+      "host_output": {
+        "target": {"kind": "location", "id": "@scene"},
+        "method": {"family": "travel", "description": "前往普通旅馆"},
+        "persistence_intent": "location",
+        "success_effects": [
+          {
+            "type": "ensure_runtime_location",
+            "location_id": "@inn",
+            "name": "镇上旅馆",
+            "connected_location_id": "@scene"
+          },
+          {"type": "enter_location", "location_id": "@inn"}
+        ]
+      }
+    },
+    {
+      "client_action_id": "baseline-observe-inn",
+      "utterance": "观察这间旅馆的大堂",
+      "host_output": {
+        "target": {"kind": "location", "id": "@inn"},
+        "method": {"family": "observe", "description": "观察旅馆"},
+        "persistence_intent": "none",
+        "success_effects": [{"type": "narrative_only"}]
+      }
+    }
+  ],
+  "expectation": {
+    "terminal_statuses": ["completed"],
+    "required_state": {
+      "scene_id": "runtime-town-inn",
+      "runtime_location.runtime-town-inn.name": "镇上旅馆"
+    },
+    "known_gaps": ["dynamic_location_create_does_not_enter_target"],
+    "known_gap_assertions": ["required_state:scene_id"]
+  }
+}

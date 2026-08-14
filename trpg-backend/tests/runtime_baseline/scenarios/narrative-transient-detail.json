@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "narrative.transient-detail",
+  "category": "narrative-texture",
+  "description": "玩家与瞬态叙事细节交互时，不得凭空产生持久物品声明。",
+  "initial_state": {"module": "paper-chase"},
+  "turns": [
+    {
+      "client_action_id": "baseline-transient-detail",
+      "utterance": "仔细听窗外短暂传来的脚步声",
+      "host_output": {
+        "target": {"kind": "location", "id": "@scene"},
+        "method": {"family": "listen", "description": "聆听环境声音"},
+        "persistence_intent": "none",
+        "success_effects": [{"type": "narrative_only"}]
+      }
+    }
+  ],
+  "expectation": {
+    "terminal_statuses": ["completed"],
+    "forbidden_narration_claims": ["item:phantom-key"]
+  }
+}

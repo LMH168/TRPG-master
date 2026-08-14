@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "rules.search-luck",
+  "category": "rules",
+  "description": "搜索检定失败后使用幸运修正，并以已提交检定结果完成回合。",
+  "initial_state": {
+    "module": "paper-chase",
+    "aliases": {"@archive": "newspaper_archive"}
+  },
+  "turns": [
+    {
+      "client_action_id": "baseline-search-luck",
+      "utterance": "仔细检索旧报档案",
+      "host_output": {
+        "target": {"kind": "entity", "id": "@archive"},
+        "method": {"family": "investigate", "description": "检索旧报"},
+        "persistence_intent": "none",
+        "check": {
+          "mode": "required",
+          "candidates": [
+            {
+              "candidate_id": "library-use",
+              "skill_id": "library-use",
+              "difficulty": "regular",
+              "method_summary": "检索旧报档案",
+              "player_safe_reason": "需要从大量报刊中定位相关记录"
+            }
+          ]
+        },
+        "success_effects": [{"type": "narrative_only"}],
+        "failure_effects": [{"type": "narrative_only"}]
+      }
+    }
+  ],
+  "expectation": {
+    "terminal_statuses": ["completed"],
+    "forbidden_event_types": ["turn.failed"]
+  }
+}

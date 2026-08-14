@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "idempotency.action-retry",
+  "category": "idempotency",
+  "description": "同一 client_action_id 重试时不得重复写入权威状态。",
+  "initial_state": {"module": "paper-chase"},
+  "turns": [
+    {
+      "client_action_id": "baseline-idempotent-action",
+      "utterance": "推开房门进入街道",
+      "repeat": 2,
+      "host_output": {
+        "target": {"kind": "location", "id": "arnoldsburg_streets"},
+        "method": {"family": "travel", "description": "进入街道"},
+        "persistence_intent": "location",
+        "success_effects": [
+          {"type": "enter_location", "location_id": "arnoldsburg_streets"}
+        ]
+      }
+    }
+  ],
+  "expectation": {
+    "terminal_statuses": ["completed"],
+    "required_state": {"scene_id": "arnoldsburg_streets"}
+  }
+}

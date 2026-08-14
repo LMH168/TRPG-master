@@ -50,13 +50,18 @@ class BaselineRunner:
             await adapter.close()
 
         failures = self._validate(scenario, results)
+        hard_failures = tuple(
+            message
+            for code, message in failures
+            if code not in scenario.expectation.known_gap_assertions
+        )
         known_gaps = tuple(sorted(set(scenario.expectation.known_gaps)))
         return BaselineResult(
             scenario_id=scenario.id,
             category=scenario.category,
-            passed=not failures,
+            passed=not hard_failures,
             turns=tuple(results),
-            hard_failures=tuple(failures),
+            hard_failures=hard_failures,
             known_gaps=known_gaps,
         )
 
@@ -64,41 +69,64 @@ class BaselineRunner:
     def _validate(
         scenario: BaselineScenario,
         results: Sequence[BaselineTurnResult],
-    ) -> list[str]:
+    ) -> list[tuple[str, str]]:
         """校验终态、事件、状态和叙事证据，不比较自然语言全文。"""
 
         expectation = scenario.expectation
-        failures: list[str] = []
+        failures: list[tuple[str, str]] = []
         for result in results:
             if result.status not in expectation.terminal_statuses:
-                failures.append(f"{result.client_action_id}: 非预期终态 {result.status}")
+                failures.append(
+                    (
+                        "terminal_status",
+                        f"{result.client_action_id}: 非预期终态 {result.status}",
+                    )
+                )
             missing_events = set(expectation.required_event_types) - set(result.event_types)
             if missing_events:
-                failures.append(f"{result.client_action_id}: 缺少事件 {sorted(missing_events)!r}")
+                failures.append(
+                    (
+                        "required_events",
+                        f"{result.client_action_id}: 缺少事件 {sorted(missing_events)!r}",
+                    )
+                )
             forbidden_events = set(expectation.forbidden_event_types) & set(result.event_types)
             if forbidden_events:
                 failures.append(
-                    f"{result.client_action_id}: 出现禁止事件 {sorted(forbidden_events)!r}"
+                    (
+                        "forbidden_events",
+                        f"{result.client_action_id}: 出现禁止事件 {sorted(forbidden_events)!r}",
+                    )
                 )
             for key, expected in expectation.required_state.items():
                 if result.state.get(key) != expected:
                     failures.append(
-                        f"{result.client_action_id}: 状态 {key!r}="
-                        f"{result.state.get(key)!r}，预期 {expected!r}"
+                        (
+                            f"required_state:{key}",
+                            f"{result.client_action_id}: 状态 {key!r}="
+                            f"{result.state.get(key)!r}，预期 {expected!r}",
+                        )
                     )
             missing_evidence = set(expectation.required_narration_evidence) - set(
                 result.narration_evidence
             )
             if missing_evidence:
                 failures.append(
-                    f"{result.client_action_id}: 叙事缺少证据 {sorted(missing_evidence)!r}"
+                    (
+                        "required_narration_evidence",
+                        f"{result.client_action_id}: 叙事缺少证据 {sorted(missing_evidence)!r}",
+                    )
                 )
             forbidden_claims = set(expectation.forbidden_narration_claims) & set(
                 result.narration_claims
             )
             if forbidden_claims:
                 failures.append(
-                    f"{result.client_action_id}: 叙事包含无依据声明 {sorted(forbidden_claims)!r}"
+                    (
+                        "forbidden_narration_claims",
+                        f"{result.client_action_id}: 叙事包含无依据声明 "
+                        f"{sorted(forbidden_claims)!r}",
+                    )
                 )
         return failures
 

@@ -52,6 +52,7 @@ class BaselineExpectation(StrictModel):
     required_narration_evidence: tuple[str, ...] = ()
     forbidden_narration_claims: tuple[str, ...] = ()
     known_gaps: tuple[str, ...] = ()
+    known_gap_assertions: tuple[str, ...] = ()
 
 
 class BaselineScenario(StrictModel):
