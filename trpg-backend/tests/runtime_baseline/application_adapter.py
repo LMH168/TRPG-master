@@ -151,9 +151,26 @@ class InMemoryRuntimeAdapter:
             self._store,
             dice=DiceRoller(SequenceDiceSource([64, 24, 10, 42])),
         )
+        self._compose_application(engine)
+        aliases = {
+            "@player": self.actor_id,
+            "@scene": state.scene_id,
+            "@world": content.world_ref,
+            **scenario.initial_state.aliases,
+        }
+        self._install_scripted_models(scenario, aliases)
+        self._scenario = scenario
+        return aliases
+
+    def _compose_application(self, engine: RuleEngineService | None = None) -> None:
+        """使用当前 Store 重建应用对象，供进程边界恢复场景复用。"""
+
+        if self._store is None or self._adjudication_engine is None:
+            raise RuntimeError("adapter 尚未 prepare")
+        resolved_engine = engine or RuleEngineService(self._store)
         self._application = build_action_plan_turn_application(
             store=self._store,
-            engine=engine,
+            engine=resolved_engine,
             adjudication_engine=self._adjudication_engine,
             settings=Settings(
                 host_model_provider="fake",
@@ -161,11 +178,16 @@ class InMemoryRuntimeAdapter:
                 recent_history_enabled=False,
             ),
         )
-        aliases = {
-            "@player": self.actor_id,
-            "@scene": state.scene_id,
-            **scenario.initial_state.aliases,
-        }
+
+    def _install_scripted_models(
+        self,
+        scenario: BaselineScenario,
+        aliases: Mapping[str, str],
+    ) -> None:
+        """在重建后的 Application 上恢复同一组确定性 Host/Narrator。"""
+
+        if self._application is None:
+            raise RuntimeError("application 尚未创建")
         self._planner.aliases = aliases
         self._planner.outputs = {
             turn.client_action_id: turn.host_output or {} for turn in scenario.turns
@@ -177,8 +199,15 @@ class InMemoryRuntimeAdapter:
         }
         self._application._planner = self._planner
         self._application._narrator = ActionPlanNarrator(self._narration_model)
-        self._scenario = scenario
-        return aliases
+
+    def rebuild_application(self) -> None:
+        """模拟进程重启后的依赖重组，同时保留已提交的权威 Store。"""
+
+        if self._scenario is None:
+            raise RuntimeError("adapter 尚未 prepare")
+        aliases = self._planner.aliases
+        self._compose_application()
+        self._install_scripted_models(self._scenario, aliases)
 
     async def execute_turn(
         self,

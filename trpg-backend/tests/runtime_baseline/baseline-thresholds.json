@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "minimum_success_rate": 1.0,
+  "maximums": {
+    "turns_without_terminal_status": 0,
+    "duplicate_rolls": 0,
+    "duplicate_events": 0,
+    "duplicate_state_changes": 0,
+    "state_narration_mismatches": 0,
+    "unknown_commit_state": 0,
+    "known_gaps": 2
+  },
+  "errors_by_phase": {
+    "host": 1,
+    "validator": 1,
+    "engine": 2,
+    "narrator": 1,
+    "websocket": 1,
+    "process": 1
+  }
+}

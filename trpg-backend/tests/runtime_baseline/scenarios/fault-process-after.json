@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "id": "fault.process-after",
+  "category": "fault-recovery",
+  "description": "Engine 提交后进程退出，重建应用后按同一动作 ID 恢复。",
+  "turns": [{"client_action_id": "fault-process", "utterance": "观察房间"}],
+  "faults": [{"point": "process", "timing": "after", "occurrence": 1}],
+  "expectation": {"terminal_statuses": ["completed"]}
+}
