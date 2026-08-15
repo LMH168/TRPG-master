@@ -34,6 +34,7 @@ from collaboration_framework.contracts import (
     SceneSpec,
     SelectCheckChoice,
     SingleActionDecision,
+    SingleActionProposal,
     SkillCheckCandidate,
     SubmitAdjudicationRequest,
     ValidationResult,
@@ -1475,6 +1476,55 @@ def test_plan_run_repair_fields_round_trip_and_old_json_uses_defaults() -> None:
     assert all(step.repair_baseline is None for step in restored.steps)
     assert all(step.repair_feedback is None for step in restored.steps)
     assert ActionPlanRun.model_validate_json(restored.model_dump_json()) == restored
+
+
+def test_plan_run_reader_distinguishes_v1_from_proposal_v2() -> None:
+    """旧 JSON 不得靠可空默认值伪装成已迁移 Proposal 协议。"""
+
+    original = player_input("plan-schema-v2-parent")
+    created_at = datetime.now(UTC)
+    plan_value = plan(2)
+    proposal = SingleActionProposal(
+        semantic_goal=plan_value.steps[0].semantic_goal,
+        semantic_focus={"kind": "world", "id": "world"},
+        method_family="open_action",
+        method_description="执行当前步骤",
+        check_proposal={"mode": "none", "candidates": ()},
+        success_effect_proposals=({"type": "narrative_only"},),
+    )
+    run = ActionPlanRun(
+        plan_id="plan-schema-v2",
+        parent_action_id=original.client_action_id,
+        parent_input_fingerprint=("0" * 64),
+        parent_utterance=original.utterance,
+        room_id=original.room_id,
+        player_id=original.player_id,
+        actor_id=original.actor_id,
+        created_revision="0",
+        plan_schema_version=2,
+        policy_snapshot=ActionPlanPolicy(),
+        plan=plan_value,
+        steps=tuple(
+            ActionPlanStepRun(
+                step_id=f"step-{index}",
+                step_request_id=f"request-{index}",
+                step=step,
+                proposal=proposal if index == 0 else None,
+            )
+            for index, step in enumerate(plan_value.steps)
+        ),
+        created_at=created_at,
+        updated_at=created_at,
+    )
+
+    restored = ActionPlanRun.from_persistence_json_dict(run.to_persistence_json_dict())
+    assert restored.plan_schema_version == 2
+    assert restored.steps[0].proposal == proposal
+
+    forged_v1 = run.to_persistence_json_dict()
+    forged_v1["plan_schema_version"] = 1
+    with pytest.raises(ValueError, match="v1 不得包含 Proposal"):
+        ActionPlanRun.from_persistence_json_dict(forged_v1)
 
 
 def test_legacy_plan_run_restores_default_persistence_intent_as_omitted() -> None:

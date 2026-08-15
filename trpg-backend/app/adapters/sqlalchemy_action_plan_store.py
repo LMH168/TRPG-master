@@ -280,7 +280,7 @@ class SqlAlchemyActionPlanRunStore(ActionPlanRunStore):
 
     @staticmethod
     def _run_from_record(record: ActionPlanRunRecord) -> ActionPlanRun:
-        if record.plan_schema_version != 1:
+        if record.plan_schema_version not in {1, 2}:
             raise ActionPlanConflictError(
                 "PLAN_SCHEMA_UNSUPPORTED",
                 "不支持的 ActionPlanRun schema version",

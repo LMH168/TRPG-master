@@ -42,7 +42,11 @@ from .persistent_results import (
     validate_persistent_effects,
 )
 from .ports import EngineStore, EngineTransaction, RevisionConflictError
-from .proposal_compiler import ProposalCompiler
+from .proposal_compiler import (
+    ProposalCompiler,
+    ProposalShadowComparison,
+    ProposalShadowCompiler,
+)
 from .service import RuleEngineService
 
 __all__ = [
@@ -67,6 +71,8 @@ __all__ = [
     "InMemoryEngineStore",
     "PendingCheckDecision",
     "ProposalCompiler",
+    "ProposalShadowComparison",
+    "ProposalShadowCompiler",
     "RuleAgenda",
     "RevisionConflictError",
     "RuntimeCapabilityIssue",

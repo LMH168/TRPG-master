@@ -196,7 +196,9 @@ class ActionPlanProposalStep(ContractModel):
     """计划阶段只冻结玩家安全语义，不提前生成未来步骤的 Effect。"""
 
     semantic_goal: str = Field(min_length=1, max_length=1000)
-    public_progress_label: str | None = Field(default=None, min_length=1, max_length=200)
+    public_progress_label: str | None = Field(
+        default=None, min_length=1, max_length=200
+    )
 
 
 class ActionPlanProposal(ContractModel):

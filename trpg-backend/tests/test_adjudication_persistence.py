@@ -7,8 +7,10 @@ from collaboration_framework.contracts import (
     CheckDecisionRequest,
     RequiredAdjudicationCheck,
     SelectCheckChoice,
+    SingleActionProposal,
     SkillCheckCandidate,
     SubmitAdjudicationRequest,
+    SubmitProposalRequest,
 )
 from collaboration_framework.engine import (
     AdjudicationEngineService,
@@ -122,6 +124,128 @@ async def test_pending_check_and_authoritative_roll_survive_service_rebuild(
         for command in commands
     )
     assert [event.type for event in events] == ["check.choice_requested", "check.rolled"]
+
+
+async def test_proposal_command_uses_explicit_v2_persistence_reader(
+    db_session: AsyncSession,
+    engine_store_factory: Callable[..., SqlAlchemyEngineStore],
+) -> None:
+    """v2 请求保存内部命令快照，重建 Store 后仍按原 Proposal 幂等恢复。"""
+
+    room, players, _ = await _start_room(db_session, prepare_checkpoint=False)
+    store = engine_store_factory()
+    async with store.transaction(room.id) as transaction:
+        runtime = await transaction.load_runtime()
+    actor_id = next(
+        actor_id
+        for actor_id, actor in runtime.game_state.actors.items()
+        if actor.player_id == players[0].id
+    )
+    information_id = sorted(runtime.canon_information_ids)[0]
+    request = SubmitProposalRequest(
+        request_id="proposal-persistence-10",
+        room_id=room.id,
+        player_id=players[0].id,
+        actor_id=actor_id,
+        source_revision=runtime.revision,
+        proposal=SingleActionProposal(
+            semantic_goal="回顾已经看见的材料",
+            semantic_focus={"kind": "information", "id": information_id},
+            method_family="reflect",
+            method_description="整理当前已知内容",
+            check_proposal={"mode": "none", "candidates": ()},
+            success_effect_proposals=({"type": "narrative_only"},),
+        ),
+    )
+
+    first = await AdjudicationEngineService(store).submit_proposal(request)
+    replay = await AdjudicationEngineService(engine_store_factory()).submit_proposal(request)
+
+    assert replay.event_refs == first.event_refs
+    record = (
+        await db_session.scalars(
+            select(AdjudicationCommandExecution).where(
+                AdjudicationCommandExecution.request_id == request.request_id
+            )
+        )
+    ).one()
+    assert record.request_schema_version == 2
+    assert record.result_schema_version == 4
+    assert record.result_json["validated_command"]["request"]["proposal"]["kind"] == "single_action"
+
+
+async def test_proposal_check_snapshots_use_v2_and_v3_readers(
+    db_session: AsyncSession,
+    engine_store_factory: Callable[..., SqlAlchemyEngineStore],
+) -> None:
+    """跨玩家选择的 Proposal 必须冻结同一内部命令，不能恢复成 legacy 猜测。"""
+
+    room, players, _ = await _start_room(db_session, prepare_checkpoint=False)
+    store = engine_store_factory()
+    async with store.transaction(room.id) as transaction:
+        runtime = await transaction.load_runtime()
+    actor_id = next(
+        actor_id
+        for actor_id, actor in runtime.game_state.actors.items()
+        if actor.player_id == players[0].id
+    )
+    information_id = sorted(runtime.canon_information_ids)[0]
+    submitted = await AdjudicationEngineService(store).submit_proposal(
+        SubmitProposalRequest(
+            request_id="proposal-check-10",
+            room_id=room.id,
+            player_id=players[0].id,
+            actor_id=actor_id,
+            source_revision=runtime.revision,
+            proposal=SingleActionProposal(
+                semantic_goal="检查材料",
+                semantic_focus={"kind": "information", "id": information_id},
+                method_family="research",
+                method_description="仔细检查",
+                check_proposal={
+                    "mode": "required",
+                    "candidates": (
+                        {
+                            "candidate_id": "spot-proposal",
+                            "skill_id": "spot-hidden",
+                            "difficulty": "regular",
+                            "method_summary": "观察材料",
+                            "player_safe_reason": "使用公开技能",
+                        },
+                    ),
+                },
+            ),
+        )
+    )
+    assert submitted.pending_decision is not None
+    await AdjudicationEngineService(
+        engine_store_factory(),
+        dice=DiceRoller(SequenceDiceSource([64])),
+    ).decide(
+        CheckDecisionRequest(
+            request_id="proposal-check-choice-10",
+            room_id=room.id,
+            player_id=players[0].id,
+            source_revision=submitted.view_revision,
+            decision_id=submitted.pending_decision.decision_id,
+            decision_version=submitted.pending_decision.decision_version,
+            choice=SelectCheckChoice(candidate_id="spot-proposal"),
+        )
+    )
+
+    decision = (
+        await db_session.scalars(
+            select(PendingCheckDecisionRecord).where(PendingCheckDecisionRecord.room_id == room.id)
+        )
+    ).one()
+    check = (
+        await db_session.scalars(select(CheckRunRecord).where(CheckRunRecord.room_id == room.id))
+    ).one()
+    assert decision.decision_schema_version == 2
+    assert check.check_schema_version == 3
+    snapshot = decision.decision_json["validated_command"]
+    assert snapshot["request"]["request_id"] == "proposal-check-10"
+    assert check.check_json["validated_command"] == snapshot
 
 
 async def test_checks_persisted_before_the_skill_name_field_still_load(

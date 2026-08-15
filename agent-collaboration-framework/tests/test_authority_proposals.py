@@ -41,7 +41,9 @@ def _dynamic_pickup_payload() -> dict[str, object]:
 
 
 def test_host_decision_union_accepts_ordered_dynamic_effects() -> None:
-    proposal = TypeAdapter(HostDecisionProposal).validate_python(_dynamic_pickup_payload())
+    proposal = TypeAdapter(HostDecisionProposal).validate_python(
+        _dynamic_pickup_payload()
+    )
 
     assert isinstance(proposal, SingleActionProposal)
     assert [effect.type for effect in proposal.success_effect_proposals] == [

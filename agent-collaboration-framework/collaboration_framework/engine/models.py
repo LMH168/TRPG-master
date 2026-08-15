@@ -247,6 +247,25 @@ class DomainEvent(ContractModel):
     payload: dict[str, JsonValue] = Field(default_factory=dict)
 
 
+class ValidatedActionCommand(ContractModel):
+    """仅在 Engine 权威边界内有效的已编译命令，不作为外部授权令牌。"""
+
+    schema_version: Literal[1] = 1
+    request: SubmitProposalRequest
+    proposal_fingerprint: str = Field(min_length=64, max_length=64)
+    adjudication: ActionAdjudication
+    validation: ValidationResult
+
+    def to_legacy_request(self) -> SubmitAdjudicationRequest:
+        """在 PR 1 兼容执行内核时生成内部旧请求，生产 Host 无法调用此转换。"""
+
+        return SubmitAdjudicationRequest(
+            room_id=self.request.room_id,
+            player_id=self.request.player_id,
+            adjudication=self.adjudication,
+        )
+
+
 class PendingCheckDecision(ContractModel):
     decision_id: str = Field(min_length=1)
     room_id: str = Field(min_length=1)
@@ -258,6 +277,7 @@ class PendingCheckDecision(ContractModel):
     status: Literal["awaiting_skill_choice", "rolled", "resolved", "cancelled"]
     adjudication: ActionAdjudication
     options: tuple[PendingCheckOption, ...] = Field(min_length=1)
+    validated_command: ValidatedActionCommand | None = None
 
     def player_view(self) -> PendingCheckDecisionView:
         if self.status != "awaiting_skill_choice":
@@ -298,10 +318,14 @@ class CheckRun(ContractModel):
     )
     luck_spent: int | None = Field(default=None, ge=1)
     adjudication: ActionAdjudication
+    validated_command: ValidatedActionCommand | None = None
 
 
 WorkflowRequest = (
-    SubmitAdjudicationRequest | CheckDecisionRequest | PostRollDecisionRequest
+    SubmitAdjudicationRequest
+    | SubmitProposalRequest
+    | CheckDecisionRequest
+    | PostRollDecisionRequest
 )
 
 
@@ -312,25 +336,7 @@ class CompletedAdjudicationCommand(ContractModel):
     validation: ValidationResult | None = None
     committed_authority_level: AuthorityLevel | None = None
     classification_coverage: ClassificationCoverage = "complete"
-
-
-class ValidatedActionCommand(ContractModel):
-    """仅在 Engine 权威边界内有效的已编译命令，不作为外部授权令牌。"""
-
-    schema_version: Literal[1] = 1
-    request: SubmitProposalRequest
-    proposal_fingerprint: str = Field(min_length=64, max_length=64)
-    adjudication: ActionAdjudication
-    validation: ValidationResult
-
-    def to_legacy_request(self) -> SubmitAdjudicationRequest:
-        """在 PR 1 兼容执行内核时生成内部旧请求，生产 Host 无法调用此转换。"""
-
-        return SubmitAdjudicationRequest(
-            room_id=self.request.room_id,
-            player_id=self.request.player_id,
-            adjudication=self.adjudication,
-        )
+    validated_command: ValidatedActionCommand | None = None
 
 
 class EngineExecutionResult(ContractModel):

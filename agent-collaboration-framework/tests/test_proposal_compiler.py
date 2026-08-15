@@ -17,6 +17,7 @@ from collaboration_framework.engine import (
     GameState,
     InMemoryEngineStore,
     ProposalCompiler,
+    ProposalShadowCompiler,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -136,6 +137,20 @@ def test_compiler_rejects_runtime_ref_used_before_declaration() -> None:
         ProposalCompiler().compile(_runtime(), request)
 
     assert raised.value.result.code == "RUNTIME_REF_UNDECLARED"
+
+
+def test_shadow_compiler_only_reports_structural_differences() -> None:
+    command = ProposalCompiler().compile(_runtime(), _submission())
+
+    comparison = ProposalShadowCompiler().compare(
+        _runtime(),
+        _submission(),
+        command.adjudication.model_copy(update={"summary": "旧链路摘要"}),
+    )
+
+    assert comparison.matches is False
+    assert comparison.differing_fields == ("summary",)
+    assert len(comparison.proposal_fingerprint) == 64
 
 
 @pytest.mark.asyncio

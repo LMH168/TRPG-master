@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import NoReturn
 
 from collaboration_framework.contracts import (
     ActionAdjudication,
@@ -58,6 +60,52 @@ _HOST_FORBIDDEN_EFFECTS = (
     SetEndingAvailabilityEffectProposal,
     CommitTerminalEndingEffectProposal,
 )
+
+
+@dataclass(frozen=True)
+class ProposalShadowComparison:
+    """纯比较结果；只含机器结论，不保存玩家原话、Prompt 或隐藏上下文。"""
+
+    matches: bool
+    proposal_fingerprint: str
+    differing_fields: tuple[str, ...]
+
+
+class ProposalShadowCompiler:
+    """并排比较新编译结果与 legacy 裁决，且不持有任何写端口。"""
+
+    def __init__(self, compiler: ProposalCompiler | None = None) -> None:
+        self._compiler = compiler or ProposalCompiler()
+
+    def compare(
+        self,
+        runtime: EngineRuntimeSnapshot,
+        request: SubmitProposalRequest,
+        legacy: ActionAdjudication,
+    ) -> ProposalShadowComparison:
+        """只执行确定性编译和字段比较，不调用 Engine、骰点或叙事设施。"""
+
+        compiled = self._compiler.compile(runtime, request)
+        candidate = compiled.adjudication
+        fields = (
+            "summary",
+            "target",
+            "method",
+            "check",
+            "rule_decision",
+            "success_effects",
+            "failure_effects",
+        )
+        differing = tuple(
+            field
+            for field in fields
+            if getattr(candidate, field) != getattr(legacy, field)
+        )
+        return ProposalShadowComparison(
+            matches=not differing,
+            proposal_fingerprint=compiled.proposal_fingerprint,
+            differing_fields=differing,
+        )
 
 
 class ProposalCompiler:
@@ -223,8 +271,16 @@ class ProposalCompiler:
         if isinstance(effect, SetVisibilityEffectProposal):
             target_id = self._resolve_ref(effect.target_ref, runtime_refs)
             target_kind = effect.target_ref.kind.removeprefix("runtime_")
+            if target_kind not in {"information", "entity", "location"}:
+                self._reject("TARGET_KIND_INVALID", "该对象不能设置可见性")
             return SetVisibilityEffect(
-                target_kind=target_kind,
+                target_kind=(
+                    "information"
+                    if target_kind == "information"
+                    else "entity"
+                    if target_kind == "entity"
+                    else "location"
+                ),
                 target_id=target_id,
                 visible=effect.visible,
                 scope="actor" if effect.scope == "self" else "party",
@@ -353,7 +409,7 @@ class ProposalCompiler:
         *,
         repairability: Repairability = "auto_repairable",
         fault: ValidationFault = "agent",
-    ) -> None:
+    ) -> NoReturn:
         raise AdjudicationValidationError(
             ValidationResult(
                 status="rejected",

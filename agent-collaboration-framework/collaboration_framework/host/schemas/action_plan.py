@@ -20,6 +20,7 @@ from collaboration_framework.contracts import (
     NarrationEvidence,
     PlayerInput,
     PlayerView,
+    SingleActionProposal,
     ValidationFeedback,
     WorldClockView,
 )
@@ -90,6 +91,7 @@ class ActionPlanStepRun(ContractModel):
     step: ActionPlanStep
     status: PlanStepStatus = "pending"
     source_revision: str | None = Field(default=None, min_length=1)
+    proposal: SingleActionProposal | None = None
     adjudication: ActionAdjudication | None = None
     adjudication_execution: AdjudicationExecution | None = None
     # The clock this step left behind, sampled from the PlayerView refreshed
@@ -126,6 +128,11 @@ class ActionPlanStepRun(ContractModel):
                 )
             if self.source_revision != self.adjudication.source_revision:
                 raise ValueError("step source_revision 与 adjudication 不一致")
+        if (
+            self.proposal is not None
+            and self.proposal.semantic_goal != self.step.semantic_goal
+        ):
+            raise ValueError("step Proposal 不得改变计划冻结的语义目标")
         if self.adjudication_execution is not None:
             if self.adjudication_execution.action_request_id != self.step_request_id:
                 raise ValueError("step execution 不属于当前 step_request_id")
@@ -171,7 +178,7 @@ class ActionPlanRun(ContractModel):
     # step's `world_time_after` it gives the Narrator the whole span, so a plan
     # whose first step advances time is still narrated from where it started.
     opening_world_time: WorldClockView | None = None
-    plan_schema_version: Literal[1] = 1
+    plan_schema_version: Literal[1, 2] = 1
     run_version: int = Field(default=1, ge=1)
     status: PlanRunStatus = "active"
     current_step_index: int = Field(default=0, ge=0)
@@ -200,12 +207,18 @@ class ActionPlanRun(ContractModel):
 
     @classmethod
     def from_persistence_json_dict(cls, value: JsonObject) -> ActionPlanRun:
-        """只在可信存储边界读取内部兼容标记。"""
+        """按持久化版本显式读取，禁止用新字段默认值伪装旧协议。"""
 
-        return cls.model_validate(
+        version = value.get("plan_schema_version")
+        if version not in {1, 2}:
+            raise ValueError("不支持的 ActionPlanRun schema version")
+        run = cls.model_validate(
             value,
             context={"allow_persistence_intent_explicit_marker": True},
         )
+        if version == 1 and any(step.proposal is not None for step in run.steps):
+            raise ValueError("ActionPlanRun v1 不得包含 Proposal v2 字段")
+        return run
 
     @model_validator(mode="after")
     def validate_run(self) -> ActionPlanRun:

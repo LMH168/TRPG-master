@@ -533,15 +533,23 @@ class AdjudicationEngineService:
             if command.request.player_id != request.player_id:
                 raise ContractError("裁决恢复状态不属于当前玩家")
 
-            adjudication = None
+            adjudication = (
+                command.validated_command.adjudication
+                if command.validated_command is not None
+                else None
+            )
             if isinstance(command.request, SubmitAdjudicationRequest):
                 adjudication = command.request.adjudication
-            else:
+            elif adjudication is None:
                 pending = await transaction.find_pending_check_by_action(
                     request.action_request_id
                 )
                 if pending is not None:
-                    adjudication = pending.adjudication
+                    adjudication = (
+                        pending.validated_command.adjudication
+                        if pending.validated_command is not None
+                        else pending.adjudication
+                    )
             if adjudication is None:
                 raise ContractError("裁决恢复缺少原始 ActionAdjudication")
             if adjudication.request_id != request.action_request_id:
@@ -583,10 +591,17 @@ class AdjudicationEngineService:
             request.room_id, turn_id=current_turn_id()
         ) as transaction:
             runtime = await transaction.load_runtime()
+            completed_request = request
+            validated_command = None
             if isinstance(request, SubmitProposalRequest):
+                # 已提交重试必须先按持久化原请求对账；首次提交已经推进 revision，若先
+                # 重新编译会把完全相同的幂等重试误判成 SOURCE_REVISION_STALE。
+                replay = await transaction.find_adjudication_command(request.request_id)
+                if replay is not None:
+                    return self._replay(request, replay, runtime.revision)
                 # 编译必须发生在 runtime 被事务锁定之后；返回的命令不会跨事务缓存。
-                command = self._proposal_compiler.compile(runtime, request)
-                request = command.to_legacy_request()
+                validated_command = self._proposal_compiler.compile(runtime, request)
+                request = validated_command.to_legacy_request()
             self._validate_identity(
                 runtime,
                 player_id=request.player_id,
@@ -607,11 +622,14 @@ class AdjudicationEngineService:
                     )
                 }
             )
+            if isinstance(completed_request, SubmitAdjudicationRequest):
+                # legacy 幂等契约继续保存归一后的请求；v2 则保存原始 Proposal 信封。
+                completed_request = request
             replay = await transaction.find_adjudication_command(
                 request.adjudication.request_id
             )
             if replay is not None:
-                return self._replay(request, replay, runtime.revision)
+                return self._replay(completed_request, replay, runtime.revision)
             self._require_revision(
                 request.adjudication.source_revision,
                 runtime.revision,
@@ -657,11 +675,12 @@ class AdjudicationEngineService:
                     check_run=None,
                     completed_command=CompletedAdjudicationCommand(
                         request_id=request.adjudication.request_id,
-                        request=request,
+                        request=completed_request,
                         execution=execution,
                         validation=proposal_validation,
                         committed_authority_level=proposal_committed_level,
                         classification_coverage=proposal_validation.classification_coverage,
+                        validated_command=validated_command,
                     ),
                 )
                 return execution
@@ -687,6 +706,7 @@ class AdjudicationEngineService:
                 status="awaiting_skill_choice",
                 adjudication=request.adjudication,
                 options=options,
+                validated_command=validated_command,
             )
             event = self._event(
                 runtime,
@@ -722,11 +742,12 @@ class AdjudicationEngineService:
                 check_run=None,
                 completed_command=CompletedAdjudicationCommand(
                     request_id=request.adjudication.request_id,
-                    request=request,
+                    request=completed_request,
                     execution=execution,
                     validation=proposal_validation,
                     committed_authority_level=None,
                     classification_coverage=proposal_validation.classification_coverage,
+                    validated_command=validated_command,
                 ),
             )
             return execution
@@ -852,6 +873,7 @@ class AdjudicationEngineService:
                 post_roll_options=post_options,
                 final_result=None if post_options else roll,
                 adjudication=decision.adjudication,
+                validated_command=decision.validated_command,
             )
             rolled_event = self._event(
                 runtime,
