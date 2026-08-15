@@ -156,6 +156,8 @@ async def test_retryable_failure_is_recoverable_from_sql_store(
     )
     assert [item.turn_id for item in recoverable] == [retryable.turn_id]
 
+    # 类型检查器无法从 transition_turn 推断错误快照仍然存在，先固定该不变量。
+    assert retryable.last_error is not None
     non_retryable = transition_turn(
         retryable,
         status=TurnStatus.PLANNING,
