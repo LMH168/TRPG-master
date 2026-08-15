@@ -8,7 +8,7 @@
     "duplicate_state_changes": 0,
     "state_narration_mismatches": 0,
     "unknown_commit_state": 0,
-    "known_gaps": 2
+    "known_gaps": 0
   },
   "errors_by_phase": {
     "host": 1,

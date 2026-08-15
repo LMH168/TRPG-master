@@ -48,11 +48,7 @@
       "item.runtime-brass-key.custody": "actor_inventory",
       "item.runtime-brass-key.holder": "baseline-actor"
     },
-    "known_gaps": ["dynamic_item_atomic_pickup_not_supported"],
-    "known_gap_assertions": [
-      "terminal_status",
-      "required_state:item.runtime-brass-key.custody",
-      "required_state:item.runtime-brass-key.holder"
-    ]
+    "known_gaps": [],
+    "known_gap_assertions": []
   }
 }

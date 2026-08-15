@@ -43,7 +43,7 @@
       "scene_id": "runtime-town-inn",
       "runtime_location.runtime-town-inn.name": "镇上旅馆"
     },
-    "known_gaps": ["dynamic_location_create_does_not_enter_target"],
-    "known_gap_assertions": ["required_state:scene_id"]
+    "known_gaps": [],
+    "known_gap_assertions": []
   }
 }

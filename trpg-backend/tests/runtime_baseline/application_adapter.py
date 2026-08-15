@@ -12,8 +12,8 @@ from collaboration_framework.contracts import (
     CheckDecisionRequest,
     ModuleContentV3,
     PostRollDecisionRequest,
+    ProposalRef,
     SelectCheckChoice,
-    SingleActionDecision,
 )
 from collaboration_framework.engine import (
     AdjudicationEngineService,
@@ -22,13 +22,17 @@ from collaboration_framework.engine import (
     RuleEngineService,
     SequenceDiceSource,
     current_turn_id,
+    derive_runtime_object_id,
 )
 from collaboration_framework.engine.initialization import create_initial_game_state
 from collaboration_framework.engine.models import ActorResources, ActorState, GameState
 from collaboration_framework.host.application import ActionPlanNarrator
 from collaboration_framework.host.schemas import ActionPlanNarrationContext, HostAgentContext
 
-from app.core.action_plan_turn import build_action_plan_turn_application
+from app.core.action_plan_turn import (
+    _proposal_from_adjudication,
+    build_action_plan_turn_application,
+)
 from app.core.config import Settings
 from app.core.turn_coordinator import (
     TurnCoordinator,
@@ -65,10 +69,19 @@ class _ScriptedPlanner:
     def __init__(self) -> None:
         self.outputs: dict[str, dict[str, object]] = {}
         self.aliases: Mapping[str, str] = {}
+        self.runtime_actual_ids: Mapping[str, str] = {}
 
-    async def generate(self, context: HostAgentContext) -> SingleActionDecision:
+    async def generate(self, context: HostAgentContext):  # noqa: ANN201
         raw = self.outputs.get(context.player_input.client_action_id) or {}
         resolved = _resolve_aliases(raw, self.aliases)
+        declared_ids = {
+            effect.get("entity_id") or effect.get("location_id")
+            for effect in resolved.get("success_effects", [])
+            if isinstance(effect, dict)
+            and effect.get("type") in {"ensure_runtime_entity", "ensure_runtime_location"}
+        }
+        if not declared_ids:
+            resolved = _replace_runtime_ids(resolved, self.runtime_actual_ids)
         target = resolved.get(
             "target",
             {"kind": "location", "id": context.player_view.scene.id},
@@ -89,7 +102,8 @@ class _ScriptedPlanner:
             "success_effects": resolved.get("success_effects", [{"type": "narrative_only"}]),
             "failure_effects": resolved.get("failure_effects", []),
         }
-        return SingleActionDecision(adjudication=ActionAdjudication.model_validate(payload))
+        adjudication = ActionAdjudication.model_validate(payload)
+        return _proposal_from_adjudication(adjudication)
 
 
 class _EvidenceNarrationModel:
@@ -128,6 +142,7 @@ class InMemoryRuntimeAdapter:
         self._planner = _ScriptedPlanner()
         self._narration_model = _EvidenceNarrationModel()
         self._scenario: BaselineScenario | None = None
+        self._runtime_id_normalization: dict[str, str] = {}
         self._turn_store = InMemoryTurnStore()
         self._coordinator = TurnCoordinator(
             self._turn_store,
@@ -193,6 +208,14 @@ class InMemoryRuntimeAdapter:
             **scenario.initial_state.aliases,
         }
         self._install_scripted_models(scenario, aliases)
+        self._runtime_id_normalization = _runtime_id_map(
+            scenario,
+            room_id=self.room_id,
+            aliases=aliases,
+        )
+        self._planner.runtime_actual_ids = {
+            expected: actual for actual, expected in self._runtime_id_normalization.items()
+        }
         self._scenario = scenario
         return aliases
 
@@ -322,7 +345,7 @@ class InMemoryRuntimeAdapter:
             status=coordinated.status.value,
             phases=tuple(phases),
             event_types=tuple(event.type for event in new_events),
-            state=_flatten_state(state),
+            state=_flatten_state(state, runtime_id_normalization=self._runtime_id_normalization),
             narration_evidence=narration_evidence,
             narration_claims=narration_evidence,
             roll_ids=(
@@ -496,11 +519,20 @@ def _apply_initial_state(state: GameState, patch: Mapping[str, object]) -> GameS
     return state.model_copy(update=updates, deep=True)
 
 
-def _flatten_state(state: GameState) -> dict[str, object]:
+def _flatten_state(
+    state: GameState,
+    *,
+    runtime_id_normalization: Mapping[str, str] | None = None,
+) -> dict[str, object]:
     """把关键权威状态压平为稳定键，供 JSON 场景直接断言。"""
 
+    normalization = runtime_id_normalization or {}
+
+    def stable(object_id: str | None) -> str | None:
+        return normalization.get(object_id, object_id) if object_id is not None else None
+
     flattened: dict[str, object] = {
-        "scene_id": state.scene_id,
+        "scene_id": stable(state.scene_id),
         "event_sequence": state.event_sequence,
         "discovered_facts": sorted(state.discovered_facts),
     }
@@ -508,11 +540,62 @@ def _flatten_state(state: GameState) -> dict[str, object]:
         for key, value in sorted(values.items()):
             flattened[f"entity.{entity_id}.{key}"] = value
     for location_id, values in sorted(state.runtime_locations.items()):
-        flattened[f"runtime_location.{location_id}.name"] = values.get("name")
+        flattened[f"runtime_location.{stable(location_id)}.name"] = values.get("name")
     for entity_id, values in sorted(state.runtime_entities.items()):
-        flattened[f"runtime_entity.{entity_id}.name"] = values.get("name")
-        flattened[f"runtime_entity.{entity_id}.location_id"] = values.get("location_id")
+        stable_entity_id = stable(entity_id)
+        flattened[f"runtime_entity.{stable_entity_id}.name"] = values.get("name")
+        flattened[f"runtime_entity.{stable_entity_id}.location_id"] = stable(
+            values.get("location_id")
+        )
     for item_id, item in sorted(state.item_instances.items()):
-        flattened[f"item.{item_id}.custody"] = item.custody.kind
-        flattened[f"item.{item_id}.holder"] = item.custody.ref_id
+        stable_item_id = stable(item_id)
+        flattened[f"item.{stable_item_id}.custody"] = item.custody.kind
+        flattened[f"item.{stable_item_id}.holder"] = stable(item.custody.ref_id)
     return flattened
+
+
+def _replace_runtime_ids(value: Any, replacements: Mapping[str, str]) -> Any:
+    """后续回合把场景逻辑 ID 解析为 Engine 已派生的真实 ID。"""
+
+    if isinstance(value, str):
+        return replacements.get(value, value)
+    if isinstance(value, dict):
+        return {key: _replace_runtime_ids(item, replacements) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_runtime_ids(item, replacements) for item in value]
+    return value
+
+
+def _runtime_id_map(
+    scenario: BaselineScenario,
+    *,
+    room_id: str,
+    aliases: Mapping[str, str],
+) -> dict[str, str]:
+    """预计算动态逻辑别名与稳定 Engine ID 的映射，避免场景硬编码散列值。"""
+
+    mapping: dict[str, str] = {}
+    for turn in scenario.turns:
+        output = turn.host_output or {}
+        for effect in output.get("success_effects", []):
+            if not isinstance(effect, dict):
+                continue
+            effect_type = effect.get("type")
+            if effect_type == "ensure_runtime_entity":
+                alias = effect.get("entity_id")
+                kind = "runtime_entity"
+            elif effect_type == "ensure_runtime_location":
+                alias = effect.get("location_id")
+                kind = "runtime_location"
+            else:
+                continue
+            if not isinstance(alias, str):
+                continue
+            logical_id = aliases.get(alias, alias)
+            actual_id = derive_runtime_object_id(
+                room_id=room_id,
+                request_id=turn.client_action_id,
+                ref=ProposalRef(kind=kind, id=logical_id),  # ty: ignore[invalid-argument-type]
+            )
+            mapping[actual_id] = logical_id
+    return mapping
