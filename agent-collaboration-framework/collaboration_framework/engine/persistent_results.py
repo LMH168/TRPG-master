@@ -282,6 +282,33 @@ def committed_results_from_events(
                 CommittedResult(
                     kind="inventory",
                     target_id=entity_id,
+                    destination_kind=(
+                        "actor_inventory"
+                        if isinstance(payload.get("holder_actor_id"), str)
+                        else "location"
+                    ),
+                    destination_ref=(
+                        payload.get("holder_actor_id")
+                        if isinstance(payload.get("holder_actor_id"), str)
+                        else payload.get("location_id")
+                        if isinstance(payload.get("location_id"), str)
+                        else None
+                    ),
+                    event_ref=event.event_id,
+                )
+            )
+        elif event.type == "item.condition_changed" and isinstance(
+            payload.get("entity_id"), str
+        ):
+            condition = payload.get("condition")
+            if not isinstance(condition, str):
+                continue
+            results.append(
+                CommittedResult(
+                    kind="object_state",
+                    target_id=payload["entity_id"],
+                    state_key="condition",
+                    state_value=condition,
                     event_ref=event.event_id,
                 )
             )
@@ -294,6 +321,7 @@ def committed_results_from_events(
                 CommittedResult(
                     kind="inventory",
                     target_id=entity_id,
+                    destination_kind="retired",
                     event_ref=event.event_id,
                 )
             )

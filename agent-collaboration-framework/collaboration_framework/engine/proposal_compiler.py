@@ -295,6 +295,13 @@ class ProposalCompiler:
         """限制 AI 可裁量的高权威结果，并阻止物品或死亡状态绕过前置条件。"""
 
         for requirement in requirements:
+            if isinstance(
+                requirement,
+                ChangeEntityStateEffect | ChangeItemConditionEffect | MoveEntityEffect,
+            ) and self._terminal_requirement_is_satisfied(
+                requirement, runtime, actor_id=request.actor_id
+            ):
+                continue
             if isinstance(requirement, ChangeEntityStateEffect):
                 allowed = {
                     "consciousness": {"conscious", "unconscious", "dead"},
@@ -353,6 +360,43 @@ class ProposalCompiler:
                         self._reject(
                             "DROP_LOCATION_MISMATCH", "丢弃物品只能落在当前位置"
                         )
+
+    @staticmethod
+    def _terminal_requirement_is_satisfied(
+        requirement: ActionEffect,
+        runtime: EngineRuntimeSnapshot,
+        *,
+        actor_id: str,
+    ) -> bool:
+        """在编译期识别已满足终态，避免重复命令产生第二次状态写入。"""
+
+        state = runtime.game_state
+        if isinstance(requirement, ChangeEntityStateEffect):
+            return (
+                state.entities.get(requirement.entity_id, {}).get(requirement.key)
+                == requirement.value
+                or state.runtime_entities.get(requirement.entity_id, {}).get(
+                    requirement.key
+                )
+                == requirement.value
+            )
+        if isinstance(requirement, ChangeItemConditionEffect):
+            item = state.item_instances.get(requirement.entity_id)
+            return item is not None and item.state.condition == requirement.condition
+        if isinstance(requirement, MoveEntityEffect):
+            item = state.item_instances.get(requirement.entity_id)
+            if item is None:
+                return False
+            return (
+                requirement.holder_actor_id == actor_id
+                and item.custody.kind == "actor_inventory"
+                and item.custody.ref_id == actor_id
+            ) or (
+                requirement.location_id is not None
+                and item.custody.kind == "location"
+                and item.custody.ref_id == requirement.location_id
+            )
+        return False
 
     @staticmethod
     def _require_visible_npc(runtime: EngineRuntimeSnapshot, entity_id: str) -> None:

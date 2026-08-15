@@ -24,6 +24,7 @@ from collaboration_framework.contracts import (
     AdjudicationStatusView,
     AdvanceWorldTimeEffect,
     ChangeEntityStateEffect,
+    ChangeItemConditionEffect,
     CheckDecisionRequest,
     CommitTerminalEndingEffect,
     ConsumeEntityEffect,
@@ -76,6 +77,7 @@ from .models import (
     EngineRuntimeSnapshot,
     GameState,
     PendingCheckDecision,
+    ValidatedActionCommand,
     WorldTimeState,
 )
 from .navigation import resolve_location_target
@@ -307,6 +309,9 @@ class AdjudicationEngineService:
             elif isinstance(effect, ChangeEntityStateEffect):
                 target_ref = effect.entity_id
                 level = "L1" if effect.entity_id in runtime_entity_ids else "L3"
+            elif isinstance(effect, ChangeItemConditionEffect):
+                target_ref = effect.entity_id
+                level = "L3"
             elif isinstance(effect, ConsumeEntityEffect):
                 target_ref = effect.entity_id
                 entity = entity_specs.get(effect.entity_id)
@@ -637,7 +642,11 @@ class AdjudicationEngineService:
                 request.adjudication.source_revision,
                 runtime.revision,
             )
-            self._validate_adjudication(runtime, request.adjudication)
+            self._validate_adjudication(
+                runtime,
+                request.adjudication,
+                validated_command=validated_command,
+            )
             proposal_validation, proposal_committed_level = (
                 self._build_submission_validation(
                     runtime,
@@ -659,6 +668,9 @@ class AdjudicationEngineService:
                     status="resolved",
                     view_revision=str(new_state.event_sequence),
                     outcome="success",
+                    goal_outcome=self._goal_outcome(
+                        validated_command, passed=True, state=new_state
+                    ),
                     event_refs=tuple(event.event_id for event in events),
                     public_event_refs=self._public_event_refs(events),
                     narration_evidence=self._narration_evidence(
@@ -734,6 +746,9 @@ class AdjudicationEngineService:
                 status="awaiting_skill_choice",
                 view_revision=str(new_state.event_sequence),
                 outcome="pending",
+                goal_outcome="pending"
+                if validated_command is not None
+                else "legacy_unknown",
                 pending_decision=decision.player_view(),
                 event_refs=(event.event_id,),
             )
@@ -819,6 +834,7 @@ class AdjudicationEngineService:
                     status="cancelled",
                     view_revision=str(new_state.event_sequence),
                     outcome="cancelled",
+                    goal_outcome="cancelled",
                     event_refs=(event.event_id,),
                     public_event_refs=(event.event_id,),
                 )
@@ -911,6 +927,11 @@ class AdjudicationEngineService:
                     status="awaiting_post_roll_decision",
                     view_revision=str(new_state.event_sequence),
                     outcome="pending",
+                    goal_outcome=(
+                        "pending"
+                        if decision.validated_command is not None
+                        else "legacy_unknown"
+                    ),
                     check_run=self._run_view(check_run),
                     event_refs=(rolled_event.event_id,),
                 )
@@ -949,6 +970,11 @@ class AdjudicationEngineService:
                 status="resolved",
                 view_revision=str(new_state.event_sequence),
                 outcome="success" if roll.passed else "failure",
+                goal_outcome=self._goal_outcome(
+                    decision.validated_command,
+                    passed=roll.passed,
+                    state=new_state,
+                ),
                 check_run=self._run_view(check_run),
                 event_refs=tuple(event.event_id for event in events),
                 public_event_refs=self._public_event_refs(events),
@@ -1178,6 +1204,11 @@ class AdjudicationEngineService:
                 status="resolved",
                 view_revision=str(new_state.event_sequence),
                 outcome="success" if final_roll.passed else "failure",
+                goal_outcome=self._goal_outcome(
+                    check_run.validated_command,
+                    passed=final_roll.passed,
+                    state=new_state,
+                ),
                 check_run=self._run_view(resolved_run),
                 event_refs=tuple(event.event_id for event in events),
                 public_event_refs=self._public_event_refs(events),
@@ -1224,6 +1255,86 @@ class AdjudicationEngineService:
                 ),
             )
             return execution
+
+    @staticmethod
+    def _goal_outcome(
+        command: ValidatedActionCommand | None,
+        *,
+        passed: bool,
+        state: GameState,
+    ) -> Literal["achieved", "partially_achieved", "not_achieved", "legacy_unknown"]:
+        """只根据冻结后置条件和最终权威状态判断目标，不读取自然语言。"""
+
+        if command is None or command.schema_version == 1:
+            return "legacy_unknown"
+        if not passed:
+            return "not_achieved"
+        if command.completion_mode == "process":
+            return "achieved"
+        matched = sum(
+            AdjudicationEngineService._requirement_is_satisfied(
+                item, state, actor_id=command.request.actor_id
+            )
+            for item in command.completion_requirements
+        )
+        if matched == len(command.completion_requirements):
+            return "achieved"
+        if matched:
+            return "partially_achieved"
+        return "not_achieved"
+
+    @staticmethod
+    def _requirement_is_satisfied(
+        requirement: ActionEffect, state: GameState, *, actor_id: str
+    ) -> bool:
+        """在最终 GameState 中核对一种完成条件，供规则和自由行动共用。"""
+
+        if isinstance(requirement, ChangeEntityStateEffect):
+            return (
+                state.entities.get(requirement.entity_id, {}).get(requirement.key)
+                == requirement.value
+                or state.runtime_entities.get(requirement.entity_id, {}).get(
+                    requirement.key
+                )
+                == requirement.value
+            )
+        if isinstance(requirement, ChangeItemConditionEffect):
+            item = state.item_instances.get(requirement.entity_id)
+            return item is not None and item.state.condition == requirement.condition
+        if isinstance(requirement, MoveEntityEffect):
+            item = state.item_instances.get(requirement.entity_id)
+            if item is not None:
+                return (
+                    requirement.holder_actor_id is not None
+                    and item.custody.kind == "actor_inventory"
+                    and item.custody.ref_id == requirement.holder_actor_id
+                ) or (
+                    requirement.location_id is not None
+                    and item.custody.kind == "location"
+                    and item.custody.ref_id == requirement.location_id
+                )
+            payload = state.runtime_entities.get(requirement.entity_id, {})
+            return (
+                payload.get("holder_actor_id") == requirement.holder_actor_id
+                and payload.get("location_id") == requirement.location_id
+            )
+        if isinstance(requirement, EnterLocationEffect):
+            return state.scene_id == requirement.location_id
+        if isinstance(requirement, ConsumeEntityEffect):
+            item = state.item_instances.get(requirement.entity_id)
+            return (
+                item is not None
+                and item.state.status == "retired"
+                or state.entities.get(requirement.entity_id, {}).get("consumed") is True
+            )
+        if isinstance(requirement, RevealInformationEffect):
+            known = (
+                state.discovered_facts
+                if requirement.scope == "party"
+                else state.actor_discovered_facts.get(actor_id, ())
+            )
+            return requirement.information_id in known
+        return False
 
     @staticmethod
     def _public_event_refs(events: tuple[DomainEvent, ...]) -> tuple[str, ...]:
@@ -1347,6 +1458,8 @@ class AdjudicationEngineService:
         self,
         runtime: EngineRuntimeSnapshot,
         adjudication: ActionAdjudication,
+        *,
+        validated_command: ValidatedActionCommand | None = None,
     ) -> None:
         state = runtime.game_state
         target = adjudication.target
@@ -1401,9 +1514,10 @@ class AdjudicationEngineService:
                         f"RuleDecision 超出当前可用范围: {adjudication.rule_decision.rule_id}"
                     ),
                 )
-        else:
+        elif validated_command is None or validated_command.schema_version == 1:
             # 自由行动的完整性必须在创建待检定、掷骰或写入事件之前完成；规则路径
-            # 的效果由模组拥有，因此仍允许模型 success_effects 为空。
+            # 的效果由模组拥有。Proposal v2 已由 completion matcher 校验，不能再
+            # 回退到 method.family / persistence_intent 的旧完整性推断。
             persistent_problem = validate_persistent_effects(adjudication)
             if persistent_problem is not None:
                 self._reject_validation(
@@ -1606,7 +1720,11 @@ class AdjudicationEngineService:
                     player_safe_reason="临时物品描述超过当前系统限制",
                 )
         elif isinstance(
-            effect, MoveEntityEffect | ChangeEntityStateEffect | ConsumeEntityEffect
+            effect,
+            MoveEntityEffect
+            | ChangeEntityStateEffect
+            | ChangeItemConditionEffect
+            | ConsumeEntityEffect,
         ):
             if effect.entity_id not in entity_ids:
                 self._reject_validation(
@@ -1858,6 +1976,14 @@ class AdjudicationEngineService:
             check_run=check_run,
         )
         for effect in selected_effects:
+            if isinstance(
+                effect,
+                ChangeEntityStateEffect | ChangeItemConditionEffect | MoveEntityEffect,
+            ) and self._requirement_is_satisfied(
+                effect, state, actor_id=adjudication.actor_id
+            ):
+                # 已满足的终态不重复写事件；action.succeeded 仍记录这次幂等观察。
+                continue
             state, emitted = self._apply_effect(
                 runtime,
                 state,
@@ -2580,6 +2706,31 @@ class AdjudicationEngineService:
                 "key": effect.key,
                 "value": effect.value,
             }
+        elif isinstance(effect, ChangeItemConditionEffect):
+            item = state.item_instances.get(effect.entity_id)
+            if item is None:
+                self._reject_validation(
+                    "INVENTORY_TARGET_NOT_PORTABLE",
+                    repairability="auto_repairable",
+                    fault="agent",
+                    player_safe_reason="该对象不是可修改状态的物品",
+                )
+            effect_event_id = self._new_id("evt")
+            revision = str(state.event_sequence + offset)
+            items = deepcopy(state.item_instances)
+            items[effect.entity_id] = item.model_copy(
+                update={
+                    "state": item.state.model_copy(
+                        update={"condition": effect.condition}
+                    ),
+                    "version": item.version + 1,
+                    "last_event_id": effect_event_id,
+                    "updated_revision": revision,
+                }
+            )
+            state = state.model_copy(update={"item_instances": items}, deep=True)
+            event_type = "item.condition_changed"
+            payload = {"entity_id": effect.entity_id, "condition": effect.condition}
         elif isinstance(effect, ConsumeEntityEffect):
             item = state.item_instances.get(effect.entity_id)
             if item is not None:
