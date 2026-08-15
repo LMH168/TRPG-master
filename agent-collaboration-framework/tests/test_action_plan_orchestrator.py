@@ -301,6 +301,17 @@ class ClarificationAdjudicator:
         )
 
 
+class AlwaysUnreadableAdjudicator:
+    """模拟模型连续返回不可解析 Proposal 的步骤裁决器。"""
+
+    async def adjudicate(self, context):
+        raise TurnExecutionError(
+            "MODEL_OUTPUT_UNREADABLE",
+            "主持模型返回了无法解读的结果，请重试",
+            retryable=True,
+        )
+
+
 class FailSecondStepOnceAdjudicator(RecordingAdjudicator):
     def __init__(self, world_ref: str) -> None:
         super().__init__(world_ref)
@@ -1247,6 +1258,31 @@ async def test_second_step_provider_failure_retries_from_same_cursor() -> None:
         "1",
     ]
     assert len(engine_store.inspect_domain_events("room_01")) == 2
+
+
+@pytest.mark.asyncio
+async def test_repeated_unreadable_model_output_stops_and_releases_plan_lease() -> None:
+    """连续不可读输出只自动重试一次，随后进入澄清而不是持续占用房间。"""
+
+    module, engine_store, projector = runtime()
+    service = ActionPlanOrchestrator(
+        store=InMemoryActionPlanRunStore(),
+        adjudicator=AlwaysUnreadableAdjudicator(),
+        executor=AdjudicationEngineService(engine_store),
+        player_view_projector=projector,
+    )
+    original = player_input("unreadable-model-parent")
+
+    first = await service.start_or_resume(original, plan=plan(2))
+    assert first.run.status == "retryable_failure"
+    assert first.run.lease_owner is None
+    assert first.run.steps[0].status == "pending"
+
+    settled = await service.start_or_resume(original, plan=plan(4))
+    assert settled.run.status == "needs_clarification"
+    assert settled.run.steps[0].status == "stopped"
+    assert settled.run.lease_owner is None
+    assert len(engine_store.inspect_domain_events("room_01")) == 0
 
 
 @pytest.mark.asyncio

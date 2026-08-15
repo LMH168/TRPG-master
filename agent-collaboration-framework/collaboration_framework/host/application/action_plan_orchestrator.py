@@ -976,12 +976,18 @@ class ActionPlanOrchestrator:
                 error=exc.__cause__ or exc,
                 started_at=adjudication_started_at,
             )
+            # 结构化输出在适配器内已经重试过一次；回合恢复再重试一次后，
+            # 继续保持 active 只会让刷新后的玩家看到 ACTION_IN_PROGRESS。
+            # 此时没有 Proposal、Engine execution 或 receipt，可以安全转为
+            # 玩家澄清，同时由调用方释放当前 worker lease。
+            exhausted_unreadable = (
+                exc.code == "MODEL_OUTPUT_UNREADABLE" and current.retry_count >= 1
+            )
+            retryable = exc.retryable and not exhausted_unreadable
             return await self._mark_step_failure(
                 run,
-                plan_status="retryable_failure"
-                if exc.retryable
-                else "needs_clarification",
-                step_status="pending" if exc.retryable else "stopped",
+                plan_status="retryable_failure" if retryable else "needs_clarification",
+                step_status="pending" if retryable else "stopped",
                 code=exc.code,
             )
         except Exception as exc:
