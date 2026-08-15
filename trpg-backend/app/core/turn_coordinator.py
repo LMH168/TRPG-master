@@ -395,8 +395,12 @@ class TurnCoordinator:
             ),
             public_message=(
                 "规则结果已保存，请稍后恢复本次回合"
-                if receipts
-                else "本次回合暂时未完成，请稍后使用原请求恢复"
+                if retryable and receipts
+                else (
+                    "规则结果已保存，本次叙事生成失败，请继续提交新的行动"
+                    if receipts
+                    else "本次回合暂时未完成，请重新提交新的行动"
+                )
             ),
             occurred_at=datetime.now(UTC),
         )
