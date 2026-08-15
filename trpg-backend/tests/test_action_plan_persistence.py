@@ -18,6 +18,7 @@ from collaboration_framework.contracts import (
     PostRollDecisionRequest,
     RequiredAdjudicationCheck,
     SelectCheckChoice,
+    SingleActionProposal,
     SkillCheckCandidate,
 )
 from collaboration_framework.engine import (
@@ -68,6 +69,21 @@ class SqlPlanAdjudicator:
                 success_effects=(NarrativeOnlyEffect(),),
             )
         )
+
+
+class SqlV2ProcessPlanAdjudicator(SqlPlanAdjudicator):
+    """使用生产 Proposal v2，覆盖 ActionPlanRun v2 到 v3 的 SQL CAS。"""
+
+    async def adjudicate(self, context):
+        proposal = await super().adjudicate(context)
+        payload = proposal.model_dump(mode="json")
+        payload.update(
+            {
+                "schema_version": 2,
+                "completion": {"kind": "process", "interaction": "other"},
+            }
+        )
+        return SingleActionProposal.model_validate(payload)
 
 
 class SqlPendingPlanAdjudicator(SqlPlanAdjudicator):
@@ -177,7 +193,7 @@ async def test_sql_plan_resumes_across_store_and_service_rebuild(
         client_action_id="sql-plan-225",
         utterance="依次完成四个行动",
     )
-    first_adjudicator = SqlPlanAdjudicator(runtime.module_content.world_ref)
+    first_adjudicator = SqlV2ProcessPlanAdjudicator(runtime.module_content.world_ref)
     first_store = action_plan_store_factory()
     first = ActionPlanOrchestrator(
         store=first_store,
@@ -208,7 +224,7 @@ async def test_sql_plan_resumes_across_store_and_service_rebuild(
 
     rebuilt_engine_store = engine_store_factory()
     rebuilt_store = action_plan_store_factory()
-    rebuilt_adjudicator = SqlPlanAdjudicator(runtime.module_content.world_ref)
+    rebuilt_adjudicator = SqlV2ProcessPlanAdjudicator(runtime.module_content.world_ref)
     rebuilt = ActionPlanOrchestrator(
         store=rebuilt_store,
         adjudicator=rebuilt_adjudicator,
@@ -223,6 +239,7 @@ async def test_sql_plan_resumes_across_store_and_service_rebuild(
         )
 
     assert resumed.run.status == "awaiting_narration"
+    assert resumed.run.plan_schema_version == 3
     assert resumed.run.current_step_index == 4
     assert first_adjudicator.revisions == ["0", "1", "2"]
     assert rebuilt_adjudicator.revisions == ["3"]

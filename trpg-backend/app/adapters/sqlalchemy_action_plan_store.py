@@ -272,6 +272,8 @@ class SqlAlchemyActionPlanRunStore(ActionPlanRunStore):
             "status": run.status,
             "current_step_index": run.current_step_index,
             "run_version": run.run_version,
+            # JSON 与索引列必须在同一 CAS 中升级，否则下一次读取会被判为损坏。
+            "plan_schema_version": run.plan_schema_version,
             "run_json": run.to_persistence_json_dict(),
             "lease_owner": run.lease_owner,
             "lease_expires_at": run.lease_expires_at,
@@ -317,7 +319,6 @@ class SqlAlchemyActionPlanRunStore(ActionPlanRunStore):
             "player_id",
             "actor_id",
             "created_revision",
-            "plan_schema_version",
             "policy_snapshot",
             "plan",
             "created_at",
@@ -326,4 +327,13 @@ class SqlAlchemyActionPlanRunStore(ActionPlanRunStore):
             raise ActionPlanConflictError(
                 "PARENT_ACTION_CONFLICT",
                 "同一 parent action id 已绑定到不同输入、所有者或计划",
+            )
+        # plan_schema_version 是可审计的单向迁移状态，不参与 parent 身份比较。
+        # Proposal-only writer 首次冻结 Proposal v2 时，会把历史 v1/v2 升到 v3。
+        if current.plan_schema_version != candidate.plan_schema_version and not (
+            current.plan_schema_version in {1, 2} and candidate.plan_schema_version == 3
+        ):
+            raise ActionPlanConflictError(
+                "PLAN_SCHEMA_TRANSITION_INVALID",
+                "ActionPlanRun schema version 只能单向升级到 v3",
             )
