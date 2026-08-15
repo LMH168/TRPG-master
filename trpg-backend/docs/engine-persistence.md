@@ -2,8 +2,9 @@
 
 Issue #89 建立数据库结构、ORM、迁移和内置发布数据；Issue #121 在不修改引擎
 Protocol 和 RuleKernel 的前提下，实现 `SqlAlchemyEngineStore`、完成角色卡自动
-存入用户卡库、正式开局和房间运行时生命周期。WebSocket `action.submit`、主持
-编排、用户卡库展示/复用、SDK 与前端接入仍由后续 Issue 实现。
+存入用户卡库、正式开局和房间运行时生命周期。Issue #6 进一步以可靠 Turn、Engine
+receipt 和 Narration Outbox 统一 WebSocket 动作与断线恢复，详见
+[`reliable-turn-protocol.md`](reliable-turn-protocol.md)。
 
 ## 模组目录与发布内容
 
@@ -98,8 +99,9 @@ Lobby → Building → InGame ⇄ Suspended → Completed
 `events.correlation_id` 是可空字符串。后续动作链路写入 `narration.push` 时使用
 `clientActionId`，并由 `UNIQUE(room_id, event_type, correlation_id)` 保证同一房间、
 同一事件类型和同一动作关联键至多落一条记录。历史事件及不关联动作的普通事件保持
-`NULL`，数据库允许多条 `NULL`。该约束只提供持久化的“至多记录一次”闸门，不承诺
-WebSocket exactly-once 投递；是否发送、重试时是否重发由后续 Issue 的业务流程决定。
+`NULL`，数据库允许多条 `NULL`。该约束只提供持久化的“至多记录一次”闸门。Issue #6
+的 WebSocket 使用至少一次投递；客户端按稳定 `messageId` 去重，REST Turn 查询提供最终
+恢复来源，不承诺 exactly-once。
 
 ## 迁移安全
 
