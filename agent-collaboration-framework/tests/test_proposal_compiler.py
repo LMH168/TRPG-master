@@ -139,6 +139,65 @@ def test_compiler_rejects_runtime_ref_used_before_declaration() -> None:
     assert raised.value.result.code == "RUNTIME_REF_UNDECLARED"
 
 
+def test_compiler_rejects_empty_effect_without_rule_authority() -> None:
+    """没有规则托管时，空 Effect 不能伪装成已完成动作。"""
+
+    payload = _dynamic_pickup_payload()
+    payload.update(
+        {
+            "semantic_goal": "开枪打死守墓人",
+            "semantic_focus": {"kind": "entity", "id": "butler"},
+            "anchor_ref": None,
+            "method_family": "combat",
+            "method_description": "开枪攻击守墓人",
+            "success_effect_proposals": [],
+            "failure_effect_proposals": [],
+        }
+    )
+
+    with pytest.raises(AdjudicationValidationError) as raised:
+        ProposalCompiler().compile(
+            _runtime(),
+            _submission(proposal=SingleActionProposal.model_validate(payload)),
+        )
+
+    assert raised.value.result.code == "PERSISTENT_EFFECT_REQUIRED"
+
+
+def test_compiler_accepts_explicit_death_state_effect() -> None:
+    """杀死 NPC 必须编译为可回放的 consciousness=dead 状态事件。"""
+
+    payload = _dynamic_pickup_payload()
+    payload.update(
+        {
+            "semantic_goal": "开枪打死守墓人",
+            "semantic_focus": {"kind": "entity", "id": "butler"},
+            "anchor_ref": None,
+            "method_family": "combat",
+            "method_description": "开枪攻击守墓人",
+            "success_effect_proposals": [
+                {
+                    "type": "change_entity_state",
+                    "entity_ref": {"kind": "entity", "id": "butler"},
+                    "key": "consciousness",
+                    "value": "dead",
+                }
+            ],
+            "failure_effect_proposals": [],
+        }
+    )
+    command = ProposalCompiler().compile(
+        _runtime(),
+        _submission(proposal=SingleActionProposal.model_validate(payload)),
+    )
+
+    effect = command.adjudication.success_effects[0]
+    assert effect.type == "change_entity_state"
+    assert effect.entity_id == "butler"
+    assert effect.key == "consciousness"
+    assert effect.value == "dead"
+
+
 def test_shadow_compiler_only_reports_structural_differences() -> None:
     command = ProposalCompiler().compile(_runtime(), _submission())
 
@@ -178,6 +237,56 @@ async def test_submit_proposal_compiles_and_commits_inside_engine_boundary() -> 
 
     assert execution.status == "resolved"
     assert len(store.inspect_domain_events("room_01")) == 1
+
+
+@pytest.mark.asyncio
+async def test_submit_proposal_persists_npc_death_state() -> None:
+    """死亡 Proposal 必须同时改变权威状态并留下可回放事件。"""
+
+    runtime = _runtime()
+    store = InMemoryEngineStore()
+    store.register_room(
+        module_content=runtime.module_content,
+        initial_state=runtime.game_state,
+    )
+    payload = _dynamic_pickup_payload()
+    payload.update(
+        {
+            "semantic_goal": "开枪打死守墓人",
+            "semantic_focus": {"kind": "entity", "id": "butler"},
+            "anchor_ref": None,
+            "method_family": "combat",
+            "method_description": "开枪攻击守墓人",
+            "success_effect_proposals": [
+                {
+                    "type": "change_entity_state",
+                    "entity_ref": {"kind": "entity", "id": "butler"},
+                    "key": "consciousness",
+                    "value": "dead",
+                }
+            ],
+            "failure_effect_proposals": [],
+        }
+    )
+
+    execution = await AdjudicationEngineService(store).submit_proposal(
+        _submission(proposal=SingleActionProposal.model_validate(payload))
+    )
+
+    assert execution.status == "resolved"
+    state = store.inspect_state("room_01")
+    assert state.entities["butler"]["consciousness"] == "dead"
+    events = store.inspect_domain_events("room_01")
+    assert any(
+        event.type == "entity.state_changed"
+        and event.payload
+        == {
+            "entity_id": "butler",
+            "key": "consciousness",
+            "value": "dead",
+        }
+        for event in events
+    )
 
 
 @pytest.mark.asyncio

@@ -84,6 +84,13 @@ _FAMILY_POLICIES: dict[str, _FamilyPolicy] = {
     "drop": _FamilyPolicy("inventory", effect_kind="move"),
     "consume": _FamilyPolicy("inventory", effect_kind="consume"),
     "travel": _FamilyPolicy("location", effect_kind="enter"),
+    # Host 可以使用开放字符串表达战斗方式；这些常见别名仍必须提供由
+    # Engine 提交的角色状态 Effect，不能退化成纯叙事。
+    "combat": _FamilyPolicy("character_state"),
+    "attack": _FamilyPolicy("character_state"),
+    "shoot": _FamilyPolicy("character_state"),
+    "fire": _FamilyPolicy("character_state"),
+    "firearm": _FamilyPolicy("character_state"),
 }
 
 
@@ -152,8 +159,13 @@ def _has_matching_effect(
                 continue
             if effect.value not in allowed[effect.key]:
                 continue
-            if policy is None or (
-                effect.key == policy.state_key and effect.value == policy.state_value
+            if (
+                policy is None
+                or policy.state_key is None
+                or (
+                    effect.key == policy.state_key
+                    and effect.value == policy.state_value
+                )
             ):
                 return True
         return False

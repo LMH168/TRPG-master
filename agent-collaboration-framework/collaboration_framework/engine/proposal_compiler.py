@@ -54,6 +54,7 @@ from collaboration_framework.contracts.proposal import (
 from collaboration_framework.contracts.validation import Repairability, ValidationFault
 
 from .models import EngineRuntimeSnapshot, ValidatedActionCommand
+from .persistent_results import validate_persistent_effects
 
 _HOST_FORBIDDEN_EFFECTS = (
     MarkCoreResolvedEffectProposal,
@@ -161,6 +162,13 @@ class ProposalCompiler:
             success_effects=success,
             failure_effects=failure,
         )
+        # 规则托管的效果不在 Host Proposal 中出现，由规则匹配阶段负责补齐；
+        # 没有 rule_ref 时则必须在 Proposal 中显式提供可提交结果，不能把
+        # 空 Effect 或持久动作的 narrative_only 当成已完成动作。
+        if proposal.rule_ref is None:
+            problem = validate_persistent_effects(adjudication)
+            if problem is not None:
+                self._reject(problem.code, problem.player_safe_reason)
         fingerprint = hashlib.sha256(
             json.dumps(
                 proposal.model_dump(mode="json"),
@@ -386,6 +394,11 @@ class ProposalCompiler:
         """从开放方法族和已编译 Effect 派生旧内核兼容提示。"""
 
         method_intents: dict[str, PersistenceIntent] = {
+            "combat": "character_state",
+            "attack": "character_state",
+            "shoot": "character_state",
+            "fire": "character_state",
+            "firearm": "character_state",
             "kill": "character_state",
             "knock_out": "character_state",
             "knock_down": "character_state",
