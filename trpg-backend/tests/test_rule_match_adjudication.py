@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import pathlib
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 from collaboration_framework.contracts import (
@@ -207,7 +207,7 @@ async def test_matched_rule_hands_ownership_to_the_rule() -> None:
 
     context = await _cemetery_context("用侦查观察梅洛迪亚斯·杰弗逊")
     assert context.keeper_capabilities is not None
-    adjudication = await _DeterministicStepAdjudicator().adjudicate(context)
+    adjudication: Any = await _DeterministicStepAdjudicator().adjudicate(context)
 
     assert adjudication.rule_decision is not None
     assert adjudication.rule_decision.rule_id == "observe_caretaker"
@@ -230,7 +230,7 @@ async def test_matched_rule_hands_ownership_to_the_rule() -> None:
 async def test_natural_chinese_action_family_reaches_the_unique_rule() -> None:
     """稳定动作族词汇可直接命中唯一候选，不必依赖模型猜测。"""
 
-    adjudication = await _DeterministicStepAdjudicator().adjudicate(
+    adjudication: Any = await _DeterministicStepAdjudicator().adjudicate(
         await _cemetery_context("仔细观察守墓人")
     )
 
@@ -271,7 +271,7 @@ async def test_rule_first_adjudicator_does_not_call_model_for_unique_match() -> 
             del context
             raise AssertionError("唯一规则候选不应调用模型")
 
-    adjudication = await _RuleFirstStepAdjudicator(FailingFallback()).adjudicate(
+    adjudication: Any = await _RuleFirstStepAdjudicator(FailingFallback()).adjudicate(
         await _cemetery_context("仔细观察守墓人")
     )
 
@@ -288,7 +288,7 @@ async def test_visible_dialogue_does_not_call_model_or_reveal_information() -> N
             del context
             raise AssertionError("可见人物的普通对话不应调用模型")
 
-    adjudication = await _RuleFirstStepAdjudicator(FailingFallback()).adjudicate(
+    adjudication: Any = await _RuleFirstStepAdjudicator(FailingFallback()).adjudicate(
         await _cemetery_context(
             "前往公墓，询问守墓人是否见过有人常来墓地",
             step_kind="dialogue",
@@ -324,7 +324,7 @@ async def test_unknown_ordinary_travel_is_resolved_without_a_model_round_trip() 
         step_kind="travel",
         semantic_goal="前往小镇上的旅馆",
     )
-    adjudication = await _RuleFirstStepAdjudicator(FailingFallback()).adjudicate(context)
+    adjudication: Any = await _RuleFirstStepAdjudicator(FailingFallback()).adjudicate(context)
 
     assert [effect.type for effect in adjudication.success_effects] == [
         "ensure_runtime_location",
@@ -541,7 +541,7 @@ async def test_planner_cannot_invent_ambient_venue_for_npc_search() -> None:
             )
 
     fallback = RecordingFallback()
-    adjudication = await _RuleFirstStepAdjudicator(fallback).adjudicate(
+    adjudication: Any = await _RuleFirstStepAdjudicator(fallback).adjudicate(
         await _cemetery_context(
             "去找守墓人",
             step_kind="travel",
@@ -895,7 +895,7 @@ def test_prompt_requires_exact_existing_entity_match_before_runtime_creation() -
 async def test_unmatched_utterance_falls_back_to_plain_narration(utterance: str) -> None:
     """规则没覆盖的日常互动照旧走自由发挥，不能硬套一条规则。"""
 
-    adjudication = await _DeterministicStepAdjudicator().adjudicate(
+    adjudication: Any = await _DeterministicStepAdjudicator().adjudicate(
         await _cemetery_context(utterance)
     )
 

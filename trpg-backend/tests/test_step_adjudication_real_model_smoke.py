@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import pytest
 from collaboration_framework.contracts import (
@@ -78,7 +79,7 @@ def _adjudicator(settings: Settings, *, timeout_seconds: float) -> PromptActionP
 )
 async def test_real_deepseek_step_adjudication_succeeds() -> None:
     settings = Settings()
-    result = await _adjudicator(
+    result: Any = await _adjudicator(
         settings,
         timeout_seconds=settings.deepseek_timeout_seconds,
     ).adjudicate(_context())
