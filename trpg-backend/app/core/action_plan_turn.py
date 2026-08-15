@@ -1168,6 +1168,21 @@ class ActionPlanTurnApplication:
     async def get_plan(self, room_id: str, parent_action_id: str):
         return await self._orchestrator.get_run(room_id, parent_action_id)
 
+    async def abandon_uncommitted_plan(
+        self,
+        *,
+        room_id: str,
+        parent_action_id: str,
+        code: str,
+    ) -> ActionPlanRun | None:
+        """可靠回合确认未提交终态失败后，收束对应的步骤级计划。"""
+
+        return await self._orchestrator.abandon_uncommitted(
+            room_id=room_id,
+            parent_action_id=parent_action_id,
+            code=code,
+        )
+
     async def cancel_remaining(
         self,
         *,

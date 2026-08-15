@@ -31,6 +31,7 @@ from app.core.turn_coordinator import (
 )
 from app.core.turn_events import TurnPhase
 from app.core.turn_runtime import (
+    TurnCommitState,
     TurnInputSnapshot,
     TurnRecord,
     TurnRuntimeStore,
@@ -44,6 +45,26 @@ logger = structlog.get_logger()
 turn_store = SqlAlchemyTurnStore(async_session_factory)
 turn_coordinator = TurnCoordinator(turn_store)
 turn_outbox_dispatcher = TurnOutboxDispatcher(turn_store, manager)
+
+
+async def _settle_failed_uncommitted_plan(turn: TurnRecord) -> None:
+    """终态未提交 Turn 不得遗留仍占住房间的 ActionPlan。"""
+
+    if turn.status != TurnStatus.FAILED or turn.commit_state != TurnCommitState.NOT_COMMITTED:
+        return
+    try:
+        await action_plan_turn_application.abandon_uncommitted_plan(
+            room_id=turn.room_id,
+            parent_action_id=turn.client_action_id,
+            code=turn.last_error.code if turn.last_error is not None else "TURN_FAILED",
+        )
+    except Exception as exc:
+        # Turn 已经安全终止，清理失败不能改写玩家错误；记录类型供后台诊断。
+        logger.error(
+            "failed_turn_plan_cleanup_failed",
+            turn_id=turn.turn_id,
+            error_type=type(exc).__name__,
+        )
 
 
 @dataclass(frozen=True)
@@ -107,6 +128,7 @@ async def start_action(
         executor=execute,
         after_publish=lambda: _mark_plan_narration(room_id, client_action_id, on_progress),
     )
+    await _settle_failed_uncommitted_plan(turn)
     if captured is None and turn.result is not None:
         await turn_outbox_dispatcher.redispatch_turn(turn.turn_id)
     else:
@@ -151,6 +173,7 @@ async def continue_after_decision(
         executor=execute,
         after_publish=lambda: _mark_plan_narration(room_id, client_action_id, on_progress),
     )
+    await _settle_failed_uncommitted_plan(saved)
     if captured is None and saved.result is not None:
         await turn_outbox_dispatcher.redispatch_turn(saved.turn_id)
     else:
@@ -187,6 +210,7 @@ async def cancel_action(
         executor=execute,
         after_publish=lambda: _mark_plan_narration(room_id, client_action_id, None),
     )
+    await _settle_failed_uncommitted_plan(saved)
     if captured is None and saved.result is not None:
         await turn_outbox_dispatcher.redispatch_turn(saved.turn_id)
     else:
@@ -248,6 +272,7 @@ async def resume_turn_by_id(turn_id: str) -> TurnRecord:
             None,
         ),
     )
+    await _settle_failed_uncommitted_plan(saved)
     await turn_outbox_dispatcher.dispatch_due()
     return saved
 

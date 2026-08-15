@@ -756,6 +756,47 @@ class ActionPlanOrchestrator:
     ) -> ActionPlanRun | None:
         return await self._store.load(room_id, parent_action_id)
 
+    async def abandon_uncommitted(
+        self,
+        *,
+        room_id: str,
+        parent_action_id: str,
+        code: str,
+    ) -> ActionPlanRun | None:
+        """终止没有任何权威执行结果的孤儿计划，并释放房间占用。"""
+
+        run = await self._store.load(room_id, parent_action_id)
+        if run is None or run.is_terminal:
+            return run
+        # 这个入口只服务于 commit_state=not_committed 的 Turn 失败兜底。
+        # 一旦步骤已有 execution、公开事件或完成标记，就必须走 receipt 对账，
+        # 不能用清理孤儿计划的方式掩盖部分提交。
+        if any(
+            step.adjudication_execution is not None
+            or step.event_refs
+            or step.status == "completed"
+            for step in run.steps
+        ):
+            raise ActionPlanPolicyError(
+                "PLAN_ABANDON_COMMITTED",
+                "已有权威执行结果的行动计划不能按未提交失败终止",
+            )
+        steps = list(run.steps)
+        if run.current_step_index < len(steps):
+            current = steps[run.current_step_index]
+            steps[run.current_step_index] = current.model_copy(
+                update={
+                    "status": "stopped",
+                    "source_revision": None,
+                    "proposal": None,
+                    "adjudication": None,
+                    "pending_action_request_id": None,
+                    "safe_failure_code": code,
+                },
+                deep=True,
+            )
+        return await self._replace_steps(run, tuple(steps), status="stopped")
+
     async def build_narration_context(
         self,
         player_input: PlayerInput,

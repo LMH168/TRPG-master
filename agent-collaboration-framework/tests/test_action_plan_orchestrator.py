@@ -1286,6 +1286,36 @@ async def test_repeated_unreadable_model_output_stops_and_releases_plan_lease() 
 
 
 @pytest.mark.asyncio
+async def test_terminal_uncommitted_turn_can_abandon_orphan_plan() -> None:
+    """Turn 已确认未提交失败时，孤儿计划必须释放房间 reservation。"""
+
+    module, engine_store, projector = runtime()
+    service = ActionPlanOrchestrator(
+        store=InMemoryActionPlanRunStore(),
+        adjudicator=AlwaysUnreadableAdjudicator(),
+        executor=AdjudicationEngineService(engine_store),
+        player_view_projector=projector,
+    )
+    original = player_input("abandon-uncommitted-parent")
+
+    failed = await service.start_or_resume(original, plan=plan(2))
+    assert failed.run.status == "retryable_failure"
+
+    abandoned = await service.abandon_uncommitted(
+        room_id=original.room_id,
+        parent_action_id=original.client_action_id,
+        code="PARENT_ACTION_CONFLICT",
+    )
+
+    assert abandoned is not None
+    assert abandoned.status == "stopped"
+    assert abandoned.lease_owner is None
+    assert abandoned.steps[0].status == "stopped"
+    assert await service.active_for_room(original.room_id) is None
+    assert len(engine_store.inspect_domain_events("room_01")) == 0
+
+
+@pytest.mark.asyncio
 async def test_step_failure_observer_error_does_not_change_plan_failure_state() -> None:
     """日志或监控不可用时，仍须保留前序提交并安全停在当前未提交步骤。"""
 
