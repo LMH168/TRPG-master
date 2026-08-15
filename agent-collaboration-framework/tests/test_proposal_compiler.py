@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 from collaboration_framework.contracts import (
     AdjudicationValidationError,
+    ItemComponent,
+    ItemCustody,
+    ItemDisplay,
+    ItemInstance,
     ModuleContent,
+    MoveEntityEffect,
     SingleActionProposal,
     SubmitProposalRequest,
 )
@@ -69,6 +74,29 @@ def _runtime() -> EngineRuntimeSnapshot:
     )
 
 
+def _runtime_with_handgun(*, location_id: str) -> EngineRuntimeSnapshot:
+    """在指定地点放置一把已知手枪，用于验证跨地点 custody 门禁。"""
+
+    runtime = _runtime()
+    handgun = ItemInstance(
+        id="handgun",
+        room_id=runtime.game_state.room_id,
+        origin="runtime",
+        definition_id="handgun",
+        display=ItemDisplay(name="手枪"),
+        item_component=ItemComponent(),
+        custody=ItemCustody(kind="location", ref_id=location_id, form="placed"),
+        created_event_id="seed-handgun",
+        last_event_id="seed-handgun",
+        updated_revision="0",
+    )
+    state = runtime.game_state.model_copy(
+        update={"item_instances": {handgun.id: handgun}},
+        deep=True,
+    )
+    return runtime.model_copy(update={"game_state": state}, deep=True)
+
+
 def _submission(**updates: object) -> SubmitProposalRequest:
     """构造由 Coordinator 提供可信字段的提交信封。"""
 
@@ -101,6 +129,35 @@ def _v2_pickup_submission(**updates: object) -> SubmitProposalRequest:
     return _submission(**values)
 
 
+def _existing_handgun_pickup_submission(**updates: object) -> SubmitProposalRequest:
+    """构造尝试把既有手枪放回本人库存的 Proposal v2。"""
+
+    effect = {
+        "type": "move_entity",
+        "entity_ref": {"kind": "entity", "id": "handgun"},
+        "destination": {"kind": "self_inventory"},
+    }
+    goal = "掏出手枪"
+    payload = {
+        "kind": "single_action",
+        "schema_version": 2,
+        "semantic_goal": goal,
+        "semantic_focus": {"kind": "entity", "id": "handgun"},
+        "method_family": "physical",
+        "method_description": "从随身装备中取出手枪",
+        "check_proposal": {"mode": "none", "candidates": []},
+        "success_effect_proposals": [effect],
+        "failure_effect_proposals": [],
+        "completion": {"kind": "effects", "requirements": [effect]},
+    }
+    values: dict[str, object] = {
+        "proposal": SingleActionProposal.model_validate(payload),
+        "requested_goal": goal,
+    }
+    values.update(updates)
+    return _submission(**values)
+
+
 def test_v2_compiles_open_method_family_from_declared_completion() -> None:
     """开放中文动作方式不会绕过或阻断结构化持久结果。"""
 
@@ -110,6 +167,56 @@ def test_v2_compiles_open_method_family_from_declared_completion() -> None:
     assert command.completion_mode == "effects"
     assert command.adjudication.persistence_intent == "inventory"
     assert command.completion_requirements[0].type == "move_entity"
+
+
+def test_v2_accepts_pickup_only_when_item_is_at_current_location() -> None:
+    """当前位置的 loose item 可以进入背包，不能误伤正常拾取。"""
+
+    command = ProposalCompiler().compile(
+        _runtime_with_handgun(location_id="study"),
+        _existing_handgun_pickup_submission(),
+    )
+
+    effect = command.adjudication.success_effects[0]
+    assert isinstance(effect, MoveEntityEffect)
+    assert effect.holder_actor_id == "pc_1"
+
+
+def test_v2_rejects_pickup_from_another_location() -> None:
+    """玩家离开丢枪地点后，模型知道物品 ID 也不能隔空取回。"""
+
+    with pytest.raises(AdjudicationValidationError) as raised:
+        ProposalCompiler().compile(
+            _runtime_with_handgun(location_id="cemetery"),
+            _existing_handgun_pickup_submission(),
+        )
+
+    assert raised.value.result.code == "ITEM_NOT_AT_CURRENT_LOCATION"
+    assert raised.value.result.repairability == "requires_player_choice"
+
+
+@pytest.mark.asyncio
+async def test_submit_proposal_rejects_remote_pickup_without_side_effects() -> None:
+    """Engine 事务拒绝远程拾取后不得留下事件或改变手枪 custody。"""
+
+    runtime = _runtime_with_handgun(location_id="cemetery")
+    store = InMemoryEngineStore()
+    store.register_room(
+        module_content=runtime.module_content,
+        initial_state=runtime.game_state,
+    )
+
+    with pytest.raises(AdjudicationValidationError) as raised:
+        await AdjudicationEngineService(store).submit_proposal(
+            _existing_handgun_pickup_submission()
+        )
+
+    assert raised.value.result.code == "ITEM_NOT_AT_CURRENT_LOCATION"
+    assert store.inspect_domain_events("room_01") == ()
+    handgun = store.inspect_state("room_01").item_instances["handgun"]
+    assert handgun.custody.kind == "location"
+    assert handgun.custody.ref_id == "cemetery"
+    assert handgun.version == 1
 
 
 def test_v2_rejects_model_narrowing_the_trusted_goal() -> None:

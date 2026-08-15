@@ -1526,8 +1526,23 @@ class AdjudicationEngineService:
                     fault="agent",
                     player_safe_reason=persistent_problem.player_safe_reason,
                 )
-        self._validate_effect_sequence(runtime, adjudication.success_effects)
-        self._validate_effect_sequence(runtime, adjudication.failure_effects)
+        custody_actor_id = (
+            adjudication.actor_id
+            if validated_command is not None
+            and validated_command.schema_version == 2
+            and adjudication.rule_decision is None
+            else None
+        )
+        self._validate_effect_sequence(
+            runtime,
+            adjudication.success_effects,
+            custody_actor_id=custody_actor_id,
+        )
+        self._validate_effect_sequence(
+            runtime,
+            adjudication.failure_effects,
+            custody_actor_id=custody_actor_id,
+        )
         if adjudication.check.mode != "none":
             self._validated_options(runtime, adjudication)
 
@@ -1535,6 +1550,8 @@ class AdjudicationEngineService:
         self,
         runtime: EngineRuntimeSnapshot,
         effects: tuple[ActionEffect, ...],
+        *,
+        custody_actor_id: str | None = None,
     ) -> None:
         information_ids = runtime.canon_information_ids
         entity_ids = (
@@ -1552,6 +1569,13 @@ class AdjudicationEngineService:
         # A v3 runtime object becomes portable as soon as an earlier effect in
         # this same atomic sequence creates it.
         portable_item_ids = set(runtime.game_state.item_instances)
+        # Proposal v2 的 Host Effect 必须遵守物品来源位置。按 Effect 顺序维护
+        # 临时 custody，才能同时支持“当前地点创建后立即拾取”的原子链。
+        item_custodies: dict[str, tuple[str, str]] = {
+            item_id: (item.custody.kind, item.custody.ref_id)
+            for item_id, item in runtime.game_state.item_instances.items()
+            if item.state.status == "active"
+        }
         # Sleeping until 20:00 is several jumps in one adjudication, so each one
         # has to be checked against the clock the previous jump left behind —
         # not against the clock this action started on.
@@ -1564,6 +1588,8 @@ class AdjudicationEngineService:
                 entity_ids=entity_ids,
                 location_ids=location_ids,
                 portable_item_ids=portable_item_ids,
+                item_custodies=item_custodies,
+                custody_actor_id=custody_actor_id,
                 world_time=world_time,
             )
             if isinstance(effect, EnsureRuntimeLocationEffect):
@@ -1572,6 +1598,24 @@ class AdjudicationEngineService:
                 entity_ids.add(effect.entity_id)
                 if runtime.is_v3 and effect.entity_kind == "object":
                     portable_item_ids.add(effect.entity_id)
+                    item_custodies[effect.entity_id] = (
+                        "location",
+                        effect.location_id,
+                    )
+            elif (
+                isinstance(effect, MoveEntityEffect)
+                and effect.entity_id in item_custodies
+            ):
+                if effect.holder_actor_id is not None:
+                    item_custodies[effect.entity_id] = (
+                        "actor_inventory",
+                        effect.holder_actor_id,
+                    )
+                elif effect.location_id is not None:
+                    item_custodies[effect.entity_id] = (
+                        "location",
+                        effect.location_id,
+                    )
             elif isinstance(effect, AdvanceWorldTimeEffect):
                 world_time = advanced_to_next(runtime.v3, world_time)
 
@@ -1647,6 +1691,8 @@ class AdjudicationEngineService:
         entity_ids: set[str],
         location_ids: set[str],
         portable_item_ids: set[str],
+        item_custodies: dict[str, tuple[str, str]],
+        custody_actor_id: str | None,
         world_time: WorldTimeState | None = None,
     ) -> None:
         state = runtime.game_state
@@ -1764,6 +1810,34 @@ class AdjudicationEngineService:
                         fault="agent",
                         player_safe_reason="这个对象不是可携带物品，不能放入背包",
                     )
+                if custody_actor_id is not None and effect.entity_id in item_custodies:
+                    source = item_custodies[effect.entity_id]
+                    if effect.holder_actor_id is not None:
+                        if effect.holder_actor_id != custody_actor_id or source not in {
+                            ("actor_inventory", custody_actor_id),
+                            ("location", state.scene_id),
+                        }:
+                            self._reject_validation(
+                                "ITEM_NOT_AT_CURRENT_LOCATION",
+                                repairability="requires_player_choice",
+                                fault="player",
+                                player_safe_reason="物品不在当前位置，无法取得",
+                            )
+                    elif source != ("location", effect.location_id):
+                        if source != ("actor_inventory", custody_actor_id):
+                            self._reject_validation(
+                                "ITEM_NOT_OWNED",
+                                repairability="requires_player_choice",
+                                fault="player",
+                                player_safe_reason="只能丢下当前角色实际持有的物品",
+                            )
+                        if effect.location_id != state.scene_id:
+                            self._reject_validation(
+                                "DROP_LOCATION_MISMATCH",
+                                repairability="requires_player_choice",
+                                fault="player",
+                                player_safe_reason="丢弃物品只能落在当前位置",
+                            )
         elif isinstance(effect, AdvanceWorldTimeEffect):
             if not runtime.is_v3:
                 self._reject_validation(

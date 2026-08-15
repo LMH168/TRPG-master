@@ -162,6 +162,12 @@ class ProposalCompiler:
         failure = self._compile_effects(
             request, proposal.failure_effect_proposals, runtime_refs
         )
+        if proposal.schema_version == 2 and proposal.rule_ref is None:
+            # Host 只能移动当前行动者实际可接触的物品。这里按 Effect 顺序模拟
+            # custody，既允许“创建当前地点的普通物品后立即拾取”，也阻止模型
+            # 利用 Keeper capability 中的远端 ID 把物品隔空取回背包。
+            self._validate_host_item_custody_sequence(runtime, request, success)
+            self._validate_host_item_custody_sequence(runtime, request, failure)
         completion_mode: str = "legacy"
         process_interaction = None
         completion_requirements: tuple[ActionEffect, ...] = ()
@@ -360,6 +366,69 @@ class ProposalCompiler:
                         self._reject(
                             "DROP_LOCATION_MISMATCH", "丢弃物品只能落在当前位置"
                         )
+                elif requirement.holder_actor_id is not None and not (
+                    item.custody.kind == "location"
+                    and item.custody.ref_id == runtime.game_state.scene_id
+                ):
+                    self._reject(
+                        "ITEM_NOT_AT_CURRENT_LOCATION",
+                        "物品不在当前位置，无法取得",
+                        repairability="requires_player_choice",
+                        fault="player",
+                    )
+
+    def _validate_host_item_custody_sequence(
+        self,
+        runtime: EngineRuntimeSnapshot,
+        request: SubmitProposalRequest,
+        effects: tuple[ActionEffect, ...],
+    ) -> None:
+        """按顺序校验 Host 物品移动，防止跨地点或跨角色转移 custody。"""
+
+        state = runtime.game_state
+        custodies = {
+            item_id: (item.custody.kind, item.custody.ref_id)
+            for item_id, item in state.item_instances.items()
+            if item.state.status == "active"
+        }
+        for effect in effects:
+            if (
+                isinstance(effect, EnsureRuntimeEntityEffect)
+                and effect.entity_kind == "object"
+            ):
+                custodies[effect.entity_id] = ("location", effect.location_id)
+                continue
+            if not isinstance(effect, MoveEntityEffect):
+                continue
+            source = custodies.get(effect.entity_id)
+            if source is None:
+                # 非 ItemInstance 的普通实体继续由 Engine 的可携带类型门禁处理。
+                continue
+            if effect.holder_actor_id is not None:
+                if effect.holder_actor_id != request.actor_id:
+                    self._reject("ITEM_NOT_OWNED", "不能把物品放入其他角色的背包")
+                if source not in {
+                    ("actor_inventory", request.actor_id),
+                    ("location", state.scene_id),
+                }:
+                    self._reject(
+                        "ITEM_NOT_AT_CURRENT_LOCATION",
+                        "物品不在当前位置，无法取得",
+                        repairability="requires_player_choice",
+                        fault="player",
+                    )
+                custodies[effect.entity_id] = (
+                    "actor_inventory",
+                    request.actor_id,
+                )
+                continue
+            if source == ("location", effect.location_id):
+                continue
+            if source != ("actor_inventory", request.actor_id):
+                self._reject("ITEM_NOT_OWNED", "只能丢下当前角色实际持有的物品")
+            if effect.location_id != state.scene_id:
+                self._reject("DROP_LOCATION_MISMATCH", "丢弃物品只能落在当前位置")
+            custodies[effect.entity_id] = ("location", state.scene_id)
 
     @staticmethod
     def _terminal_requirement_is_satisfied(
