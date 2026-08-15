@@ -153,7 +153,11 @@ class ActionPlanOrchestrator:
                 on_progress,
                 self._progress(run, "plan.started", "understanding"),
             )
-        self._require_parent(run, player_input, plan)
+        # 已存在的计划恢复时，数据库中冻结的 plan 才是唯一事实来源。模型重试
+        # 可能为同一句输入生成结构略有不同但语义相同的计划，不能因此把尚未
+        # 提交的回合判成 parent conflict；真正需要继续校验的是 owner 和原始
+        # 输入指纹，防止别的请求借用同一个 client_action_id。
+        self._require_parent(run, player_input, None)
 
         return await self._advance_loaded(
             player_input,

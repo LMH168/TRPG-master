@@ -2165,6 +2165,35 @@ async def test_parent_id_reuse_with_different_input_fails_closed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resume_uses_frozen_plan_when_model_plan_shape_changes() -> None:
+    """恢复同一请求时不应因模型重新规划的步骤结构变化而卡死。"""
+
+    service, _, _, _, _ = orchestrator()
+    original = player_input(utterance="先调查现场，然后离开")
+    frozen = plan(4)
+
+    first = await service.start_or_resume(
+        original,
+        plan=frozen,
+        worker_id="worker-1",
+        auto_continue=False,
+    )
+
+    # 这是同一条玩家请求的重试，但 Host 重新生成了不同数量的步骤。
+    # 恢复必须继续使用已持久化的 frozen，而不是抛出 PARENT_ACTION_CONFLICT。
+    resumed = await service.start_or_resume(
+        original,
+        plan=plan(2),
+        worker_id="worker-2",
+        auto_continue=False,
+    )
+
+    assert resumed.run.plan == frozen
+    assert resumed.run.parent_input_fingerprint == first.run.parent_input_fingerprint
+    assert resumed.run.status in {"checkpointed", "awaiting_narration", "completed"}
+
+
+@pytest.mark.asyncio
 async def test_in_memory_plan_store_cas_allows_only_one_worker_update() -> None:
     service, _, _, store, _ = orchestrator()
     original = player_input()
