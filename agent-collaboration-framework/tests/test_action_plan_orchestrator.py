@@ -1261,6 +1261,46 @@ async def test_second_step_provider_failure_retries_from_same_cursor() -> None:
 
 
 @pytest.mark.asyncio
+async def test_second_step_context_failure_releases_adjudicating_state() -> None:
+    """步骤上下文准备失败也必须回到 pending，不能永久占住房间。"""
+
+    module, engine_store, projector = runtime()
+
+    class FailSecondProjection:
+        def __init__(self, delegate) -> None:
+            self._delegate = delegate
+            self._failed = False
+
+        async def project(self, player_input):
+            view = await self._delegate.project(player_input)
+            if view.revision == "1" and not self._failed:
+                self._failed = True
+                raise RuntimeError("temporary projection failure")
+            return view
+
+        def __getattr__(self, name):
+            return getattr(self._delegate, name)
+
+    service = ActionPlanOrchestrator(
+        store=InMemoryActionPlanRunStore(),
+        adjudicator=RecordingAdjudicator(module.world_ref),
+        executor=AdjudicationEngineService(engine_store),
+        player_view_projector=FailSecondProjection(projector),
+    )
+    original = player_input("projection-retry-parent")
+
+    failed = await service.start_or_resume(original, plan=plan(2))
+
+    assert failed.run.status == "retryable_failure"
+    assert [step.status for step in failed.run.steps] == ["completed", "pending"]
+    assert failed.run.steps[1].safe_failure_code == "STEP_ADJUDICATOR_FAILED"
+    assert failed.run.lease_owner is None
+    active = await service.active_for_room(original.room_id)
+    assert active is not None
+    assert active.status == "retryable_failure"
+
+
+@pytest.mark.asyncio
 async def test_repeated_unreadable_model_output_stops_and_releases_plan_lease() -> None:
     """连续不可读输出只自动重试一次，随后进入澄清而不是持续占用房间。"""
 

@@ -88,7 +88,7 @@ from app.core.turn_observability import (
     log_player_input,
     log_turn_failed,
 )
-from app.core.turn_runtime import TurnConflictError
+from app.core.turn_runtime import TurnCommitState, TurnConflictError, TurnRecord
 from app.dto.ws import (
     ActionBroadcastPayload,
     ActionPlanCancelPayload,
@@ -394,6 +394,29 @@ async def _send_view_updated(
         payload=payload.model_dump(by_alias=True),
     )
     await _send_to_player(websocket, envelope.model_dump(by_alias=True))
+
+
+async def _send_unpublished_committed_view(
+    websocket: WebSocket,
+    player_id: str,
+    turn: TurnRecord,
+) -> None:
+    """部分提交尚无最终 Outbox 时，立即同步当前权威 PlayerView。"""
+
+    if turn.result is not None or turn.commit_state == TurnCommitState.NOT_COMMITTED:
+        return
+    # Engine receipt 已经证明状态提交；即使后续步骤或 Narrator 失败，客户端也
+    # 必须看到最新 custody/角色状态，不能继续展示回合开始前的旧角色卡。
+    current_view = await session_view_application.current_player_view(
+        room_id=turn.room_id,
+        player_id=player_id,
+    )
+    await _send_view_updated(
+        websocket,
+        player_id,
+        current_view,
+        turn_id=turn.turn_id,
+    )
 
 
 async def _stream_narration_chunks(
@@ -1067,6 +1090,11 @@ async def room_socket(websocket: WebSocket, room_id: str, token: str | None = No
                                     db,
                                 ),
                             )
+                            await _send_unpublished_committed_view(
+                                websocket,
+                                bound_player_id,
+                                response.turn,
+                            )
                             if (
                                 response.action_result is not None
                                 and response.action_result.waiting_for_player
@@ -1132,6 +1160,11 @@ async def room_socket(websocket: WebSocket, room_id: str, token: str | None = No
                                     choice.client_action_id,
                                 ),
                             )
+                            await _send_unpublished_committed_view(
+                                websocket,
+                                bound_player_id,
+                                response.turn,
+                            )
                             if (
                                 response.action_result is not None
                                 and response.action_result.waiting_for_player
@@ -1184,6 +1217,11 @@ async def room_socket(websocket: WebSocket, room_id: str, token: str | None = No
                                     choice.client_action_id,
                                 ),
                             )
+                            await _send_unpublished_committed_view(
+                                websocket,
+                                bound_player_id,
+                                response.turn,
+                            )
                             if (
                                 response.action_result is not None
                                 and response.action_result.waiting_for_player
@@ -1219,6 +1257,11 @@ async def room_socket(websocket: WebSocket, room_id: str, token: str | None = No
                                 player_id=bound_player_id,
                                 client_action_id=cancel.client_action_id,
                                 request_id=cancel.request_id,
+                            )
+                            await _send_unpublished_committed_view(
+                                websocket,
+                                bound_player_id,
+                                response.turn,
                             )
                             await _send_persisted_turn_failure(websocket, response.turn)
                         except Exception as exc:

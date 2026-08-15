@@ -381,10 +381,21 @@ class TurnCoordinator:
         if receipts and commit_state == TurnCommitState.NOT_COMMITTED:
             commit_state = TurnCommitState.PARTIALLY_COMMITTED
         attempt_count = previous_attempts + 1
-        retryable = bool(getattr(exc, "retryable", True)) and (
-            attempt_count < MAX_TURN_RECOVERY_ATTEMPTS
-        )
         stage, resume_point = self._error_location(current)
+        # 执行阶段已经部分提交时，继续占用原 Turn 会阻止玩家用新行动接管，
+        # 还可能把复合计划未执行步骤误当成可无限恢复。保留 receipt 和已提交
+        # 状态后立即终止 Turn；只有 Narrator/投递阶段允许沿原 Turn 重试。
+        partial_execution_failure = bool(receipts) and stage in {
+            TurnErrorStage.PLANNING,
+            TurnErrorStage.VALIDATION,
+            TurnErrorStage.ADJUDICATION,
+            TurnErrorStage.EXECUTION,
+        }
+        retryable = (
+            bool(getattr(exc, "retryable", True))
+            and attempt_count < MAX_TURN_RECOVERY_ATTEMPTS
+            and not partial_execution_failure
+        )
         # 协调器会把异常转换成玩家安全快照；这里仅记录类型和稳定阶段，
         # 不记录玩家原话、Prompt、模型输出或异常正文，便于定位泛化错误来源。
         logger.error(
@@ -419,7 +430,11 @@ class TurnCoordinator:
                 "规则结果已保存，请稍后恢复本次回合"
                 if retryable and receipts
                 else (
-                    "规则结果已保存，本次叙事生成失败，请继续提交新的行动"
+                    (
+                        "已完成的步骤已经保存，未执行步骤已停止；请提交新的行动"
+                        if partial_execution_failure
+                        else "规则结果已保存，本次叙事生成失败，请继续提交新的行动"
+                    )
                     if receipts
                     else "本次回合暂时未完成，请重新提交新的行动"
                 )

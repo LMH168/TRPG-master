@@ -157,7 +157,7 @@ def _proposal_ref(kind: str, object_id: str, runtime_ids: set[str]) -> dict[str,
 
 
 def _proposal_from_adjudication(adjudication: ActionAdjudication) -> SingleActionProposal:
-    """将现有确定性裁决降为无授权 Proposal，供 PR2 过渡路径复用。"""
+    """将确定性裁决降为 v2 无授权 Proposal，并显式声明目标完成条件。"""
 
     effects = (*adjudication.success_effects, *adjudication.failure_effects)
     runtime_locations = {
@@ -273,9 +273,39 @@ def _proposal_from_adjudication(adjudication: ActionAdjudication) -> SingleActio
         anchor_ref = _proposal_ref(
             "location", created_location.connected_location_id, runtime_locations
         )
+    success_effect_proposals = [convert(item) for item in adjudication.success_effects]
+    failure_effect_proposals = [convert(item) for item in adjudication.failure_effects]
+    # 创建辅助 Effect 和 narrative_only 不是最终事实；其余成功 Effect 可以由
+    # Engine 在提交后直接验证。没有持久后置条件时，目标只声明一次过程交互。
+    completion_requirements = [
+        item
+        for item in success_effect_proposals
+        if item["type"]
+        not in {"ensure_runtime_location", "ensure_runtime_entity", "narrative_only"}
+    ]
+    family = adjudication.method.family.lower()
+    if completion_requirements:
+        completion: dict[str, object] = {
+            "kind": "effects",
+            "requirements": completion_requirements,
+        }
+    else:
+        interaction = (
+            "social"
+            if family in {"dialogue", "social", "talk"}
+            else (
+                "observe"
+                if family in {"observe", "search", "investigate", "spot_hidden"}
+                else "physical"
+                if family in {"physical", "pick_up", "drop", "use"}
+                else "other"
+            )
+        )
+        completion = {"kind": "process", "interaction": interaction}
+
     return SingleActionProposal.model_validate(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "semantic_goal": adjudication.summary,
             "semantic_focus": semantic_focus,
             "anchor_ref": anchor_ref,
@@ -287,8 +317,9 @@ def _proposal_from_adjudication(adjudication: ActionAdjudication) -> SingleActio
                 if adjudication.rule_decision is not None
                 else None
             ),
-            "success_effect_proposals": [convert(item) for item in adjudication.success_effects],
-            "failure_effect_proposals": [convert(item) for item in adjudication.failure_effects],
+            "success_effect_proposals": success_effect_proposals,
+            "failure_effect_proposals": failure_effect_proposals,
+            "completion": completion,
         }
     )
 
@@ -1942,27 +1973,12 @@ class _RuleFirstStepAdjudicator:
         self._fallback = fallback
 
     async def adjudicate(self, context: ActionPlanStepContext) -> SingleActionProposal:
+        # 确定性路径只处理当前 PlayerView 已完整证明的动作；无法确定时才调用
+        # Host。整个异常收束由 ActionPlanOrchestrator 的步骤冻结边界统一负责。
         adjudication = _deterministic_step_adjudication(context)
         if adjudication is not None:
             return _proposal_from_adjudication(adjudication)
-        try:
-            return await self._fallback.adjudicate(context)
-        except Exception as exc:
-            # 明确且可由当前 PlayerView 完整证明的旅行不需要模型参与裁决。
-            # 模型暂时不可用时重新走一次确定性分支，仍然不会创建未知地点或
-            # 代替 Host 猜测隐藏事实；其他动作继续保留原有恢复语义。
-            if context.step.kind == "travel":
-                recovered = _deterministic_step_adjudication(context)
-                if recovered is not None:
-                    logger.warning(
-                        "action_plan_step_deterministic_fallback",
-                        extra={
-                            "step_kind": context.step.kind,
-                            "error_type": type(exc).__name__,
-                        },
-                    )
-                    return _proposal_from_adjudication(recovered)
-            raise
+        return await self._fallback.adjudicate(context)
 
 
 def _deterministic_step_adjudication(

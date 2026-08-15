@@ -1,6 +1,9 @@
 """WebSocket protocol, authorization, persistence, and reconnect regression tests."""
 
 from dataclasses import replace
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 from collaboration_framework.contracts import (
@@ -26,10 +29,56 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from app.controller import ws as ws_controller
+from app.core.turn_runtime import TurnCommitState, TurnRecord
 from app.main import app
 from app.service import reliable_turn_runtime
 
 ROOMS_BASE = "/api/v1/rooms"
+
+
+@pytest.mark.asyncio
+async def test_partial_commit_sends_authoritative_player_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """整回合尚未完成时，已提交物品状态也必须立即刷新到角色卡。"""
+
+    current_view = object()
+    project = AsyncMock(return_value=current_view)
+    send = AsyncMock()
+    monkeypatch.setattr(
+        ws_controller,
+        "session_view_application",
+        SimpleNamespace(current_player_view=project),
+    )
+    monkeypatch.setattr(ws_controller, "_send_view_updated", send)
+    # 这里只验证发送分支，不需要构造包含全部持久字段的真实 TurnRecord。
+    turn = cast(
+        TurnRecord,
+        SimpleNamespace(
+            result=None,
+            commit_state=TurnCommitState.PARTIALLY_COMMITTED,
+            room_id="room-partial",
+            turn_id="turn-partial",
+        ),
+    )
+    websocket = cast(WebSocket, object())
+
+    await ws_controller._send_unpublished_committed_view(
+        websocket,
+        "player-partial",
+        turn,
+    )
+
+    project.assert_awaited_once_with(
+        room_id="room-partial",
+        player_id="player-partial",
+    )
+    send.assert_awaited_once_with(
+        websocket,
+        "player-partial",
+        current_view,
+        turn_id="turn-partial",
+    )
 
 
 class _WsCandidateIntentModel:

@@ -1031,23 +1031,68 @@ class ActionPlanOrchestrator:
             )
             run = await self._replace_steps(run, tuple(steps))
             current = run.steps[index]
-        view = await self._player_view_projector.project(player_input)
-        context = ActionPlanStepContext(
-            player_input=player_input,
-            plan_id=run.plan_id,
-            plan_goal=run.plan.goal,
-            step_index=index,
-            step_request_id=current.step_request_id,
-            step=current.step,
-            player_view=view,
-            completed_steps=self._completed_summaries(run),
-            recent_history=await self._recent_history(player_input, view),
-            previous_rejection=self._validation_feedback_text(current),
-            keeper_capabilities=await self._keeper_capabilities(player_input, view),
-        )
         adjudication_started_at = time.monotonic()
         try:
+            # 从权威视图准备到 Proposal 持久化属于同一个步骤冻结边界。任何一处
+            # 失败都必须回到可恢复状态，不能把已经落库的 adjudicating 留给房间。
+            view = await self._player_view_projector.project(player_input)
+            context = ActionPlanStepContext(
+                player_input=player_input,
+                plan_id=run.plan_id,
+                plan_goal=run.plan.goal,
+                step_index=index,
+                step_request_id=current.step_request_id,
+                step=current.step,
+                player_view=view,
+                completed_steps=self._completed_summaries(run),
+                recent_history=await self._recent_history(player_input, view),
+                previous_rejection=self._validation_feedback_text(current),
+                keeper_capabilities=await self._keeper_capabilities(player_input, view),
+            )
             candidate = await self._adjudicator.adjudicate(context)
+            if not isinstance(candidate, SingleActionProposal):
+                return await self._mark_step_failure(
+                    run,
+                    plan_status="needs_clarification",
+                    step_status="stopped",
+                    code="HOST_PROPOSAL_REQUIRED",
+                )
+            if candidate.semantic_goal != current.step.semantic_goal:
+                return await self._mark_step_failure(
+                    run,
+                    plan_status="needs_clarification",
+                    step_status="stopped",
+                    code="PROPOSAL_SEMANTIC_GOAL_CHANGED",
+                )
+            if current.repair_proposal_baseline is not None and (
+                candidate.semantic_goal
+                != current.repair_proposal_baseline.semantic_goal
+                or candidate.method_family
+                != current.repair_proposal_baseline.method_family
+            ):
+                return await self._mark_step_failure(
+                    run,
+                    plan_status="needs_clarification",
+                    step_status="stopped",
+                    code="SEMANTIC_REPAIR_REQUIRES_CLARIFICATION",
+                )
+            steps = list(run.steps)
+            steps[index] = current.model_copy(
+                update={
+                    "status": "ready",
+                    "source_revision": view.revision,
+                    "proposal": candidate,
+                    "adjudication": None,
+                    "safe_failure_code": None,
+                    "repair_baseline": None,
+                    "repair_proposal_baseline": None,
+                    "repair_feedback": None,
+                },
+                deep=True,
+            )
+            if candidate.schema_version == 2 and run.plan_schema_version < 3:
+                run = run.model_copy(update={"plan_schema_version": 3}, deep=True)
+            return await self._replace_steps(run, tuple(steps))
         except TurnExecutionError as exc:
             await self._observe_step_failure(
                 run,
@@ -1084,48 +1129,6 @@ class ActionPlanOrchestrator:
                 step_status="pending",
                 code="STEP_ADJUDICATOR_FAILED",
             )
-
-        if not isinstance(candidate, SingleActionProposal):
-            return await self._mark_step_failure(
-                run,
-                plan_status="needs_clarification",
-                step_status="stopped",
-                code="HOST_PROPOSAL_REQUIRED",
-            )
-        if candidate.semantic_goal != current.step.semantic_goal:
-            return await self._mark_step_failure(
-                run,
-                plan_status="needs_clarification",
-                step_status="stopped",
-                code="PROPOSAL_SEMANTIC_GOAL_CHANGED",
-            )
-        if current.repair_proposal_baseline is not None and (
-            candidate.semantic_goal != current.repair_proposal_baseline.semantic_goal
-            or candidate.method_family != current.repair_proposal_baseline.method_family
-        ):
-            return await self._mark_step_failure(
-                run,
-                plan_status="needs_clarification",
-                step_status="stopped",
-                code="SEMANTIC_REPAIR_REQUIRES_CLARIFICATION",
-            )
-        steps = list(run.steps)
-        steps[index] = current.model_copy(
-            update={
-                "status": "ready",
-                "source_revision": view.revision,
-                "proposal": candidate,
-                "adjudication": None,
-                "safe_failure_code": None,
-                "repair_baseline": None,
-                "repair_proposal_baseline": None,
-                "repair_feedback": None,
-            },
-            deep=True,
-        )
-        if candidate.schema_version == 2 and run.plan_schema_version < 3:
-            run = run.model_copy(update={"plan_schema_version": 3}, deep=True)
-        return await self._replace_steps(run, tuple(steps))
 
     async def _prepare_repair(
         self,

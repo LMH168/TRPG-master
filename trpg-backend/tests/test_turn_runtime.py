@@ -233,6 +233,48 @@ async def test_retryable_rule_failure_remains_recoverable_after_restart() -> Non
 
 
 @pytest.mark.asyncio
+async def test_partial_execution_failure_releases_room_for_new_action() -> None:
+    """复合计划部分提交后失败，保留 receipt 但不得阻塞玩家的新行动。"""
+
+    store = InMemoryTurnStore()
+    coordinator = TurnCoordinator(store, worker_id="worker-1")
+
+    async def execute_partial(on_phase):  # noqa: ANN001
+        await on_phase("executing_action")
+        turn_id = current_turn_id()
+        assert turn_id is not None
+        await store.append_receipt(
+            TurnCommitReceipt(
+                turn_id=turn_id,
+                room_id="room-1",
+                engine_request_id="engine-partial-1",
+                action_request_id="step-partial-1",
+                committed_state_version=1,
+                created_at=datetime.now(UTC),
+            )
+        )
+        raise RuntimeError("second step failed")
+
+    failed = await coordinator.start(_request(), executor=execute_partial)
+
+    assert failed.status == TurnStatus.FAILED
+    assert failed.commit_state == TurnCommitState.PARTIALLY_COMMITTED
+    assert failed.last_error is not None
+    assert failed.last_error.retryable is False
+    assert failed.last_error.recovery_action == TurnRecoveryAction.SUBMIT_NEW_INPUT
+    assert "已完成的步骤已经保存" in failed.last_error.public_message
+
+    async def execute_replacement(_on_phase):  # noqa: ANN001
+        return _outcome()
+
+    replacement = await coordinator.start(
+        _request("action-after-partial"),
+        executor=execute_replacement,
+    )
+    assert replacement.status == TurnStatus.COMPLETED
+
+
+@pytest.mark.asyncio
 async def test_repeated_narration_failure_releases_room_after_retry_budget() -> None:
     """叙事服务持续失败时，不能无限保留房间 reservation。"""
 

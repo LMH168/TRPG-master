@@ -404,17 +404,13 @@ async def test_runtime_venue_can_be_reused_through_a_synonym() -> None:
 
 
 @pytest.mark.asyncio
-async def test_visible_travel_falls_back_when_model_adjudication_fails() -> None:
-    """明确可见的旅行不应因模型瞬时失败而把复合行动卡在重试状态。"""
+async def test_visible_travel_uses_v2_deterministic_proposal_without_model() -> None:
+    """明确可见的旅行必须生成可持久化到 v3 ActionPlan 的 v2 Proposal。"""
 
     class FailingFallback:
         async def adjudicate(self, context):
             del context
-            raise TurnExecutionError(
-                "MODEL_UPSTREAM_UNAVAILABLE",
-                "模型暂时不可用",
-                retryable=True,
-            )
+            raise AssertionError("明确旅行不应调用模型")
 
     context = await _cemetery_context(
         "去墓地",
@@ -424,9 +420,12 @@ async def test_visible_travel_falls_back_when_model_adjudication_fails() -> None
     )
     proposal = await _RuleFirstStepAdjudicator(FailingFallback()).adjudicate(context)
 
+    assert proposal.schema_version == 2
     assert proposal.semantic_goal == context.step.semantic_goal
     assert proposal.success_effect_proposals[0].type == "enter_location"
     assert proposal.success_effect_proposals[0].location_ref.id == "cemetery"
+    assert proposal.completion is not None
+    assert proposal.completion.kind == "effects"
 
 
 @pytest.mark.asyncio
