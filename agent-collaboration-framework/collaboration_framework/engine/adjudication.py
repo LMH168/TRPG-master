@@ -1313,7 +1313,12 @@ class AdjudicationEngineService:
                     and item.custody.kind == "location"
                     and item.custody.ref_id == requirement.location_id
                 )
-            payload = state.runtime_entities.get(requirement.entity_id, {})
+            # Canon NPC 的运行时位置保存在 entities 覆盖层，动态 NPC 才保存在
+            # runtime_entities。完成条件必须读取两者，否则实体已经同行抵达仍会
+            # 被误判为 partially_achieved。
+            payload = state.runtime_entities.get(requirement.entity_id) or state.entities.get(
+                requirement.entity_id, {}
+            )
             return (
                 payload.get("holder_actor_id") == requirement.holder_actor_id
                 and payload.get("location_id") == requirement.location_id

@@ -454,16 +454,24 @@ class ProposalCompiler:
             return item is not None and item.state.condition == requirement.condition
         if isinstance(requirement, MoveEntityEffect):
             item = state.item_instances.get(requirement.entity_id)
-            if item is None:
-                return False
+            if item is not None:
+                return (
+                    requirement.holder_actor_id == actor_id
+                    and item.custody.kind == "actor_inventory"
+                    and item.custody.ref_id == actor_id
+                ) or (
+                    requirement.location_id is not None
+                    and item.custody.kind == "location"
+                    and item.custody.ref_id == requirement.location_id
+                )
+            # Canon 实体的位置变化写入 entities 覆盖层；动态实体则写入
+            # runtime_entities。编译期幂等判断必须和提交后完成判断保持一致。
+            payload = state.runtime_entities.get(requirement.entity_id) or state.entities.get(
+                requirement.entity_id, {}
+            )
             return (
-                requirement.holder_actor_id == actor_id
-                and item.custody.kind == "actor_inventory"
-                and item.custody.ref_id == actor_id
-            ) or (
-                requirement.location_id is not None
-                and item.custody.kind == "location"
-                and item.custody.ref_id == requirement.location_id
+                payload.get("holder_actor_id") == requirement.holder_actor_id
+                and payload.get("location_id") == requirement.location_id
             )
         return False
 

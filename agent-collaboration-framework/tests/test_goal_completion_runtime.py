@@ -449,3 +449,60 @@ async def test_item_condition_and_drop_are_atomic_and_visible_in_next_view() -> 
     replayed = await AdjudicationEngineService(store).submit_proposal(request)
     assert replayed == execution
     assert len(store.inspect_domain_events(ROOM)) == event_count
+
+
+@pytest.mark.asyncio
+async def test_companion_travel_satisfies_canon_npc_location_requirement() -> None:
+    """玩家与 Canon NPC 同行抵达后，最终状态必须判定完整目标已达成。"""
+
+    store = _runtime_store()
+    # 从会客室开始，托马斯使用模组初始位置，不提前制造运行时实体。
+    initial = store.inspect_state(ROOM).model_copy(update={"scene_id": "thomas_office"})
+    replacement = InMemoryEngineStore()
+    module = ModuleContentV3.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    replacement.register_room(module_content=module, initial_state=initial)
+    engine = AdjudicationEngineService(replacement)
+    enter = {
+        "type": "enter_location",
+        "location_ref": {"kind": "location", "id": "cemetery"},
+    }
+    companion = {
+        "type": "move_entity",
+        "entity_ref": {"kind": "entity", "id": "thomas"},
+        "destination": {
+            "kind": "location",
+            "location_ref": {"kind": "location", "id": "cemetery"},
+        },
+    }
+    request = _submission(
+        request_id="travel-with-thomas",
+        revision="0",
+        goal="带着托马斯一起去墓地",
+        payload={
+            "semantic_focus": {"kind": "location", "id": "cemetery"},
+            "method_family": "travel",
+            "method_description": "与托马斯同行前往墓地",
+            "check_proposal": {"mode": "none", "candidates": []},
+            "success_effect_proposals": [enter, companion],
+            "failure_effect_proposals": [],
+            "completion": {"kind": "effects", "requirements": [enter, companion]},
+        },
+    )
+
+    execution = await engine.submit_proposal(request)
+
+    state = replacement.inspect_state(ROOM)
+    assert execution.goal_outcome == "achieved"
+    assert state.scene_id == "cemetery"
+    assert state.entities["thomas"]["location_id"] == "cemetery"
+
+    # 相同最终条件再次提交时必须按幂等结果完成，不重复移动 Canon NPC。
+    replay_request = request.model_copy(
+        update={"request_id": "travel-with-thomas-again", "source_revision": "3"},
+        deep=True,
+    )
+    previous_events = replacement.inspect_domain_events(ROOM)
+    replayed = await engine.submit_proposal(replay_request)
+    assert replayed.goal_outcome == "achieved"
+    new_events = replacement.inspect_domain_events(ROOM)[len(previous_events) :]
+    assert "entity.moved" not in {event.type for event in new_events}

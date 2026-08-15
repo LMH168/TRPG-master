@@ -1617,13 +1617,20 @@ class ActionPlanTurnApplication:
             except Exception as exc:
                 # 传输层的瞬态失败已经由 StructuredJsonClient 自己重试过了
                 # （见 adapters/structured_http.py）。在这里再整体重试一轮，两层
-                # 是相乘的：一轮叙事内含 client 的多次尝试，失败等待会成倍拉长。
-                # 玩家宁可早点看到失败，也不愿盯着"生成中"等上几分钟。
-                raise TurnExecutionError(
-                    "PLAN_NARRATOR_FAILED",
-                    "规则结果已保存，但叙事生成失败；请使用原请求重试",
-                    retryable=True,
-                ) from exc
+                # 是相乘的。规则结果已经提交时直接使用结构化证据生成确定性回复，
+                # 避免 Narrator 故障长期占用房间，也绝不重新执行 Engine。
+                logger.warning(
+                    "action_plan_narration_model_fallback",
+                    action=context.player_input.client_action_id,
+                    error_type=type(exc).__name__,
+                    termination_status=context.termination_status,
+                )
+                required = tuple(
+                    item for item in context.narration_evidence if item.required_in_narration
+                )
+                if required and context.termination_status != "needs_clarification":
+                    return self._required_evidence_fallback(context)
+                return self._deterministic_narration_fallback(context)
         raise AssertionError("unreachable")
 
     @staticmethod

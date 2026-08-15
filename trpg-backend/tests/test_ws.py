@@ -1566,7 +1566,7 @@ def test_single_action_pending_resumes_without_plan_run(
     assert "_turnCompletion" not in conversation_narration[0]["payload"]
 
 
-def test_action_plan_narrator_failure_retries_narration_without_replaying_steps(
+def test_action_plan_narrator_failure_uses_fallback_without_blocking_room(
     sync_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1600,27 +1600,13 @@ def test_action_plan_narrator_failure_retries_narration_without_replaying_steps(
         receive_replayed_opening(ws)
 
         ws.send_json(action)
-        failed, first_seen = receive_until(
-            ws,
-            lambda message: message.get("type") == "turn.failed",
-            limit=40,
-        )
-        assert failed["payload"]["code"] == "PLAN_NARRATOR_FAILED"
-        assert all(message.get("type") != "plan.completed" for message in first_seen)
+        completed, narration, seen = receive_turn_outbox(ws, limit=40)
 
-        ws.send_json(action)
-        terminal, retry_seen = receive_until(
-            ws,
-            lambda message: message.get("type") == "plan.completed",
-            limit=40,
-        )
-        completed, _, completion_seen = receive_turn_outbox(ws, limit=40)
-        retry_seen.extend(completion_seen)
-
-    assert narrator.calls == 2
+    assert narrator.calls == 1
     assert completed["correlation_id"] == "plan-narrator-retry-246"
-    assert terminal["payload"]["correlationId"] == "plan-narrator-retry-246"
-    assert all(message.get("type") != "adjudication.pending" for message in retry_seen)
+    assert narration["payload"]["text"]
+    assert all(message.get("type") != "turn.failed" for message in seen)
+    assert all(message.get("type") != "adjudication.pending" for message in seen)
 
 
 def test_subject_ownership_failure_retries_before_publishing_narration(
