@@ -97,6 +97,8 @@ class EngineStore(Protocol):
     def transaction(
         self,
         room_id: str,
+        *,
+        turn_id: str | None = None,
     ) -> AbstractAsyncContextManager[EngineTransaction]: ...
 
     async def claim_rule_agenda(

@@ -34,14 +34,17 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters import SqlAlchemyEngineStore
+from app.adapters.sqlalchemy_turn_store import SqlAlchemyTurnStore
 from app.core.seed import (
     BUILTIN_MODULE_ID,
     BUILTIN_MODULE_VERSION,
     BUILTIN_SCENARIO_ID,
     BUILTIN_SYSTEM_ID,
 )
+from app.core.turn_runtime import TurnInputSnapshot, new_turn_record
 from app.models.engine import ActionExecution, GameEvent, GameSession, ModuleVersion
 from app.models.room import Character, Player, Room
+from app.models.turn import TurnCommitReceiptRecord
 from app.service import room as room_service
 from tests.helpers import create_room, reconnect
 
@@ -344,8 +347,10 @@ def _commit_payload(
 async def _commit_once(
     store: SqlAlchemyEngineStore,
     request: ActionRequest,
+    *,
+    turn_id: str | None = None,
 ) -> CompletedAction:
-    async with store.transaction(request.room_id) as transaction:
+    async with store.transaction(request.room_id, turn_id=turn_id) as transaction:
         runtime = await transaction.load_runtime()
         new_state, events, completed = _commit_payload(request, runtime)
         await transaction.commit(
@@ -355,6 +360,30 @@ async def _commit_once(
             completed_action=completed,
         )
     return completed
+
+
+async def _create_runtime_turn(
+    store: SqlAlchemyTurnStore,
+    *,
+    room_id: str,
+    player_id: str,
+    request_id: str,
+) -> str:
+    """为 Engine 事务测试建立真实 Turn 外键和房间占用。"""
+
+    record, created = await store.create_or_get(
+        new_turn_record(
+            TurnInputSnapshot(
+                room_id=room_id,
+                player_id=player_id,
+                actor_id="actor_1",
+                client_action_id=request_id,
+                utterance="执行可靠回合事务测试",
+            )
+        )
+    )
+    assert created is True
+    return record.turn_id
 
 
 async def _counts(db: AsyncSession, room_id: str) -> tuple[int, int]:
@@ -691,6 +720,191 @@ async def test_store_persists_completed_action_across_store_rebuild(
         len(completed.execution.action_result.event_refs),
         1,
     )
+
+
+async def test_engine_commit_persists_receipt_and_events_in_same_turn_transaction(
+    db_session: AsyncSession,
+    engine_store_factory: Callable[..., SqlAlchemyEngineStore],
+    turn_store_factory: Callable[[], SqlAlchemyTurnStore],
+) -> None:
+    """权威状态、DomainEvent、执行结果和 receipt 必须共享同一提交边界。"""
+
+    room, players, _ = await _start_room(db_session, room_number=122)
+    request = _checkpoint_request(
+        room_id=room.id,
+        player_id=players[0].id,
+        request_id="turn-receipt-122",
+    )
+    turn_id = await _create_runtime_turn(
+        turn_store_factory(),
+        room_id=room.id,
+        player_id=players[0].id,
+        request_id=request.request_id,
+    )
+
+    completed = await _commit_once(
+        engine_store_factory(),
+        request,
+        turn_id=turn_id,
+    )
+
+    db_session.expire_all()
+    receipts = (
+        await db_session.scalars(
+            select(TurnCommitReceiptRecord).where(TurnCommitReceiptRecord.turn_id == turn_id)
+        )
+    ).all()
+    events = (
+        await db_session.scalars(
+            select(GameEvent).where(GameEvent.turn_id == turn_id).order_by(GameEvent.sequence)
+        )
+    ).all()
+    assert len(receipts) == 1
+    assert receipts[0].engine_request_id == request.request_id
+    assert receipts[0].first_event_sequence == events[0].sequence
+    assert receipts[0].last_event_sequence == events[-1].sequence
+    assert receipts[0].committed_state_version == completed.execution.state_version
+
+
+async def test_engine_no_event_commit_still_persists_receipt(
+    db_session: AsyncSession,
+    engine_store_factory: Callable[..., SqlAlchemyEngineStore],
+    turn_store_factory: Callable[[], SqlAlchemyTurnStore],
+) -> None:
+    """不产生 DomainEvent 的成功命令仍需 receipt，不能被恢复器判为未知。"""
+
+    room, players, _ = await _start_room(db_session, room_number=123)
+    request = _checkpoint_request(
+        room_id=room.id,
+        player_id=players[0].id,
+        request_id="turn-no-event-123",
+    )
+    turn_id = await _create_runtime_turn(
+        turn_store_factory(),
+        room_id=room.id,
+        player_id=players[0].id,
+        request_id=request.request_id,
+    )
+    room_id = room.id
+    store = engine_store_factory()
+    async with store.transaction(room_id, turn_id=turn_id) as transaction:
+        runtime = await transaction.load_runtime()
+        completed = CompletedAction(
+            request=request,
+            execution=EngineExecutionResult(
+                action_result=ActionResult(
+                    request_id=request.request_id,
+                    action_id=request.request_id,
+                    resolution="direct",
+                    outcome="success",
+                    view_revision=runtime.revision,
+                    event_refs=(),
+                ),
+                events=(),
+                state_version=runtime.game_state.event_sequence,
+            ),
+        )
+        await transaction.commit(
+            expected_revision=runtime.revision,
+            new_state=runtime.game_state,
+            events=(),
+            completed_action=completed,
+        )
+
+    db_session.expire_all()
+    receipt = await db_session.get(
+        TurnCommitReceiptRecord,
+        (room_id, request.request_id),
+    )
+    assert receipt is not None
+    assert receipt.turn_id == turn_id
+    assert receipt.first_event_sequence is None
+    assert receipt.last_event_sequence is None
+    assert receipt.committed_state_version == 0
+
+
+async def test_engine_failure_rolls_back_receipt_with_authoritative_writes(
+    db_session: AsyncSession,
+    engine_store_factory: Callable[..., SqlAlchemyEngineStore],
+    turn_store_factory: Callable[[], SqlAlchemyTurnStore],
+) -> None:
+    """提交前故障必须同时回滚状态、事件、执行结果和 receipt。"""
+
+    room, players, _ = await _start_room(db_session, room_number=124)
+    request = _checkpoint_request(
+        room_id=room.id,
+        player_id=players[0].id,
+        request_id="turn-rollback-124",
+    )
+    turn_id = await _create_runtime_turn(
+        turn_store_factory(),
+        room_id=room.id,
+        player_id=players[0].id,
+        request_id=request.request_id,
+    )
+    room_id = room.id
+
+    def fail_before_commit(room_id: str) -> None:
+        raise RuntimeError(f"simulated turn failure for {room_id}")
+
+    with pytest.raises(RuntimeError, match="simulated turn failure"):
+        await _commit_once(
+            engine_store_factory(before_commit=fail_before_commit),
+            request,
+            turn_id=turn_id,
+        )
+
+    db_session.expire_all()
+    assert (
+        await db_session.get(
+            TurnCommitReceiptRecord,
+            (room_id, request.request_id),
+        )
+        is None
+    )
+    assert await _counts(db_session, room_id) == (0, 0)
+
+
+async def test_engine_after_commit_failure_keeps_one_receipt_and_one_result(
+    db_session: AsyncSession,
+    engine_store_factory: Callable[..., SqlAlchemyEngineStore],
+    turn_store_factory: Callable[[], SqlAlchemyTurnStore],
+) -> None:
+    """提交后抛错不得回滚事实；恢复时可用 receipt 与执行记录直接对账。"""
+
+    room, players, _ = await _start_room(db_session, room_number=126)
+    room_id = room.id
+    request = _checkpoint_request(
+        room_id=room_id,
+        player_id=players[0].id,
+        request_id="turn-after-commit-126",
+    )
+    turn_id = await _create_runtime_turn(
+        turn_store_factory(),
+        room_id=room_id,
+        player_id=players[0].id,
+        request_id=request.request_id,
+    )
+
+    def fail_after_commit(committed_room_id: str) -> None:
+        raise RuntimeError(f"simulated post-commit failure for {committed_room_id}")
+
+    store = engine_store_factory(after_commit=fail_after_commit)
+    with pytest.raises(RuntimeError, match="simulated post-commit failure"):
+        await _commit_once(store, request, turn_id=turn_id)
+
+    db_session.expire_all()
+    receipts = (
+        await db_session.scalars(
+            select(TurnCommitReceiptRecord).where(TurnCommitReceiptRecord.turn_id == turn_id)
+        )
+    ).all()
+    assert len(receipts) == 1
+    assert await _counts(db_session, room_id) == (1, 1)
+    async with engine_store_factory().transaction(room_id) as transaction:
+        completed = await transaction.find_completed_action(request.request_id)
+    assert completed is not None
+    assert completed.request.request_id == request.request_id
 
 
 async def test_loaded_runtime_is_deep_copy_isolated(

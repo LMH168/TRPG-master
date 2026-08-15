@@ -10,7 +10,7 @@ import hashlib
 import json
 from collections.abc import Iterable
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
 from uuid import uuid4
@@ -247,6 +247,7 @@ class TurnRecord(BaseModel):
     waiting_reason: TurnWaitingReason = TurnWaitingReason.NONE
     commit_state: TurnCommitState = TurnCommitState.NOT_COMMITTED
     recovery_action: TurnRecoveryAction = TurnRecoveryAction.WAIT
+    pending_decision: dict | None = None
     last_error: TurnFailureSnapshot | None = None
     result: TurnResultSnapshot | None = None
     lease_owner: str | None = Field(default=None, min_length=1, max_length=200)
@@ -291,6 +292,11 @@ class TurnRecord(BaseModel):
             or self.resume_point != TurnResumePoint.AWAITING_PLAYER
         ):
             raise ValueError("玩家等待原因只能出现在 adjudicating/awaiting_player")
+        if self.pending_decision is not None and (
+            self.status != TurnStatus.ADJUDICATING
+            or self.resume_point != TurnResumePoint.AWAITING_PLAYER
+        ):
+            raise ValueError("待决策快照只能出现在 adjudicating/awaiting_player")
         if self.result is not None and self.status not in {
             TurnStatus.DELIVERING,
             TurnStatus.COMPLETED,
@@ -368,6 +374,25 @@ class NarrationOutboxMessage(BaseModel):
         return self
 
 
+class TurnReplayEvent(BaseModel):
+    """叙事发布事务要写入的玩家安全回放事件。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    event_id: str = Field(min_length=1)
+    turn_id: str = Field(min_length=1)
+    room_id: str = Field(min_length=1)
+    player_id: str = Field(min_length=1)
+    event_type: str = Field(default="narration.push", min_length=1, max_length=50)
+    correlation_id: str = Field(min_length=1, max_length=200)
+    visibility: str = Field(pattern=r"^(public|player_scoped)$")
+    actor_id: str = Field(min_length=1)
+    scene_id: str = Field(min_length=1)
+    view_revision: str = Field(min_length=1)
+    payload: dict
+    created_at: datetime
+
+
 def new_turn_record(request: TurnInputSnapshot, *, now: datetime | None = None) -> TurnRecord:
     """为首次被接受的玩家输入创建服务端回合身份。"""
 
@@ -394,12 +419,13 @@ def transition_turn(
     waiting_reason: TurnWaitingReason = TurnWaitingReason.NONE,
     commit_state: TurnCommitState | None = None,
     recovery_action: TurnRecoveryAction,
+    pending_decision: dict | None = None,
     last_error: TurnFailureSnapshot | None = None,
     result: TurnResultSnapshot | None = None,
 ) -> TurnRecord:
     """执行一次单调状态转换；任何阶段跳跃都必须在这里显式获准。"""
 
-    if status not in _ALLOWED_STATUS_TRANSITIONS[current.status]:
+    if status != current.status and status not in _ALLOWED_STATUS_TRANSITIONS[current.status]:
         raise TurnContractError(f"非法回合状态转换: {current.status} -> {status}")
     current_time = now or datetime.now(UTC)
     terminal = status in TERMINAL_TURN_STATUSES
@@ -412,6 +438,7 @@ def transition_turn(
             "waiting_reason": waiting_reason,
             "commit_state": commit_state or current.commit_state,
             "recovery_action": recovery_action,
+            "pending_decision": pending_decision,
             "last_error": last_error,
             "result": result if result is not None else current.result,
             "lease_owner": None if terminal else current.lease_owner,
@@ -440,7 +467,10 @@ def validate_turn_cas_update(
         raise TurnConflictError("TURN_VERSION_CONFLICT", "回合已被其他 worker 更新")
     if updated.phase_version != expected_phase_version + 1:
         raise TurnContractError("CAS 更新必须将 phase_version 精确增加 1")
-    if updated.status not in _ALLOWED_STATUS_TRANSITIONS[current.status]:
+    if (
+        updated.status != current.status
+        and updated.status not in _ALLOWED_STATUS_TRANSITIONS[current.status]
+    ):
         raise TurnContractError(f"非法回合状态转换: {current.status} -> {updated.status}")
     if _COMMIT_STATE_ORDER[updated.commit_state] < _COMMIT_STATE_ORDER[current.commit_state]:
         raise TurnContractError("commit_state 不得从已提交状态降级")
@@ -491,6 +521,49 @@ class TurnStore(Protocol):
     ) -> TurnRecord: ...
 
 
+class TurnRuntimeStore(TurnStore, Protocol):
+    """Coordinator 所需的 receipt、发布事务与 Outbox 消费端口。"""
+
+    async def list_receipts(self, turn_id: str) -> tuple[TurnCommitReceipt, ...]: ...
+
+    async def list_recoverable_turns(
+        self,
+        *,
+        now: datetime,
+        limit: int,
+    ) -> tuple[TurnRecord, ...]: ...
+
+    async def publish_narration(
+        self,
+        *,
+        expected_phase_version: int,
+        updated_turn: TurnRecord,
+        message: NarrationOutboxMessage,
+        replay_event: TurnReplayEvent,
+    ) -> tuple[TurnRecord, NarrationOutboxMessage, bool]: ...
+
+    async def claim_due_outbox(
+        self,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_expires_at: datetime,
+        limit: int,
+    ) -> tuple[NarrationOutboxMessage, ...]: ...
+
+    async def settle_outbox(
+        self,
+        *,
+        outbox_id: str,
+        worker_id: str,
+        outcome: str,
+        now: datetime,
+        next_attempt_at: datetime,
+        error_code: str | None = None,
+        max_attempts: int = 5,
+    ) -> NarrationOutboxMessage: ...
+
+
 class InMemoryTurnStore(TurnStore):
     """供状态机和上层协调器测试使用的确定性内存 Store。"""
 
@@ -498,6 +571,10 @@ class InMemoryTurnStore(TurnStore):
         self._records: dict[str, TurnRecord] = {}
         self._client_index: dict[tuple[str, str], str] = {}
         self._room_reservations: dict[str, str] = {}
+        self._receipts: dict[tuple[str, str], TurnCommitReceipt] = {}
+        self._outbox: dict[str, NarrationOutboxMessage] = {}
+        self._outbox_by_turn_type: dict[tuple[str, str], str] = {}
+        self._replay_events: dict[str, TurnReplayEvent] = {}
 
     async def create_or_get(self, proposed: TurnRecord) -> tuple[TurnRecord, bool]:
         key = (proposed.room_id, proposed.client_action_id)
@@ -626,6 +703,173 @@ class InMemoryTurnStore(TurnStore):
         self._records[turn_id] = released
         return released.model_copy(deep=True)
 
+    async def append_receipt(self, receipt: TurnCommitReceipt) -> TurnCommitReceipt:
+        """测试与离线执行器用的幂等 receipt 写入。"""
+
+        key = (receipt.room_id, receipt.engine_request_id)
+        existing = self._receipts.get(key)
+        if existing is not None and existing != receipt:
+            raise TurnConflictError("TURN_RECEIPT_CONFLICT", "Engine request 已存在不同提交证明")
+        self._receipts[key] = receipt.model_copy(deep=True)
+        return receipt.model_copy(deep=True)
+
+    async def list_receipts(self, turn_id: str) -> tuple[TurnCommitReceipt, ...]:
+        receipts = sorted(
+            (item for item in self._receipts.values() if item.turn_id == turn_id),
+            key=lambda item: (item.created_at, item.engine_request_id),
+        )
+        return tuple(item.model_copy(deep=True) for item in receipts)
+
+    async def list_recoverable_turns(
+        self,
+        *,
+        now: datetime,
+        limit: int,
+    ) -> tuple[TurnRecord, ...]:
+        """返回无需玩家补充输入、且当前没有有效 worker lease 的回合。"""
+
+        if limit < 1:
+            raise TurnContractError("limit 必须大于 0")
+        matches = (
+            record
+            for record in self._records.values()
+            if not record.is_terminal
+            and record.resume_point != TurnResumePoint.AWAITING_PLAYER
+            and (record.last_error is None or record.status == TurnStatus.DELIVERING)
+            and (
+                (record.lease_owner is None and record.updated_at <= now - timedelta(seconds=60))
+                or (record.lease_expires_at is not None and record.lease_expires_at <= now)
+            )
+        )
+        ordered = sorted(matches, key=lambda item: (item.updated_at, item.turn_id))
+        return tuple(item.model_copy(deep=True) for item in ordered[:limit])
+
+    async def publish_narration(
+        self,
+        *,
+        expected_phase_version: int,
+        updated_turn: TurnRecord,
+        message: NarrationOutboxMessage,
+        replay_event: TurnReplayEvent,
+    ) -> tuple[TurnRecord, NarrationOutboxMessage, bool]:
+        """在内存测试中模拟 Turn、Result、Outbox 与回放事件的原子发布。"""
+
+        if updated_turn.status != TurnStatus.DELIVERING or updated_turn.result is None:
+            raise TurnContractError("叙事发布必须把带结果的回合推进到 delivering")
+        if not (
+            updated_turn.turn_id == message.turn_id == replay_event.turn_id
+            and updated_turn.room_id == message.room_id == replay_event.room_id
+        ):
+            raise TurnContractError("叙事发布的 Turn、Outbox 与回放事件身份不一致")
+        key = (message.turn_id, message.message_type)
+        existing_id = self._outbox_by_turn_type.get(key)
+        if existing_id is not None:
+            existing = self._outbox[existing_id]
+            return self._records[updated_turn.turn_id], existing.model_copy(deep=True), False
+        saved_turn = await self.compare_and_swap(
+            expected_phase_version=expected_phase_version,
+            updated=updated_turn,
+        )
+        self._outbox[message.outbox_id] = message.model_copy(deep=True)
+        self._outbox_by_turn_type[key] = message.outbox_id
+        self._replay_events[replay_event.event_id] = replay_event.model_copy(deep=True)
+        return saved_turn, message.model_copy(deep=True), True
+
+    async def get_outbox(
+        self,
+        turn_id: str,
+        message_type: str = "narration.push",
+    ) -> NarrationOutboxMessage | None:
+        """读取一个回合的稳定 Outbox，供恢复与测试使用。"""
+
+        outbox_id = self._outbox_by_turn_type.get((turn_id, message_type))
+        if outbox_id is None:
+            return None
+        return self._outbox[outbox_id].model_copy(deep=True)
+
+    async def claim_due_outbox(
+        self,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_expires_at: datetime,
+        limit: int,
+    ) -> tuple[NarrationOutboxMessage, ...]:
+        """按稳定顺序领取到期消息，允许接管过期 lease。"""
+
+        candidates = sorted(
+            self._outbox.values(), key=lambda item: (item.created_at, item.outbox_id)
+        )
+        claimed: list[NarrationOutboxMessage] = []
+        for current in candidates:
+            if len(claimed) >= limit:
+                break
+            lease_expired = (
+                current.status == TurnOutboxStatus.LEASED
+                and current.lease_expires_at is not None
+                and current.lease_expires_at <= now
+            )
+            if (
+                not (current.status == TurnOutboxStatus.PENDING or lease_expired)
+                or current.next_attempt_at > now
+            ):
+                continue
+            item = NarrationOutboxMessage.model_validate(
+                {
+                    **current.model_dump(),
+                    "status": TurnOutboxStatus.LEASED,
+                    "lease_owner": worker_id,
+                    "lease_expires_at": lease_expires_at,
+                    "updated_at": now,
+                }
+            )
+            self._outbox[item.outbox_id] = item
+            claimed.append(item.model_copy(deep=True))
+        return tuple(claimed)
+
+    async def settle_outbox(
+        self,
+        *,
+        outbox_id: str,
+        worker_id: str,
+        outcome: str,
+        now: datetime,
+        next_attempt_at: datetime,
+        error_code: str | None = None,
+        max_attempts: int = 5,
+    ) -> NarrationOutboxMessage:
+        """结束一次领取；无接收者不计失败，真实发送失败才消耗预算。"""
+
+        current = self._outbox[outbox_id]
+        if current.status != TurnOutboxStatus.LEASED or current.lease_owner != worker_id:
+            raise TurnConflictError("TURN_OUTBOX_LEASE_LOST", "Outbox lease 已失效")
+        attempts = current.attempt_count + (0 if outcome == "no_recipient" else 1)
+        if outcome == "dispatched":
+            status = TurnOutboxStatus.DISPATCHED
+        elif outcome == "failed" and attempts >= max_attempts:
+            status = TurnOutboxStatus.DEAD_LETTER
+        elif outcome in {"failed", "no_recipient"}:
+            status = TurnOutboxStatus.PENDING
+        else:
+            raise TurnContractError("未知 Outbox 投递结果")
+        updated = NarrationOutboxMessage.model_validate(
+            {
+                **current.model_dump(),
+                "status": status,
+                "attempt_count": attempts,
+                "lease_owner": None,
+                "lease_expires_at": None,
+                "next_attempt_at": next_attempt_at,
+                "last_error_code": error_code if outcome == "failed" else None,
+                "updated_at": now,
+                "last_dispatched_at": now
+                if outcome == "dispatched"
+                else current.last_dispatched_at,
+            }
+        )
+        self._outbox[outbox_id] = updated
+        return updated.model_copy(deep=True)
+
     def snapshot(self) -> tuple[TurnRecord, ...]:
         """仅供测试检查内部状态，返回深拷贝避免绕过 Store 修改。"""
 
@@ -672,6 +916,8 @@ __all__ = [
     "TurnResumePoint",
     "TurnStatus",
     "TurnStore",
+    "TurnRuntimeStore",
+    "TurnReplayEvent",
     "TurnWaitingReason",
     "new_turn_record",
     "transition_turn",

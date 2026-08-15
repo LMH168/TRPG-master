@@ -87,6 +87,7 @@ class TurnRecordModel(Base):
     waiting_reason: Mapped[str] = mapped_column(String(30), nullable=False)
     commit_state: Mapped[str] = mapped_column(String(30), nullable=False)
     recovery_action: Mapped[str] = mapped_column(String(30), nullable=False)
+    pending_decision_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_schema_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     result_schema_version: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -25,6 +25,7 @@ from collaboration_framework.engine import (
     DiceRoller,
     RuleEngineService,
     SequenceDiceSource,
+    engine_turn_context,
 )
 from collaboration_framework.host.application import (
     ActionPlanOrchestrator,
@@ -34,7 +35,8 @@ from collaboration_framework.host.ports import ActionPlanBusyError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters import SqlAlchemyActionPlanRunStore, SqlAlchemyEngineStore
+from app.adapters import SqlAlchemyActionPlanRunStore, SqlAlchemyEngineStore, SqlAlchemyTurnStore
+from app.core.turn_runtime import TurnInputSnapshot, new_turn_record
 from app.models.engine import (
     ActionPlanRunRecord,
     AdjudicationCommandExecution,
@@ -146,6 +148,7 @@ async def test_sql_plan_resumes_across_store_and_service_rebuild(
     db_session: AsyncSession,
     engine_store_factory: Callable[..., SqlAlchemyEngineStore],
     action_plan_store_factory: Callable[[], SqlAlchemyActionPlanRunStore],
+    turn_store_factory: Callable[[], SqlAlchemyTurnStore],
 ) -> None:
     room, players, _ = await _start_room(db_session, prepare_checkpoint=False)
     room_id = room.id
@@ -172,13 +175,24 @@ async def test_sql_plan_resumes_across_store_and_service_rebuild(
         executor=AdjudicationEngineService(engine_store),
         player_view_projector=PlayerViewProjector(RuleEngineService(engine_store)),
     )
-
-    checkpointed = await first.start_or_resume(
-        original,
-        plan=four_step_plan(),
-        worker_id="sql-worker-1",
-        auto_continue=False,
+    turn, _ = await turn_store_factory().create_or_get(
+        new_turn_record(
+            TurnInputSnapshot(
+                room_id=room.id,
+                player_id=players[0].id,
+                actor_id=actor_id,
+                client_action_id=original.client_action_id,
+                utterance=original.utterance,
+            )
+        )
     )
+    with engine_turn_context(turn.turn_id):
+        checkpointed = await first.start_or_resume(
+            original,
+            plan=four_step_plan(),
+            worker_id="sql-worker-1",
+            auto_continue=False,
+        )
     assert checkpointed.run.status == "checkpointed"
     assert checkpointed.run.current_step_index == 3
 
@@ -191,11 +205,12 @@ async def test_sql_plan_resumes_across_store_and_service_rebuild(
         executor=AdjudicationEngineService(rebuilt_engine_store),
         player_view_projector=PlayerViewProjector(RuleEngineService(rebuilt_engine_store)),
     )
-    resumed = await rebuilt.start_or_resume(
-        original,
-        plan=four_step_plan(),
-        worker_id="sql-worker-2",
-    )
+    with engine_turn_context(turn.turn_id):
+        resumed = await rebuilt.start_or_resume(
+            original,
+            plan=four_step_plan(),
+            worker_id="sql-worker-2",
+        )
 
     assert resumed.run.status == "awaiting_narration"
     assert resumed.run.current_step_index == 4
@@ -212,6 +227,7 @@ async def test_sql_plan_resumes_across_store_and_service_rebuild(
         )
     ).all()
     assert len(records) == 1
+    assert records[0].turn_id == turn.turn_id
     assert records[0].status == "awaiting_narration"
     assert len(reservations) == 1
 

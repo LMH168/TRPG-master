@@ -15,6 +15,7 @@ from app.core.turn_runtime import (
     TurnResultSnapshot,
     TurnResumePoint,
     TurnStatus,
+    TurnWaitingReason,
     new_turn_record,
     transition_turn,
 )
@@ -186,3 +187,49 @@ async def test_resume_endpoint_is_explicitly_unavailable_in_legacy_mode(
 
     assert response.status_code == 501
     assert response.json()["error"]["code"] == "TURN_RESUME_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_get_turn_returns_persisted_player_safe_pending_decision(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    turn_store_factory,
+) -> None:
+    """刷新后的 REST 查询必须能恢复待选择项，而不是依赖旧 WebSocket 帧。"""
+
+    room_id, owner, _ = await _members(db_session)
+    store: SqlAlchemyTurnStore = turn_store_factory()
+    current, _ = await store.create_or_get(_new_turn(room_id, owner.id, "action-pending"))
+    planning = transition_turn(
+        current,
+        status=TurnStatus.PLANNING,
+        resume_point=TurnResumePoint.PLANNING,
+        recovery_action=TurnRecoveryAction.WAIT,
+    )
+    await store.compare_and_swap(expected_phase_version=current.phase_version, updated=planning)
+    waiting = transition_turn(
+        planning,
+        status=TurnStatus.ADJUDICATING,
+        resume_point=TurnResumePoint.AWAITING_PLAYER,
+        waiting_reason=TurnWaitingReason.SKILL_CHOICE,
+        recovery_action=TurnRecoveryAction.CHOOSE_SKILL,
+        pending_decision={
+            "decision_id": "decision-safe",
+            "options": [{"candidate_id": "spot-hidden", "label": "侦查"}],
+        },
+    )
+    await store.compare_and_swap(expected_phase_version=planning.phase_version, updated=waiting)
+
+    response = await client.get(
+        f"/api/v1/rooms/{room_id}/turns/{waiting.turn_id}",
+        headers={"X-Reconnect-Token": owner.reconnect_token},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["waitingReason"] == "skill_choice"
+    assert data["recoveryAction"] == "choose_skill"
+    assert data["pendingDecision"] == {
+        "decision_id": "decision-safe",
+        "options": [{"candidate_id": "spot-hidden", "label": "侦查"}],
+    }

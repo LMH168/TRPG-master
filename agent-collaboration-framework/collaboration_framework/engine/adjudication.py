@@ -66,6 +66,7 @@ from collaboration_framework.contracts.validation import (
 )
 
 from .dice import DiceRoller, coc7_success_level, passes_difficulty
+from collaboration_framework.runtime_context import current_turn_id
 from .models import (
     AgendaSource,
     CheckRun,
@@ -457,7 +458,9 @@ class AdjudicationEngineService:
     ) -> AdjudicationStatusView:
         """Read the latest player-safe status without exposing Engine ORM state."""
 
-        async with self._store.transaction(request.room_id) as transaction:
+        async with self._store.transaction(
+            request.room_id, turn_id=current_turn_id()
+        ) as transaction:
             command = await transaction.find_latest_adjudication_command_by_action(
                 request.action_request_id
             )
@@ -491,7 +494,9 @@ class AdjudicationEngineService:
         ActionPlanOrchestrator.active_for_room).
         """
 
-        async with self._store.transaction(room_id) as transaction:
+        async with self._store.transaction(
+            room_id, turn_id=current_turn_id()
+        ) as transaction:
             return await transaction.find_active_action_for_player(player_id)
 
     async def recover_action(
@@ -506,7 +511,9 @@ class AdjudicationEngineService:
         adjudication after the decision has resolved.
         """
 
-        async with self._store.transaction(request.room_id) as transaction:
+        async with self._store.transaction(
+            request.room_id, turn_id=current_turn_id()
+        ) as transaction:
             command = await transaction.find_latest_adjudication_command_by_action(
                 request.action_request_id
             )
@@ -545,7 +552,9 @@ class AdjudicationEngineService:
             )
 
     async def submit(self, request: SubmitAdjudicationRequest) -> AdjudicationExecution:
-        async with self._store.transaction(request.room_id) as transaction:
+        async with self._store.transaction(
+            request.room_id, turn_id=current_turn_id()
+        ) as transaction:
             runtime = await transaction.load_runtime()
             self._validate_identity(
                 runtime,
@@ -692,7 +701,9 @@ class AdjudicationEngineService:
             return execution
 
     async def decide(self, request: CheckDecisionRequest) -> AdjudicationExecution:
-        async with self._store.transaction(request.room_id) as transaction:
+        async with self._store.transaction(
+            request.room_id, turn_id=current_turn_id()
+        ) as transaction:
             runtime = await transaction.load_runtime()
             replay = await transaction.find_adjudication_command(request.request_id)
             if replay is not None:
@@ -933,7 +944,9 @@ class AdjudicationEngineService:
         self,
         request: PostRollDecisionRequest,
     ) -> AdjudicationExecution:
-        async with self._store.transaction(request.room_id) as transaction:
+        async with self._store.transaction(
+            request.room_id, turn_id=current_turn_id()
+        ) as transaction:
             runtime = await transaction.load_runtime()
             replay = await transaction.find_adjudication_command(request.request_id)
             if replay is not None:
@@ -1074,7 +1087,9 @@ class AdjudicationEngineService:
                         if isinstance(option, PushOption)
                         else "accept_result"
                     ),
-                    "luck_spent": option.cost if isinstance(option, SpendResourceOption) else None,
+                    "luck_spent": option.cost
+                    if isinstance(option, SpendResourceOption)
+                    else None,
                 },
                 deep=True,
             )
@@ -1207,9 +1222,7 @@ class AdjudicationEngineService:
         evidence: list[NarrationEvidence] = []
         for event in candidate_events:
             entity_id = event.payload.get("entity_id")
-            if (
-                not isinstance(entity_id, str)
-            ):
+            if not isinstance(entity_id, str):
                 continue
             projected = visible.get(entity_id)
             if projected is None:

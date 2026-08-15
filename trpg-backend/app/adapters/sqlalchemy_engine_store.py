@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -49,6 +49,7 @@ from app.models.engine import (
     PendingCheckDecisionRecord,
 )
 from app.models.room import Room
+from app.models.turn import TurnCommitReceiptRecord, TurnRecordModel
 
 # 落库 JSON 的 schema 版本。#310 给 CheckRun / CheckRunView 各加了字段，老行没有
 # 这些键，直接 model_validate 会当场失败——正卡在 awaiting_post_roll_decision 的
@@ -67,15 +68,23 @@ class SqlAlchemyEngineStore(EngineStore):
         session_factory: async_sessionmaker[AsyncSession],
         *,
         before_commit: Callable[[str], None] | None = None,
+        after_commit: Callable[[str], None] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._before_commit = before_commit
+        self._after_commit = after_commit
 
     @asynccontextmanager
-    async def transaction(self, room_id: str) -> AsyncIterator[EngineTransaction]:
+    async def transaction(
+        self,
+        room_id: str,
+        *,
+        turn_id: str | None = None,
+    ) -> AsyncIterator[EngineTransaction]:
         async with self._session_factory() as session:
             transaction = _SqlAlchemyEngineTransaction(
                 room_id=room_id,
+                turn_id=turn_id,
                 session=session,
                 before_commit=self._before_commit,
             )
@@ -84,6 +93,10 @@ class SqlAlchemyEngineStore(EngineStore):
                     yield transaction
             finally:
                 transaction.close()
+            # 故障注入用于验证“数据库已提交、调用方却没拿到返回值”的模糊边界；
+            # receipt 与状态此时已经持久化，恢复器必须据此禁止再次执行命令。
+            if transaction.committed and self._after_commit is not None:
+                self._after_commit(room_id)
             transaction.log_committed_state_changes()
 
     async def claim_rule_agenda(
@@ -246,17 +259,26 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
         self,
         *,
         room_id: str,
+        turn_id: str | None,
         session: AsyncSession,
         before_commit: Callable[[str], None] | None,
     ) -> None:
         self._room_id = room_id
+        self._turn_id = turn_id
         self._session = session
         self._before_commit = before_commit
         self._closed = False
         self._committed = False
         self._committed_events: tuple[StateModifiedEvent, ...] = ()
         self._committed_request_id: str | None = None
+        # 缓存房间模组协议版本；写入口即使没有先加载运行时，也能安全执行只读校验。
         self._content_schema_version: int | None = None
+
+    @property
+    def committed(self) -> bool:
+        """说明本事务是否已经越过数据库提交边界，供故障注入对账使用。"""
+
+        return self._committed
 
     async def _completed_adjudication_from_record(
         self,
@@ -674,6 +696,7 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
             [
                 GameEvent(
                     room_id=self._room_id,
+                    turn_id=self._turn_id,
                     sequence=event.sequence,
                     event_id=event.event_id,
                     client_action_id=event.client_action_id,
@@ -700,6 +723,13 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
                 created_at=now,
             )
         )
+        await self._append_turn_receipt(
+            engine_request_id=request.request_id,
+            action_request_id=request.request_id,
+            committed_state_version=new_state.event_sequence,
+            events=events,
+            created_at=now,
+        )
 
         try:
             await self._session.flush()
@@ -717,7 +747,7 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
         *,
         expected_revision: str,
         new_state: GameState,
-        events: tuple[DomainEvent, ...],
+        events: Sequence[DomainEvent],
         decision: PendingCheckDecision | None,
         check_run: CheckRun | None,
         completed_command: CompletedAdjudicationCommand,
@@ -792,6 +822,7 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
             [
                 GameEvent(
                     room_id=self._room_id,
+                    turn_id=self._turn_id,
                     sequence=event.sequence,
                     event_id=event.event_id,
                     client_action_id=event.client_action_id,
@@ -832,6 +863,13 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
                 created_at=now,
             )
         )
+        await self._append_turn_receipt(
+            engine_request_id=completed_command.request_id,
+            action_request_id=completed_command.execution.action_request_id,
+            committed_state_version=new_state.event_sequence,
+            events=events,
+            created_at=now,
+        )
         try:
             await self._session.flush()
         except IntegrityError as exc:
@@ -842,6 +880,36 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
 
     def close(self) -> None:
         self._closed = True
+
+    async def _append_turn_receipt(
+        self,
+        *,
+        engine_request_id: str,
+        action_request_id: str,
+        committed_state_version: int,
+        events: Sequence[DomainEvent | StateModifiedEvent],
+        created_at: datetime,
+    ) -> None:
+        """在 Engine 权威事务内追加 receipt；旧执行链没有 turn_id 时保持兼容。"""
+
+        if self._turn_id is None:
+            return
+        turn = await self._session.get(TurnRecordModel, self._turn_id)
+        if turn is None or turn.room_id != self._room_id:
+            raise ContractError("Engine turn_id 不属于当前房间")
+        sequences = tuple(event.sequence for event in events)
+        self._session.add(
+            TurnCommitReceiptRecord(
+                room_id=self._room_id,
+                engine_request_id=engine_request_id,
+                turn_id=self._turn_id,
+                action_request_id=action_request_id,
+                committed_state_version=committed_state_version,
+                first_event_sequence=min(sequences) if sequences else None,
+                last_event_sequence=max(sequences) if sequences else None,
+                created_at=created_at,
+            )
+        )
 
     def log_committed_state_changes(self) -> None:
         """仅在 SQLAlchemy 事务真正提交成功后输出状态修改。"""
@@ -919,7 +987,7 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
         *,
         current_state: GameState,
         new_state: GameState,
-        events: tuple[DomainEvent, ...],
+        events: Sequence[DomainEvent],
         completed_command: CompletedAdjudicationCommand,
     ) -> None:
         if current_state.room_id != self._room_id or new_state.room_id != self._room_id:

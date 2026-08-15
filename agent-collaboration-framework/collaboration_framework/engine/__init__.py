@@ -10,6 +10,7 @@ from .capabilities import (
     require_runtime_capabilities,
 )
 from .dice import DiceRoller, SequenceDiceSource, SystemDiceSource
+from collaboration_framework.runtime_context import current_turn_id, engine_turn_context
 from .initialization import create_initial_game_state
 from .navigation import effective_location_knowledge, resolve_location_target
 from .persistent_results import (
@@ -79,4 +80,6 @@ __all__ = [
     "PUBLIC_STATE_KEYS",
     "committed_results_from_events",
     "validate_persistent_effects",
+    "current_turn_id",
+    "engine_turn_context",
 ]

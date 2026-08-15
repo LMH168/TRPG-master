@@ -68,11 +68,11 @@ async def main() -> None:
                 turn_id, room_id, client_action_id, input_fingerprint, player_id,
                 actor_id, request_schema_version, request_json, status, phase_version,
                 resume_point, waiting_reason, commit_state, recovery_action,
-                created_at, updated_at
+                pending_decision_json, created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, 'postgres-actor', 1, $6::json,
                 'awaiting_narration', 4, 'narrating', 'none', 'committed', 'wait',
-                $7, $7
+                NULL, $7, $7
             )
             """,
             turn_id,
@@ -125,9 +125,11 @@ async def main() -> None:
 
         linked = await connection.fetchrow(
             """
-            SELECT r.turn_id, r.first_event_sequence, o.visibility
+            SELECT r.turn_id, r.first_event_sequence, o.visibility,
+                   t.pending_decision_json
             FROM turn_commit_receipts AS r
             JOIN narration_outbox AS o ON o.turn_id = r.turn_id
+            JOIN turn_records AS t ON t.turn_id = r.turn_id
             WHERE r.room_id = $1 AND r.engine_request_id = 'engine-request-1'
             """,
             room_id,
@@ -135,6 +137,7 @@ async def main() -> None:
         assert linked is not None and linked["turn_id"] == turn_id
         assert linked["first_event_sequence"] is None
         assert linked["visibility"] == "player_scoped"
+        assert linked["pending_decision_json"] is None
 
         indexes = {
             row["indexname"]

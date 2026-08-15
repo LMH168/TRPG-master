@@ -35,6 +35,7 @@ from collaboration_framework.contracts import (
 from pydantic import JsonValue
 
 from .expression import ExpressionEvaluator, expression_context
+from collaboration_framework.runtime_context import current_turn_id
 from .projection_v3 import keeper_capabilities_v3, project_v3
 from .models import EngineRuntimeSnapshot, GameState
 from .persistent_results import PUBLIC_STATE_KEYS
@@ -53,7 +54,9 @@ class RuleEngineService:
         self._store = store
 
     async def read(self, scope: PlayerViewScope) -> ProjectionSnapshot:
-        async with self._store.transaction(scope.room_id) as transaction:
+        async with self._store.transaction(
+            scope.room_id, turn_id=current_turn_id()
+        ) as transaction:
             runtime = await transaction.load_runtime()
             self._validate_identity(
                 runtime,
@@ -268,7 +271,9 @@ class RuleEngineService:
         :mod:`collaboration_framework.contracts.keeper_view`.
         """
 
-        async with self._store.transaction(scope.room_id) as transaction:
+        async with self._store.transaction(
+            scope.room_id, turn_id=current_turn_id()
+        ) as transaction:
             runtime = await transaction.load_runtime()
             self._validate_identity(
                 runtime,
@@ -352,7 +357,9 @@ class RuleEngineService:
                     else "object"
                 ),
                 origin="runtime",
-                location_id=RuleEngineService._optional_text(payload.get("location_id")),
+                location_id=RuleEngineService._optional_text(
+                    payload.get("location_id")
+                ),
                 holder_actor_id=RuleEngineService._optional_text(
                     payload.get("holder_actor_id")
                 ),
@@ -391,11 +398,16 @@ class RuleEngineService:
         runtime location never silently opens travel to every Canon Scene.
         """
 
-        name = RuleEngineService._optional_text(runtime_location.get("name")) or location_id
+        name = (
+            RuleEngineService._optional_text(runtime_location.get("name"))
+            or location_id
+        )
         connected = RuleEngineService._optional_text(
             runtime_location.get("connected_location_id")
         )
-        parent = RuleEngineService._optional_text(runtime_location.get("parent_location_id"))
+        parent = RuleEngineService._optional_text(
+            runtime_location.get("parent_location_id")
+        )
         neighbours = tuple(dict.fromkeys(item for item in (connected, parent) if item))
         return SceneSpec(
             id=location_id,
@@ -440,7 +452,9 @@ class RuleEngineService:
             if entity_id in already_projected or payload.get("consumed") is True:
                 continue
             location_id = RuleEngineService._optional_text(payload.get("location_id"))
-            holder_actor_id = RuleEngineService._optional_text(payload.get("holder_actor_id"))
+            holder_actor_id = RuleEngineService._optional_text(
+                payload.get("holder_actor_id")
+            )
             here = location_id == scene_id or holder_actor_id == actor_id
             if not here:
                 continue
@@ -462,7 +476,9 @@ class RuleEngineService:
                         if kind in {"npc", "object", "location"}
                         else getattr(canon, "kind", "object")
                     ),
-                    name=(name or getattr(canon, "player_visible_name", "") or entity_id),
+                    name=(
+                        name or getattr(canon, "player_visible_name", "") or entity_id
+                    ),
                     aliases=getattr(canon, "player_visible_aliases", ()),
                     description=getattr(canon, "content", ""),
                     observable_state=RuleEngineService._project_public_standard_state(
@@ -483,7 +499,9 @@ class RuleEngineService:
     ) -> tuple[ProjectionObservableState, ...]:
         """为 v2 兼容投影补充公开标准状态，同时不重复模组已声明的键。"""
 
-        values = state.runtime_entities.get(entity_id) or state.entities.get(entity_id, {})
+        values = state.runtime_entities.get(entity_id) or state.entities.get(
+            entity_id, {}
+        )
         blocked = excluded or set()
         return tuple(
             ProjectionObservableState(key=key, label=key, value=values[key])

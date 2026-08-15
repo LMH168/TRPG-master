@@ -1,8 +1,4 @@
-"""可靠回合 REST 查询与恢复骨架服务。
-
-本阶段只读取持久化 TurnRecord 并生成玩家安全投影；生产动作仍走 legacy 路径，
-因此 resume 明确拒绝推进，待后续 Coordinator PR 接管。
-"""
+"""可靠回合 REST 查询、玩家安全待决策投影与 v2 恢复服务。"""
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,11 +73,18 @@ async def resume_turn(
     player_id: str,
     runtime_mode: str,
 ) -> TurnRead:
-    """先完成权限与存在性校验，再明确报告 Coordinator 尚未接入。"""
+    """校验 owner 后，通过 v2 Coordinator 按唯一恢复点推进。"""
 
     await get_turn(db, room_id=room_id, turn_id=turn_id, player_id=player_id)
-    # PR 1 只冻结 API 契约。即使部署误设 v2，也不能绕过尚未实现的协调器。
-    raise TurnResumeUnavailableError(f"可靠回合恢复协调器尚未启用（当前模式：{runtime_mode}）")
+    if runtime_mode != "v2":
+        raise TurnResumeUnavailableError(f"可靠回合恢复协调器尚未启用（当前模式：{runtime_mode}）")
+    # 延迟导入避免 REST 查询服务与生产组合根在模块加载时形成循环依赖。
+    from app.service.reliable_turn_runtime import resume_turn_by_id
+
+    turn = await resume_turn_by_id(turn_id)
+    if turn.room_id != room_id or turn.player_id != player_id:
+        raise TurnReadAuthorizationError("不能恢复其他玩家的回合")
+    return _safe_turn_projection(turn)
 
 
 def _safe_turn_read(record: TurnRecordModel) -> TurnRead:
@@ -102,6 +105,7 @@ def _safe_turn_read(record: TurnRecordModel) -> TurnRead:
             "waiting_reason": record.waiting_reason,
             "commit_state": record.commit_state,
             "recovery_action": record.recovery_action,
+            "pending_decision": record.pending_decision_json,
             "last_error": record.error_json,
             "result": record.result_json,
             "lease_owner": record.lease_owner,
@@ -111,6 +115,12 @@ def _safe_turn_read(record: TurnRecordModel) -> TurnRead:
             "completed_at": record.completed_at,
         }
     )
+    return _safe_turn_projection(turn)
+
+
+def _safe_turn_projection(turn: TurnRecord) -> TurnRead:
+    """从经过核心契约校验的 TurnRecord 生成玩家安全 DTO。"""
+
     error = None
     if turn.last_error is not None:
         error = TurnErrorRead(
@@ -132,8 +142,7 @@ def _safe_turn_read(record: TurnRecordModel) -> TurnRead:
         recovery_action=turn.recovery_action,
         phase_version=turn.phase_version,
         error=error,
-        # pending decision 的正式结构由 Coordinator 接入时从持久化裁决记录投影。
-        pending_decision=None,
+        pending_decision=turn.pending_decision,
         narration=result.narration if result else None,
         message_id=result.message_id if result else None,
         player_view=result.player_view if result else None,

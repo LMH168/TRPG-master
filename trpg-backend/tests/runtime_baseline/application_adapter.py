@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from collaboration_framework.engine import (
     InMemoryEngineStore,
     RuleEngineService,
     SequenceDiceSource,
+    current_turn_id,
 )
 from collaboration_framework.engine.initialization import create_initial_game_state
 from collaboration_framework.engine.models import ActorResources, ActorState, GameState
@@ -28,6 +30,20 @@ from collaboration_framework.host.schemas import ActionPlanNarrationContext, Hos
 
 from app.core.action_plan_turn import build_action_plan_turn_application
 from app.core.config import Settings
+from app.core.turn_coordinator import (
+    TurnCoordinator,
+    TurnExecutionOutcome,
+    TurnPhaseObserver,
+)
+from app.core.turn_events import TurnPhase
+from app.core.turn_runtime import (
+    InMemoryTurnStore,
+    TurnCommitReceipt,
+    TurnInputSnapshot,
+    TurnWaitingReason,
+)
+from app.service.turn_outbox import TurnOutboxDispatcher
+from app.service.ws_manager import ConnectionManager
 
 from .contracts import BaselineScenario, BaselineTurn, BaselineTurnResult
 
@@ -112,6 +128,24 @@ class InMemoryRuntimeAdapter:
         self._planner = _ScriptedPlanner()
         self._narration_model = _EvidenceNarrationModel()
         self._scenario: BaselineScenario | None = None
+        self._turn_store = InMemoryTurnStore()
+        self._coordinator = TurnCoordinator(
+            self._turn_store,
+            worker_id="baseline-turn-worker",
+        )
+        self._connection_manager = ConnectionManager()
+        self._socket = _BaselineSocket()
+        self._connection_manager.add(
+            self.room_id,
+            self._socket,
+            self.player_id,
+        )
+        self._outbox = TurnOutboxDispatcher(
+            self._turn_store,
+            self._connection_manager,
+            worker_id="baseline-outbox-worker",
+            retry_seconds=0,
+        )
 
     async def prepare(self, scenario: BaselineScenario) -> Mapping[str, str]:
         """从发布模组重建权威状态，并安装场景专属的受控模型输出。"""
@@ -220,34 +254,77 @@ class InMemoryRuntimeAdapter:
         del aliases
         if self._application is None or self._store is None:
             raise RuntimeError("adapter 尚未 prepare")
-        before_events = len(self._store.inspect_domain_events(self.room_id))
+        application = self._application
+        engine_store = self._store
+        before_events = len(engine_store.inspect_domain_events(self.room_id))
         phases: list[str] = []
 
         async def observe_phase(phase: str) -> None:
             phases.append(phase)
 
-        result = await self._application.start(
-            room_id=self.room_id,
-            player_id=self.player_id,
-            client_action_id=turn.client_action_id,
-            utterance=turn.utterance,
-            on_phase=observe_phase,
+        captured = None
+
+        async def execute(observer: TurnPhaseObserver) -> TurnExecutionOutcome:
+            nonlocal captured
+
+            async def observe(phase: TurnPhase) -> None:
+                await observer(phase)
+                await observe_phase(phase)
+
+            try:
+                captured = await application.start(
+                    room_id=self.room_id,
+                    player_id=self.player_id,
+                    client_action_id=turn.client_action_id,
+                    utterance=turn.utterance,
+                    on_phase=observe,
+                )
+                captured = await self._settle_check(captured, turn, observe)
+            finally:
+                # 内存 Engine 没有后端 receipt 表；基线侧根据已提交事件或进入叙事
+                # 阶段写入等价证明，使 Coordinator 的恢复判断与 SQL 生产路径一致。
+                committed_events = engine_store.inspect_domain_events(self.room_id)[before_events:]
+                if committed_events or "generating_narration" in phases:
+                    await self._ensure_baseline_receipt(turn.client_action_id)
+            return _turn_outcome(captured)
+
+        coordinated = await self._coordinator.start(
+            TurnInputSnapshot(
+                room_id=self.room_id,
+                player_id=self.player_id,
+                actor_id=self.actor_id,
+                client_action_id=turn.client_action_id,
+                utterance=turn.utterance,
+            ),
+            executor=execute,
+            after_publish=lambda: application.mark_narration_persisted(
+                room_id=self.room_id,
+                parent_action_id=turn.client_action_id,
+            ),
         )
-        result = await self._settle_check(result, turn, observe_phase)
-        events = self._store.inspect_domain_events(self.room_id)
+        if coordinated.last_error is not None:
+            # 故障适配器会根据 FaultController 决定是否显式重试；基线执行器不能
+            # 把一个已持久化但尚未完成的回合误报成成功终态。
+            raise RuntimeError(coordinated.last_error.public_message)
+        await self._outbox.dispatch_due()
+        events = engine_store.inspect_domain_events(self.room_id)
         new_events = events[before_events:]
-        state = self._store.inspect_state(self.room_id)
-        execution = result.execution
+        state = engine_store.inspect_state(self.room_id)
+        execution = captured.execution if captured is not None else None
         check_run = execution.check_run if execution is not None else None
-        narration = result.narration
+        narration = captured.narration if captured is not None else None
+        if narration is None and coordinated.result is not None:
+            narration_evidence = tuple(coordinated.result.narration.get("claimedFactIds", ()))
+        else:
+            narration_evidence = narration.claimed_evidence_refs if narration is not None else ()
         return BaselineTurnResult(
             client_action_id=turn.client_action_id,
-            status=result.status,
+            status=coordinated.status.value,
             phases=tuple(phases),
             event_types=tuple(event.type for event in new_events),
             state=_flatten_state(state),
-            narration_evidence=(narration.claimed_evidence_refs if narration is not None else ()),
-            narration_claims=(narration.claimed_evidence_refs if narration is not None else ()),
+            narration_evidence=narration_evidence,
+            narration_claims=narration_evidence,
             roll_ids=(
                 (f"{turn.client_action_id}:roll:{check_run.roll_count}",)
                 if check_run is not None
@@ -257,6 +334,34 @@ class InMemoryRuntimeAdapter:
                 f"{event.client_action_id}:{event.type}:{event.sequence}" for event in new_events
             ),
             state_versions=tuple(event.sequence for event in new_events),
+        )
+
+    async def _ensure_baseline_receipt(self, action_id: str) -> None:
+        """为当前内存 Turn 幂等补一条提交证明，不伪造额外 DomainEvent。"""
+
+        turn_id = current_turn_id()
+        if turn_id is None or await self._turn_store.list_receipts(turn_id):
+            return
+        if self._store is None:
+            raise RuntimeError("adapter 尚未 prepare")
+        state = self._store.inspect_state(self.room_id)
+        events = tuple(
+            event
+            for event in self._store.inspect_domain_events(self.room_id)
+            if event.client_action_id.startswith(action_id)
+        )
+        sequences = tuple(event.sequence for event in events)
+        await self._turn_store.append_receipt(
+            TurnCommitReceipt(
+                turn_id=turn_id,
+                room_id=self.room_id,
+                engine_request_id=f"baseline:{action_id}",
+                action_request_id=action_id,
+                committed_state_version=state.event_sequence,
+                first_event_sequence=min(sequences) if sequences else None,
+                last_event_sequence=max(sequences) if sequences else None,
+                created_at=datetime.now(UTC),
+            )
         )
 
     async def _settle_check(self, result, turn: BaselineTurn, observe_phase):
@@ -312,6 +417,49 @@ class InMemoryRuntimeAdapter:
         self._adjudication_engine = None
         self._store = None
         self._scenario = None
+
+
+class _BaselineSocket:
+    """记录 Outbox 实际投递帧，避免基线依赖真实网络。"""
+
+    def __init__(self) -> None:
+        self.frames: list[dict] = []
+
+    async def send_json(self, message: dict) -> None:
+        self.frames.append(message)
+
+
+def _turn_outcome(result) -> TurnExecutionOutcome:  # noqa: ANN001
+    """把 ActionPlan 结果压缩成玩家安全的可靠回合输出。"""
+
+    if result is None:
+        raise RuntimeError("基线执行没有产生 ActionPlan 结果")
+    waiting_reason = TurnWaitingReason.NONE
+    if result.waiting_for_player:
+        execution = result.execution
+        if execution is None:
+            raise RuntimeError("等待玩家的基线回合缺少裁决结果")
+        waiting_reason = (
+            TurnWaitingReason.SKILL_CHOICE
+            if execution.status == "awaiting_skill_choice"
+            else TurnWaitingReason.POST_ROLL_DECISION
+        )
+    narration = None
+    if result.narration is not None:
+        narration = {
+            "kind": result.narration.kind,
+            "text": result.narration.text,
+            "claimedFactIds": list(result.narration.claimed_evidence_refs),
+            "suggestedActions": list(result.narration.suggested_actions),
+        }
+    return TurnExecutionOutcome(
+        status=result.status,
+        player_view=result.player_view.to_json_dict(),
+        view_revision=result.player_view.revision,
+        scene_id=result.player_view.scene_id,
+        narration=narration,
+        waiting_reason=waiting_reason,
+    )
 
 
 def _resolve_aliases(value: Any, aliases: Mapping[str, str]) -> Any:
