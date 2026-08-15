@@ -83,7 +83,15 @@ class InMemoryEngineStore:
         )
 
     @asynccontextmanager
-    async def transaction(self, room_id: str) -> AsyncIterator[EngineTransaction]:
+    async def transaction(
+        self,
+        room_id: str,
+        *,
+        turn_id: str | None = None,
+    ) -> AsyncIterator[EngineTransaction]:
+        # 内存 Store 不持久化 receipt，但接受同一端口参数，确保离线基线与生产
+        # Coordinator 运行完全相同的调用链。
+        del turn_id
         record = self._record(room_id)
         async with record.lock:
             transaction = _InMemoryEngineTransaction(

@@ -32,6 +32,7 @@ from collaboration_framework.contracts import (
     WorldClockView,
     player_input_fingerprint,
 )
+from collaboration_framework.runtime_context import current_turn_id
 from collaboration_framework.host.ports import (
     ActionPlanProgressObserver,
     ActionPlanRunStore,
@@ -849,6 +850,7 @@ class ActionPlanOrchestrator:
             for index, step in enumerate(plan.steps)
         )
         run = ActionPlanRun(
+            turn_id=current_turn_id(),
             plan_id=plan_id,
             parent_action_id=player_input.client_action_id,
             parent_input_fingerprint=player_input_fingerprint(player_input),
@@ -1355,9 +1357,7 @@ class ActionPlanOrchestrator:
         unattributable and the run is stuck.
         """
 
-        return ActionPlanRun.from_persistence_json_dict(
-            run.to_persistence_json_dict()
-        )
+        return ActionPlanRun.from_persistence_json_dict(run.to_persistence_json_dict())
 
     async def _release_lease(self, run: ActionPlanRun) -> ActionPlanRun:
         if run.lease_owner is None:

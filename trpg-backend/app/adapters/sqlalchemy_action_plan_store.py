@@ -248,6 +248,7 @@ class SqlAlchemyActionPlanRunStore(ActionPlanRunStore):
     @staticmethod
     def _record_from_run(run: ActionPlanRun) -> ActionPlanRunRecord:
         return ActionPlanRunRecord(
+            turn_id=run.turn_id,
             room_id=run.room_id,
             parent_action_id=run.parent_action_id,
             plan_id=run.plan_id,
@@ -286,7 +287,8 @@ class SqlAlchemyActionPlanRunStore(ActionPlanRunStore):
             )
         run = ActionPlanRun.from_persistence_json_dict(deepcopy(record.run_json))
         if (
-            run.room_id != record.room_id
+            run.turn_id != record.turn_id
+            or run.room_id != record.room_id
             or run.parent_action_id != record.parent_action_id
             or run.plan_id != record.plan_id
             or run.parent_input_fingerprint != record.parent_input_fingerprint
@@ -307,6 +309,7 @@ class SqlAlchemyActionPlanRunStore(ActionPlanRunStore):
     @staticmethod
     def _require_same_parent(current: ActionPlanRun, candidate: ActionPlanRun) -> None:
         immutable = (
+            "turn_id",
             "plan_id",
             "parent_action_id",
             "parent_input_fingerprint",

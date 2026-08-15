@@ -102,7 +102,9 @@ class ActionPlanStepRun(ContractModel):
     retry_count: int = Field(default=0, ge=0)
     repair_attempts: int = Field(default=0, ge=0, le=8)
     last_validation_code: str | None = Field(default=None, min_length=1, max_length=100)
-    last_validation_message: str | None = Field(default=None, min_length=1, max_length=512)
+    last_validation_message: str | None = Field(
+        default=None, min_length=1, max_length=512
+    )
     # Player-safe repair comparison state. Stored in the existing PlanRun JSON
     # so a process restart cannot lose the original proposal and bypass the
     # semantic check before the repaired proposal reaches the Engine.
@@ -111,7 +113,9 @@ class ActionPlanStepRun(ContractModel):
 
     @model_validator(mode="after")
     def validate_state(self) -> ActionPlanStepRun:
-        if (self.last_validation_code is None) != (self.last_validation_message is None):
+        if (self.last_validation_code is None) != (
+            self.last_validation_message is None
+        ):
             raise ValueError("last_validation_code/message 必须同时存在或同时为空")
         if (self.repair_baseline is None) != (self.repair_feedback is None):
             raise ValueError("repair_baseline/feedback 必须同时存在或同时为空")
@@ -146,6 +150,9 @@ class ActionPlanStepRun(ContractModel):
 
 
 class ActionPlanRun(ContractModel):
+    # 历史计划没有统一回合身份，因此保持可空；新 Coordinator 创建的计划必须
+    # 写入真实 turn_id，并由后端列值与 JSON 双重校验。
+    turn_id: str | None = Field(default=None, min_length=1)
     plan_id: str = Field(min_length=1, max_length=100)
     parent_action_id: str = Field(min_length=1, max_length=200)
     parent_input_fingerprint: str = Field(min_length=64, max_length=64)
@@ -287,7 +294,9 @@ class CompletedPlanStepSummary(ContractModel):
     def validate_evidence(self) -> CompletedPlanStepSummary:
         if not {item.ref for item in self.narration_evidence}.issubset(self.event_refs):
             raise ValueError("步骤 narration_evidence 必须引用公开 event_refs")
-        if not {item.event_ref for item in self.committed_results}.issubset(self.event_refs):
+        if not {item.event_ref for item in self.committed_results}.issubset(
+            self.event_refs
+        ):
             raise ValueError("步骤 committed_results 必须引用公开 event_refs")
         return self
 
