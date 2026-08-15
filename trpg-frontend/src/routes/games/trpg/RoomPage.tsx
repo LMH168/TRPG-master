@@ -1635,6 +1635,21 @@ export default function RoomPage() {
       setActionErrorCode(turn.error.code)
       setActionErrorCorrelationId(turn.clientActionId)
     }
+    if (
+      turn.status === 'failed' ||
+      turn.status === 'cancelled' ||
+      turn.recoveryAction === 'submit_new_input'
+    ) {
+      // 终态失败只保留玩家安全错误用于审计；旧请求已经不能恢复时必须清除
+      // 本地定位和忙碌状态，让玩家可以在同一房间提交一条全新的行动。
+      clearSettledAction(turn.clientActionId)
+      setPendingAction(null)
+      setPendingAdjudication(null)
+      setTyping(false)
+      setProgressLabel(null)
+      clearTurnLocator(roomId, playerId)
+      return
+    }
     const pendingSourceRevision = turn.pendingDecision?.source_revision ?? turn.pendingDecision?.sourceRevision
     if (
       turn.resumePoint === 'awaiting_player' &&

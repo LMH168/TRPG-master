@@ -521,6 +521,45 @@ describe('RoomPage conversation history', () => {
     expect(sessionStorage.getItem('trpg:pending-turn:room-1:player-1')).toBeNull()
   })
 
+  it('clears a terminal failed turn so the same room can accept a new action', async () => {
+    sessionStorage.setItem(
+      'trpg:pending-turn:room-1:player-1',
+      JSON.stringify({ clientActionId: 'action-failed', utterance: '带托马斯去墓地', turnId: 'turn-failed' }),
+    )
+    mockGetTurn.mockResolvedValue({
+      turnId: 'turn-failed',
+      roomId: 'room-1',
+      clientActionId: 'action-failed',
+      status: 'failed',
+      commitState: 'committed',
+      resumePoint: 'none',
+      waitingReason: 'none',
+      recoveryAction: 'submit_new_input',
+      phaseVersion: 7,
+      error: {
+        code: 'TURN_INTERNAL_ERROR',
+        stage: 'narration',
+        retryable: false,
+        publicMessage: '规则结果已保存，请提交新的行动',
+        occurredAt: '2026-08-15T00:00:02Z',
+      },
+      playerView: playerViewFixture(),
+      viewRevision: 'revision-33',
+      createdAt: '2026-08-15T00:00:00Z',
+      updatedAt: '2026-08-15T00:00:02Z',
+      completedAt: '2026-08-15T00:00:02Z',
+    })
+
+    renderRoomPage()
+
+    expect(await screen.findByText('规则结果已保存，请提交新的行动')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(sessionStorage.getItem('trpg:pending-turn:room-1:player-1')).toBeNull()
+    })
+    expect(screen.queryByRole('button', { name: '使用原请求重试' })).not.toBeInTheDocument()
+    expect(screen.getByPlaceholderText('输入行动…')).toBeEnabled()
+  })
+
   it('restores a persisted skill decision without resubmitting the action', async () => {
     sessionStorage.setItem(
       'trpg:pending-turn:room-1:player-1',
