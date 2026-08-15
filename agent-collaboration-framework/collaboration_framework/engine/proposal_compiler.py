@@ -47,6 +47,7 @@ from collaboration_framework.contracts.proposal import (
     EnsureRuntimeLocationEffectProposal,
     EnterLocationEffectProposal,
     HideInformationEffectProposal,
+    ItemActionMeansProposal,
     MarkCoreResolvedEffectProposal,
     MoveEntityEffectProposal,
     NarrativeOnlyEffectProposal,
@@ -168,6 +169,8 @@ class ProposalCompiler:
             # 利用 Keeper capability 中的远端 ID 把物品隔空取回背包。
             self._validate_host_item_custody_sequence(runtime, request, success)
             self._validate_host_item_custody_sequence(runtime, request, failure)
+        if proposal.schema_version == 2:
+            self._validate_execution_means(runtime, request)
         completion_mode: str = "legacy"
         process_interaction = None
         completion_requirements: tuple[ActionEffect, ...] = ()
@@ -430,6 +433,38 @@ class ProposalCompiler:
                 self._reject("DROP_LOCATION_MISMATCH", "丢弃物品只能落在当前位置")
             custodies[effect.entity_id] = ("location", state.scene_id)
 
+    def _validate_execution_means(
+        self,
+        runtime: EngineRuntimeSnapshot,
+        request: SubmitProposalRequest,
+    ) -> None:
+        """在掷骰前校验结构化实施手段，不解释或枚举玩家自然语言。"""
+
+        means = request.proposal.execution_means
+        if means is None:
+            # 旧持久化 Proposal 允许读取，但不能以缺失实施手段的新请求进入 Engine。
+            self._reject(
+                "ACTION_MEANS_REQUIRED",
+                "这次行动缺少可确认的实施方式，请重新提交",
+                repairability="requires_player_choice",
+                fault="player",
+            )
+        if not isinstance(means, ItemActionMeansProposal):
+            return
+        item = runtime.game_state.item_instances.get(means.item_ref.id)
+        if (
+            item is None
+            or item.state.status != "active"
+            or item.custody.kind != "actor_inventory"
+            or item.custody.ref_id != request.actor_id
+        ):
+            self._reject(
+                "ACTION_RESOURCE_NOT_HELD",
+                "执行这次行动所需的物品不在当前角色身上",
+                repairability="requires_player_choice",
+                fault="player",
+            )
+
     @staticmethod
     def _terminal_requirement_is_satisfied(
         requirement: ActionEffect,
@@ -466,9 +501,9 @@ class ProposalCompiler:
                 )
             # Canon 实体的位置变化写入 entities 覆盖层；动态实体则写入
             # runtime_entities。编译期幂等判断必须和提交后完成判断保持一致。
-            payload = state.runtime_entities.get(requirement.entity_id) or state.entities.get(
-                requirement.entity_id, {}
-            )
+            payload = state.runtime_entities.get(
+                requirement.entity_id
+            ) or state.entities.get(requirement.entity_id, {})
             return (
                 payload.get("holder_actor_id") == requirement.holder_actor_id
                 and payload.get("location_id") == requirement.location_id

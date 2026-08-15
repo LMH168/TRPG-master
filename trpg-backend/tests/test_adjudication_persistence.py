@@ -154,6 +154,7 @@ async def test_proposal_v2_command_uses_goal_completion_persistence_reader(
             semantic_focus={"kind": "information", "id": information_id},
             method_family="reflect",
             method_description="整理当前已知内容",
+            execution_means={"kind": "intrinsic"},
             check_proposal={"mode": "none", "candidates": ()},
             success_effect_proposals=({"type": "narrative_only"},),
             completion={"kind": "process", "interaction": "observe"},
@@ -208,6 +209,7 @@ async def test_proposal_v2_check_snapshots_use_v3_and_v4_readers(
                 semantic_focus={"kind": "information", "id": information_id},
                 method_family="research",
                 method_description="仔细检查",
+                execution_means={"kind": "intrinsic"},
                 check_proposal={
                     "mode": "required",
                     "candidates": (

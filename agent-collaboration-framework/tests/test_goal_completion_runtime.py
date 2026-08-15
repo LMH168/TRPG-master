@@ -8,7 +8,9 @@ import pytest
 from collaboration_framework.contracts import (
     AdjudicationValidationError,
     CheckDecisionRequest,
+    ContractError,
     GetAdjudicationStatusRequest,
+    ItemCustody,
     ModuleContentV3,
     PlayerViewScope,
     PostRollDecisionRequest,
@@ -42,7 +44,7 @@ ACTOR = "goal-runtime-actor"
 HANDGUN = f"{ACTOR}:equipment:0"
 
 
-def _runtime_store() -> InMemoryEngineStore:
+def _runtime_store(*, handgun_location_id: str | None = None) -> InMemoryEngineStore:
     """加载真实模组，并给调查员准备射击技能与一把可追踪手枪。"""
 
     module = ModuleContentV3.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
@@ -59,6 +61,21 @@ def _runtime_store() -> InMemoryEngineStore:
     )
     state = create_initial_game_state(module, room_id=ROOM, actors={ACTOR: actor})
     state = state.model_copy(update={"scene_id": "cemetery"}, deep=True)
+    if handgun_location_id is not None:
+        handgun = state.item_instances[HANDGUN].model_copy(
+            update={
+                "custody": ItemCustody(
+                    kind="location",
+                    ref_id=handgun_location_id,
+                    form="placed",
+                )
+            },
+            deep=True,
+        )
+        state = state.model_copy(
+            update={"item_instances": {**state.item_instances, HANDGUN: handgun}},
+            deep=True,
+        )
     store = InMemoryEngineStore()
     store.register_room(module_content=module, initial_state=state)
     return store
@@ -149,6 +166,7 @@ def _submission(
 ) -> SubmitProposalRequest:
     """用可信目标快照包装一份 v2 Proposal。"""
 
+    payload.setdefault("execution_means", {"kind": "intrinsic"})
     proposal = SingleActionProposal.model_validate(
         {
             "kind": "single_action",
@@ -179,6 +197,10 @@ async def test_checked_ai_death_persists_and_blocks_later_social_action() -> Non
         "anchor_ref": {"kind": "entity", "id": HANDGUN},
         "method_family": "射击",
         "method_description": "用手枪进行致命射击",
+        "execution_means": {
+            "kind": "item",
+            "item_ref": {"kind": "entity", "id": HANDGUN},
+        },
         "check_proposal": {
             "mode": "required",
             "candidates": [
@@ -305,6 +327,64 @@ async def test_checked_ai_death_persists_and_blocks_later_social_action() -> Non
 
 
 @pytest.mark.asyncio
+async def test_remote_weapon_cannot_create_check_or_death_result() -> None:
+    """物品已留在别处时，玩家声明使用它也必须在 Engine 编译阶段被拒绝。"""
+
+    store = _runtime_store(handgun_location_id="thomas_office")
+    engine = AdjudicationEngineService(store, dice=DiceRoller(SequenceDiceSource([1])))
+    goal = "开枪打死守墓人"
+    death_effect = {
+        "type": "change_entity_state",
+        "entity_ref": {"kind": "entity", "id": "melodias"},
+        "key": "consciousness",
+        "value": "dead",
+    }
+    request = _submission(
+        request_id="remote-handgun-kill",
+        revision="0",
+        goal=goal,
+        payload={
+            "semantic_focus": {"kind": "entity", "id": "melodias"},
+            "method_family": "任意装备攻击",
+            "method_description": goal,
+            "execution_means": {
+                "kind": "item",
+                "item_ref": {"kind": "entity", "id": HANDGUN},
+            },
+            "check_proposal": {
+                "mode": "required",
+                "candidates": [
+                    {
+                        "candidate_id": "player-selected-skill",
+                        "skill_id": "firearm-handgun",
+                        "difficulty": "regular",
+                        "method_summary": goal,
+                        "player_safe_reason": "玩家选择当前技能",
+                    }
+                ],
+            },
+            "success_effect_proposals": [death_effect],
+            "failure_effect_proposals": [{"type": "narrative_only"}],
+            "completion": {"kind": "effects", "requirements": [death_effect]},
+        },
+    )
+
+    with pytest.raises(AdjudicationValidationError) as raised:
+        await engine.submit_proposal(request)
+
+    assert raised.value.result.code == "ACTION_RESOURCE_NOT_HELD"
+    with pytest.raises(ContractError):
+        store.inspect_completed_action(ROOM, request.request_id)
+    with pytest.raises(ContractError):
+        store.inspect_pending_check(ROOM, request.request_id)
+    assert store.inspect_domain_events(ROOM) == ()
+    assert (
+        store.inspect_state(ROOM).entities.get("melodias", {}).get("consciousness")
+        != "dead"
+    )
+
+
+@pytest.mark.asyncio
 async def test_rule_owned_hit_does_not_claim_death_goal() -> None:
     """规则只提交命中后果时，即使检定成功也不能把死亡目标标记为达成。"""
 
@@ -320,6 +400,10 @@ async def test_rule_owned_hit_does_not_claim_death_goal() -> None:
                 "anchor_ref": {"kind": "entity", "id": HANDGUN},
                 "method_family": "射击",
                 "method_description": "用手枪进行致命射击",
+                "execution_means": {
+                    "kind": "item",
+                    "item_ref": {"kind": "entity", "id": HANDGUN},
+                },
                 "check_proposal": {
                     "mode": "required",
                     "candidates": [
@@ -419,6 +503,10 @@ async def test_item_condition_and_drop_are_atomic_and_visible_in_next_view() -> 
             "anchor_ref": {"kind": "location", "id": "cemetery"},
             "method_family": "清空弹药后丢弃",
             "method_description": "打空手枪并留在墓地",
+            "execution_means": {
+                "kind": "item",
+                "item_ref": {"kind": "entity", "id": HANDGUN},
+            },
             "check_proposal": {"mode": "none", "candidates": []},
             "success_effect_proposals": [condition, drop],
             "failure_effect_proposals": [],

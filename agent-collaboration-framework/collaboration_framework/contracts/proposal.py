@@ -165,6 +165,42 @@ EffectProposal = Annotated[
 ]
 
 
+class IntrinsicActionMeansProposal(ContractModel):
+    """动作只依赖角色自身能力，例如观察、交谈或徒手行为。"""
+
+    kind: Literal["intrinsic"] = "intrinsic"
+
+
+class ItemActionMeansProposal(ContractModel):
+    """动作依赖一个具体物品；Engine 必须验证该实例当前由行动者持有。"""
+
+    kind: Literal["item"] = "item"
+    item_ref: ProposalRef
+
+    @model_validator(mode="after")
+    def require_existing_entity_ref(self) -> ItemActionMeansProposal:
+        """实施手段不能借运行时别名绕过事务内 custody 检查。"""
+
+        if self.item_ref.kind != "entity":
+            raise ValueError("item action means 必须引用已存在的 entity")
+        return self
+
+
+class EnvironmentActionMeansProposal(ContractModel):
+    """动作依赖当前可接触的环境对象，而不是角色背包物品。"""
+
+    kind: Literal["environment"] = "environment"
+    target_ref: ProposalRef
+
+
+ActionMeansProposal: TypeAlias = Annotated[  # noqa: UP040
+    IntrinsicActionMeansProposal
+    | ItemActionMeansProposal
+    | EnvironmentActionMeansProposal,
+    Field(discriminator="kind"),
+]
+
+
 class ProcessGoalCompletionProposal(ContractModel):
     """描述不要求持久写入的过程目标，并声明目标是否必须能够回应。"""
 
@@ -217,6 +253,7 @@ class SingleActionProposal(ContractModel):
     anchor_ref: ProposalRef | None = None
     method_family: str = Field(min_length=1, max_length=100)
     method_description: str = Field(min_length=1, max_length=1000)
+    execution_means: ActionMeansProposal | None = None
     check_proposal: AdjudicationCheck
     rule_ref: RuleDecisionRef | None = None
     success_effect_proposals: tuple[EffectProposal, ...] = ()

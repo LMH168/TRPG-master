@@ -97,6 +97,31 @@ def _runtime_with_handgun(*, location_id: str) -> EngineRuntimeSnapshot:
     return runtime.model_copy(update={"game_state": state}, deep=True)
 
 
+def _item_means_submission(item_id: str) -> SubmitProposalRequest:
+    """构造只依赖具体物品的过程动作，验证通用实施手段门禁。"""
+
+    goal = f"使用{item_id}执行行动"
+    proposal = SingleActionProposal.model_validate(
+        {
+            "kind": "single_action",
+            "schema_version": 2,
+            "semantic_goal": goal,
+            "semantic_focus": {"kind": "entity", "id": "butler"},
+            "method_family": "任意物品动作",
+            "method_description": goal,
+            "execution_means": {
+                "kind": "item",
+                "item_ref": {"kind": "entity", "id": item_id},
+            },
+            "check_proposal": {"mode": "none", "candidates": []},
+            "success_effect_proposals": [{"type": "narrative_only"}],
+            "failure_effect_proposals": [],
+            "completion": {"kind": "process", "interaction": "physical"},
+        }
+    )
+    return _submission(proposal=proposal, requested_goal=goal)
+
+
 def _submission(**updates: object) -> SubmitProposalRequest:
     """构造由 Coordinator 提供可信字段的提交信封。"""
 
@@ -118,6 +143,7 @@ def _v2_pickup_submission(**updates: object) -> SubmitProposalRequest:
     payload = _dynamic_pickup_payload()
     payload["schema_version"] = 2
     payload["method_family"] = "拾取临时物品"
+    payload["execution_means"] = {"kind": "intrinsic"}
     effects = payload["success_effect_proposals"]
     assert isinstance(effects, list)
     payload["completion"] = {"kind": "effects", "requirements": [effects[1]]}
@@ -145,6 +171,7 @@ def _existing_handgun_pickup_submission(**updates: object) -> SubmitProposalRequ
         "semantic_focus": {"kind": "entity", "id": "handgun"},
         "method_family": "physical",
         "method_description": "从随身装备中取出手枪",
+        "execution_means": {"kind": "intrinsic"},
         "check_proposal": {"mode": "none", "candidates": []},
         "success_effect_proposals": [effect],
         "failure_effect_proposals": [],
@@ -217,6 +244,36 @@ async def test_submit_proposal_rejects_remote_pickup_without_side_effects() -> N
     assert handgun.custody.kind == "location"
     assert handgun.custody.ref_id == "cemetery"
     assert handgun.version == 1
+
+
+def test_v2_item_means_rejects_arbitrary_remote_item_without_action_enumeration() -> (
+    None
+):
+    """custody 门禁只认 ItemInstance，不维护装备名称或玩家动作白名单。"""
+
+    item_id = "opaque-portable-item"
+    runtime = _runtime_with_handgun(location_id="cemetery")
+    handgun = runtime.game_state.item_instances["handgun"]
+    item = handgun.model_copy(
+        update={
+            "id": item_id,
+            "definition_id": item_id,
+            "display": ItemDisplay(name=item_id),
+        },
+        deep=True,
+    )
+    state = runtime.game_state.model_copy(
+        update={"item_instances": {item_id: item}},
+        deep=True,
+    )
+
+    with pytest.raises(AdjudicationValidationError) as raised:
+        ProposalCompiler().compile(
+            runtime.model_copy(update={"game_state": state}, deep=True),
+            _item_means_submission(item_id),
+        )
+
+    assert raised.value.result.code == "ACTION_RESOURCE_NOT_HELD"
 
 
 def test_v2_rejects_model_narrowing_the_trusted_goal() -> None:
