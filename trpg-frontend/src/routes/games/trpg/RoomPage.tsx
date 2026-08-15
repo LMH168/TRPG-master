@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { RoomSocketServerError, TurnFailedError, type AdjudicationPendingPayload, type AgentPlayerView, type AgentTurnPhase, type CheckRequestPayload, type CheckResultPayload, type EndingDraft, type NarrationPushPayload, type RoomConversationEvent, type RoomPlayerSummary } from 'trpg-sdk'
+import { RoomSocketServerError, TurnFailedError, type AdjudicationPendingPayload, type AgentPlayerView, type AgentTurnPhase, type CheckRequestPayload, type CheckResultPayload, type EndingDraft, type NarrationPushPayload, type RoomConversationEvent, type RoomPlayerSummary, type TurnRead } from 'trpg-sdk'
 import { ArrowLeft, Users, Map, MapPin, BookOpen, ScrollText, Star, X, SendHorizontal, Plus, Save, FlagOff, Heart, Brain, Volume2, Pause, Play, Square, RotateCcw, Mic, LoaderCircle } from 'lucide-react'
 import { useCallback, useState, useRef, useEffect, useMemo, type Dispatch, type FormEvent, type SetStateAction } from 'react'
 import { useRoomStore } from '@/stores/room-store'
@@ -54,6 +54,43 @@ function randomActionId(): string {
   bytes[8] = (bytes[8] & 0x3f) | 0x80
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+interface StoredTurnLocator {
+  clientActionId: string
+  utterance: string
+  turnId?: string
+}
+
+/** sessionStorage 只保存恢复定位信息，不保存 Prompt、模型输出或玩家私密上下文。 */
+function turnLocatorKey(roomId: string, playerId: string): string {
+  return `trpg:pending-turn:${roomId}:${playerId}`
+}
+
+function readTurnLocator(roomId: string, playerId: string): StoredTurnLocator | null {
+  try {
+    const raw = sessionStorage.getItem(turnLocatorKey(roomId, playerId))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<StoredTurnLocator>
+    if (typeof parsed.clientActionId !== 'string' || typeof parsed.utterance !== 'string') {
+      return null
+    }
+    return {
+      clientActionId: parsed.clientActionId,
+      utterance: parsed.utterance,
+      turnId: typeof parsed.turnId === 'string' ? parsed.turnId : undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
+function writeTurnLocator(roomId: string, playerId: string, locator: StoredTurnLocator): void {
+  sessionStorage.setItem(turnLocatorKey(roomId, playerId), JSON.stringify(locator))
+}
+
+function clearTurnLocator(roomId: string, playerId: string): void {
+  sessionStorage.removeItem(turnLocatorKey(roomId, playerId))
 }
 
 function skillPillColors(value: number) {
@@ -1546,6 +1583,99 @@ export default function RoomPage() {
     })
   }, [enqueueHostSpeech])
 
+  const restorePersistedTurn = useCallback(async () => {
+    if (!roomId || !playerId || !reconnectToken) return
+    const locator = readTurnLocator(roomId, playerId)
+    let turn: TurnRead | null = null
+    if (locator?.turnId) {
+      turn = await sdk.turns.getTurn(roomId, locator.turnId, reconnectToken)
+    } else if (locator) {
+      turn = await sdk.turns.findTurnByClientAction(
+        roomId,
+        locator.clientActionId,
+        reconnectToken,
+      )
+    } else {
+      const active = await sdk.turns.listTurns(roomId, reconnectToken, {
+        activeOnly: true,
+        limit: 1,
+      })
+      turn = active[0] ?? null
+    }
+    if (!turn) return
+
+    const utterance = locator?.utterance ?? ''
+    writeTurnLocator(roomId, playerId, {
+      clientActionId: turn.clientActionId,
+      utterance,
+      turnId: turn.turnId,
+    })
+    if (turn.playerView) setPlayerView(turn.playerView as unknown as AgentPlayerView)
+
+    if (turn.status === 'completed') {
+      const text = turn.narration?.text
+      if (typeof text === 'string' && turn.messageId) {
+        commitNarration({
+          turnId: turn.turnId,
+          clientActionId: turn.clientActionId,
+          messageId: turn.messageId,
+          text,
+        })
+      }
+      clearSettledAction(turn.clientActionId)
+      setPendingAction(null)
+      setTyping(false)
+      clearTurnLocator(roomId, playerId)
+      return
+    }
+
+    if (turn.error) {
+      setActionError(turn.error.publicMessage)
+      setActionErrorRetryable(turn.error.retryable)
+      setActionErrorCode(turn.error.code)
+      setActionErrorCorrelationId(turn.clientActionId)
+    }
+    const pendingSourceRevision = turn.pendingDecision?.source_revision ?? turn.pendingDecision?.sourceRevision
+    if (
+      turn.resumePoint === 'awaiting_player' &&
+      turn.pendingDecision &&
+      typeof pendingSourceRevision === 'string'
+    ) {
+      const waitingForPostRoll = turn.waitingReason === 'post_roll_decision'
+      setPendingAdjudication({
+        turnId: turn.turnId,
+        correlationId: turn.clientActionId,
+        sourceRevision: pendingSourceRevision,
+        status: waitingForPostRoll
+          ? 'awaiting_post_roll_decision'
+          : 'awaiting_skill_choice',
+        pendingDecision: waitingForPostRoll
+          ? null
+          : turn.pendingDecision as unknown as AdjudicationPendingPayload['pendingDecision'],
+        checkRun: waitingForPostRoll
+          ? turn.pendingDecision as unknown as AdjudicationPendingPayload['checkRun']
+          : null,
+      })
+      setTyping(false)
+      setProgressLabel(
+        waitingForPostRoll ? '守秘人等待玩家决定检定结果' : '守秘人等待玩家掷骰子',
+      )
+    } else {
+      setPendingAction({ clientActionId: turn.clientActionId, utterance })
+      setTyping(true)
+      setProgressLabel('正在恢复未完成回合')
+    }
+  }, [clearSettledAction, commitNarration, playerId, reconnectToken, roomId])
+
+  useEffect(() => {
+    let cancelled = false
+    void restorePersistedTurn().catch((error: unknown) => {
+      if (cancelled) return
+      setActionError(friendlyErrorMessage(error, '未能恢复上一次行动'))
+    })
+    return () => { cancelled = true }
+  }, [restorePersistedTurn])
+
   // 逐字揭示：片段几乎同时到达，节奏由这里控制。长文本按比例加快，总时长
   // 不超过 REVEAL_MAX_MS。
   useEffect(() => {
@@ -1615,7 +1745,7 @@ export default function RoomPage() {
         setTyping(false)
         clearBackendProgress()
         setSecondaryProgressLabel(null)
-        clearSettledAction(envelope.payload.messageId)
+        clearSettledAction(envelope.payload.clientActionId ?? envelope.payload.messageId)
         // 不在这里直接落地：权威消息比最后一个片段只晚到半毫秒，立刻接管会让
         // 刚开始的渐进展示当场被整段覆盖。入队，交给上面的 effect 按序裁决。
         setPendingNarrations((current) => [...current, envelope.payload])
@@ -1685,6 +1815,14 @@ export default function RoomPage() {
         )
         if (envelope.payload.playerId === playerId) setShowDice(false)
       } else if (envelope.type === 'adjudication.pending') {
+        if (roomId && playerId) {
+          const locator = readTurnLocator(roomId, playerId)
+          writeTurnLocator(roomId, playerId, {
+            clientActionId: envelope.payload.correlationId,
+            utterance: locator?.utterance ?? '',
+            turnId: envelope.payload.turnId,
+          })
+        }
         setTyping(false)
         setProgressLabel(
           envelope.payload.status === 'awaiting_skill_choice'
@@ -1755,6 +1893,14 @@ export default function RoomPage() {
           setProgressLabel((current) => current ?? '守秘人理解玩家意图中')
         }
       } else if (envelope.type === 'turn.started') {
+        if (roomId && playerId) {
+          const locator = readTurnLocator(roomId, playerId)
+          writeTurnLocator(roomId, playerId, {
+            clientActionId: envelope.payload.correlationId,
+            utterance: locator?.utterance ?? '',
+            turnId: envelope.payload.turnId,
+          })
+        }
         setTyping(true)
         showBackendPhase('reading_player_view')
         setSecondaryProgressLabel(null)
@@ -1805,10 +1951,11 @@ export default function RoomPage() {
       setProgressLabel('守秘人正在生成开场叙事')
     }
     return off
-  }, [clearBackendProgress, clearSettledAction, enqueueHostSpeech, handleHostSpeechSettingsUpdated, openDiceForCheck, playerId, senderName, showBackendPhase])
+  }, [clearBackendProgress, clearSettledAction, enqueueHostSpeech, handleHostSpeechSettingsUpdated, openDiceForCheck, playerId, roomId, senderName, showBackendPhase])
 
   const submitPlayerAction = (action: { clientActionId: string; utterance: string }) => {
     if (!playerId || suspended) return
+    if (roomId) writeTurnLocator(roomId, playerId, action)
     pendingNarrationActionIdRef.current = action.clientActionId
     setPendingAction(action)
     setActionError('')
@@ -1828,6 +1975,7 @@ export default function RoomPage() {
         setPendingAction((current) =>
           current?.clientActionId === action.clientActionId ? null : current
         )
+        if (roomId) clearTurnLocator(roomId, playerId)
       })
       .catch((error: unknown) => {
         setTyping(false)
@@ -1855,6 +2003,7 @@ export default function RoomPage() {
             : action.clientActionId
         )
         pendingNarrationActionIdRef.current = null
+        // 传输错误后保留定位信息，刷新或重连将通过 REST 查询权威 Turn。
       })
   }
 
