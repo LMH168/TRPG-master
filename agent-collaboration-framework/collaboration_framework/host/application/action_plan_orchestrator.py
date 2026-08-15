@@ -836,6 +836,46 @@ class ActionPlanOrchestrator:
             release_lease=True,
         )
 
+    async def settle_failed_turn(
+        self,
+        *,
+        room_id: str,
+        parent_action_id: str,
+        code: str,
+    ) -> ActionPlanRun | None:
+        """Turn 已进入终态失败时保留既有提交，并释放计划级房间占用。"""
+
+        run = await self._store.load(room_id, parent_action_id)
+        if run is None or run.is_terminal:
+            return run
+        steps = list(run.steps)
+        if run.current_step_index < len(steps):
+            current = steps[run.current_step_index]
+            # 已提交 execution/事件必须原样保留；只清除未提交的临时 Proposal。
+            updates: dict[str, object] = {
+                "status": "stopped",
+                "safe_failure_code": current.safe_failure_code or code,
+            }
+            if current.adjudication_execution is None and not current.event_refs:
+                updates.update(
+                    {
+                        "source_revision": None,
+                        "proposal": None,
+                        "adjudication": None,
+                        "pending_action_request_id": None,
+                    }
+                )
+            steps[run.current_step_index] = current.model_copy(
+                update=updates,
+                deep=True,
+            )
+        return await self._replace_steps(
+            run,
+            tuple(steps),
+            status="stopped",
+            release_lease=True,
+        )
+
     async def build_narration_context(
         self,
         player_input: PlayerInput,
@@ -881,6 +921,16 @@ class ActionPlanOrchestrator:
         narration_evidence = tuple(
             item for step in summaries for item in step.narration_evidence
         )
+        visible_entity_ids = {item.id for item in view.scene.visible_entities}
+        focus_entity_ids = tuple(
+            dict.fromkeys(
+                step.proposal.semantic_focus.id
+                for step in run.steps
+                if step.proposal is not None
+                and step.proposal.semantic_focus.kind == "entity"
+                and step.proposal.semantic_focus.id in visible_entity_ids
+            )
+        )
         return ActionPlanNarrationContext(
             background=view.background,
             player_input=player_input,
@@ -889,6 +939,8 @@ class ActionPlanOrchestrator:
             termination_status=termination,
             completed_steps=summaries,
             player_view=view,
+            recent_history=await self._recent_history(player_input, view),
+            focus_entity_ids=focus_entity_ids,
             opening_world_time=run.opening_world_time,
             allowed_evidence_refs=evidence,
             narration_evidence=narration_evidence,
@@ -1069,6 +1121,9 @@ class ActionPlanOrchestrator:
                 != current.repair_proposal_baseline.semantic_goal
                 or candidate.method_family
                 != current.repair_proposal_baseline.method_family
+                or candidate.completion != current.repair_proposal_baseline.completion
+                or candidate.execution_means
+                != current.repair_proposal_baseline.execution_means
             ):
                 return await self._mark_step_failure(
                     run,

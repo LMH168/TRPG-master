@@ -70,6 +70,10 @@ from collaboration_framework.host.schemas import (
     ActionPlanStepRun,
     SingleActionClarificationResult,
     SingleActionTurnResult,
+    RecentHistoryBudget,
+    RecentTurn,
+    RecentTurnContext,
+    VisibleHistoryText,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -660,6 +664,7 @@ def orchestrator(
     policy=None,
     two_scenes: bool = False,
     on_step_failure=None,
+    recent_history_source=None,
 ):
     module, engine_store, projector = runtime(two_scenes=two_scenes)
     adjudicator = adjudicator or RecordingAdjudicator(module.world_ref)
@@ -674,12 +679,49 @@ def orchestrator(
             policy=policy,
             lease_seconds=1,
             on_step_failure=on_step_failure,
+            recent_history_source=recent_history_source,
         ),
         adjudicator,
         service,
         plan_store,
         engine_store,
     )
+
+
+class StaticRecentHistorySource:
+    """为 Narrator 上下文测试提供同一份玩家安全历史。"""
+
+    async def read(
+        self,
+        *,
+        player_input: PlayerInput,
+        player_view,
+        exclude_correlation_id: str,
+        budget: RecentHistoryBudget,
+    ) -> RecentTurnContext:
+        del exclude_correlation_id, budget
+        return RecentTurnContext(
+            room_id=player_input.room_id,
+            viewer_player_id=player_input.player_id,
+            as_of_revision=player_view.revision,
+            turns=(
+                RecentTurn(
+                    correlation_id="prior-dialogue",
+                    source_player_id=player_input.player_id,
+                    source_actor_id=player_input.actor_id,
+                    scene_id=player_view.scene_id,
+                    participants=(player_input.actor_id, "butler"),
+                    player_utterance=VisibleHistoryText(
+                        text="询问守墓人昨夜的异常",
+                        visibility="player_scoped",
+                    ),
+                    published_narration=VisibleHistoryText(
+                        text="守墓人提到昨夜传来三声敲击。",
+                        visibility="player_scoped",
+                    ),
+                ),
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -777,6 +819,25 @@ async def test_persisted_narration_recovery_finishes_plan_without_replaying_engi
     )
     assert completed.status == "completed"
     assert replay == completed
+
+
+@pytest.mark.asyncio
+async def test_final_narration_receives_same_recent_dialogue_context() -> None:
+    """最终 Narrator 必须收到近期说话者和已发布信息，不能在回合边界丢失焦点。"""
+
+    service, _, _, _, _ = orchestrator(
+        recent_history_source=StaticRecentHistorySource()
+    )
+    original = player_input("narration-history-parent")
+    await service.start_or_resume(original, plan=plan(2))
+
+    context = await service.build_narration_context(original)
+
+    assert context.recent_history is not None
+    prior = context.recent_history.turns[-1]
+    assert prior.participants == (original.actor_id, "butler")
+    assert prior.published_narration is not None
+    assert "三声敲击" in prior.published_narration.text
 
 
 def test_decision_parser_accepts_variable_lengths_and_rejects_invalid_shape() -> None:
@@ -1383,6 +1444,39 @@ async def test_partial_commit_failure_releases_only_current_plan_step() -> None:
     assert released.steps[0].status == "completed"
     assert released.steps[1].status == "pending"
     assert len(engine_store.inspect_domain_events("room_01")) == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_failed_turn_preserves_commit_and_releases_room_reservation() -> (
+    None
+):
+    """Turn 终态失败后保留第一步提交，但不能继续占住房间。"""
+
+    module, engine_store, projector = runtime()
+    service = ActionPlanOrchestrator(
+        store=InMemoryActionPlanRunStore(),
+        adjudicator=FailSecondStepOnceAdjudicator(module.world_ref),
+        executor=AdjudicationEngineService(engine_store),
+        player_view_projector=projector,
+    )
+    original = player_input("terminal-failed-parent")
+    failed = await service.start_or_resume(original, plan=plan(2))
+    assert failed.run.steps[0].status == "completed"
+    committed_events = engine_store.inspect_domain_events("room_01")
+
+    settled = await service.settle_failed_turn(
+        room_id=original.room_id,
+        parent_action_id=original.client_action_id,
+        code="TURN_INTERNAL_ERROR",
+    )
+
+    assert settled is not None
+    assert settled.status == "stopped"
+    assert settled.steps[0].status == "completed"
+    assert settled.steps[0].adjudication_execution is not None
+    assert settled.steps[1].status == "stopped"
+    assert await service.active_for_room(original.room_id) is None
+    assert engine_store.inspect_domain_events("room_01") == committed_events
 
 
 @pytest.mark.asyncio

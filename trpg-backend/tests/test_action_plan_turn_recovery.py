@@ -9,12 +9,16 @@ from collaboration_framework.contracts import (
     ActionPlanPolicy,
     NarrationEvidence,
     PlayerInput,
+    PlayerView,
     PostRollDecisionRequest,
 )
 from collaboration_framework.host.application import (
     ActionPlanNarrationValidationError,
 )
-from collaboration_framework.host.schemas import ActionPlanNarrationContext
+from collaboration_framework.host.application.action_plan_narrator import (
+    unsupported_focus_shift_claim,
+)
+from collaboration_framework.host.schemas import ActionPlanNarrationContext, RecentTurnContext
 
 from app.core.action_plan_turn import ActionPlanTurnApplication
 
@@ -250,6 +254,43 @@ def test_stopped_plan_clarification_keeps_completed_steps_and_lists_pending() ->
     assert output.text.startswith("此前已经完成的步骤仍然有效")
     assert "射击守墓人" in output.text
     assert "后续步骤尚未执行：丢下手枪" in output.text
+
+
+def test_real_model_focus_shift_wording_is_rejected_without_name_hardcoding() -> None:
+    """真实模型写成“道格拉斯墓碑”时也必须被通用实体焦点门禁拒绝。"""
+
+    visible = (
+        SimpleNamespace(id="melodias", name="守墓人梅洛迪亚斯", aliases=("守墓人",)),
+        SimpleNamespace(
+            id="douglas_grave",
+            name="道格拉斯的墓碑",
+            aliases=("墓碑",),
+        ),
+    )
+    text = "守墓人承接了三声敲击的话题，随后却说今天在道格拉斯墓碑旁看到了一些新土迹。"
+
+    shifted = unsupported_focus_shift_claim(
+        text,
+        focus_entity_ids=("melodias",),
+        visible_entities=visible,
+        evidence_subject_ids=set(),
+    )
+
+    assert shifted == "douglas_grave"
+
+
+def test_recent_history_rebinds_to_post_commit_player_view_revision() -> None:
+    """单动作提交推进 revision 后，叙事历史应只重绑定截止点而不改写内容。"""
+
+    history = SimpleNamespace(as_of_revision="before", model_copy=lambda *, update: update)
+    player_view = SimpleNamespace(revision="after")
+
+    rebound = ActionPlanTurnApplication._rebind_recent_history(
+        cast(RecentTurnContext, history),
+        player_view=cast(PlayerView, player_view),
+    )
+
+    assert rebound == {"as_of_revision": "after"}
 
 
 def test_clarification_fallback_points_to_visible_dead_body() -> None:

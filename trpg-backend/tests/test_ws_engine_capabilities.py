@@ -165,6 +165,9 @@ def test_runtime_entity_reaches_the_client_scene(
             name="送信来的信差",
             location_id=OPENING_SCENE,
         ),
+        # v2 目标完成契约要求可验证的最终状态；ensure 只是创建辅助步骤，
+        # 实体位于当前场景才是这次测试要验证的权威后置条件。
+        MoveEntityEffect(entity_id="briefing_clerk", location_id=OPENING_SCENE),
     )
 
     clerk = next(

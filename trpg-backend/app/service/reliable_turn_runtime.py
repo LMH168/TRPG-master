@@ -31,7 +31,6 @@ from app.core.turn_coordinator import (
 )
 from app.core.turn_events import TurnPhase
 from app.core.turn_runtime import (
-    TurnCommitState,
     TurnInputSnapshot,
     TurnRecord,
     TurnRuntimeStore,
@@ -47,25 +46,20 @@ turn_coordinator = TurnCoordinator(turn_store)
 turn_outbox_dispatcher = TurnOutboxDispatcher(turn_store, manager)
 
 
-async def _settle_failed_uncommitted_plan(turn: TurnRecord) -> None:
-    """终态未提交 Turn 不得遗留仍占住房间的 ActionPlan。"""
+async def _settle_failed_plan(turn: TurnRecord) -> None:
+    """终态失败 Turn 不得遗留仍占住房间的 ActionPlan。"""
 
     if turn.status != TurnStatus.FAILED:
         return
     try:
         code = turn.last_error.code if turn.last_error is not None else "TURN_FAILED"
-        if turn.commit_state == TurnCommitState.NOT_COMMITTED:
-            await action_plan_turn_application.abandon_uncommitted_plan(
-                room_id=turn.room_id,
-                parent_action_id=turn.client_action_id,
-                code=code,
-            )
-        elif turn.commit_state == TurnCommitState.PARTIALLY_COMMITTED:
-            await action_plan_turn_application.release_uncommitted_plan_step(
-                room_id=turn.room_id,
-                parent_action_id=turn.client_action_id,
-                code=code,
-            )
+        # Turn 已是最终恢复来源。无论此前提交到哪一步，都要保留 receipt 并把
+        # ActionPlan 收束为 stopped，避免步骤级 reservation 永久阻塞新行动。
+        await action_plan_turn_application.settle_failed_turn_plan(
+            room_id=turn.room_id,
+            parent_action_id=turn.client_action_id,
+            code=code,
+        )
     except Exception as exc:
         # Turn 已经安全终止，清理失败不能改写玩家错误；记录类型供后台诊断。
         logger.error(
@@ -136,7 +130,7 @@ async def start_action(
         executor=execute,
         after_publish=lambda: _mark_plan_narration(room_id, client_action_id, on_progress),
     )
-    await _settle_failed_uncommitted_plan(turn)
+    await _settle_failed_plan(turn)
     if captured is None and turn.result is not None:
         await turn_outbox_dispatcher.redispatch_turn(turn.turn_id)
     else:
@@ -181,7 +175,7 @@ async def continue_after_decision(
         executor=execute,
         after_publish=lambda: _mark_plan_narration(room_id, client_action_id, on_progress),
     )
-    await _settle_failed_uncommitted_plan(saved)
+    await _settle_failed_plan(saved)
     if captured is None and saved.result is not None:
         await turn_outbox_dispatcher.redispatch_turn(saved.turn_id)
     else:
@@ -218,7 +212,7 @@ async def cancel_action(
         executor=execute,
         after_publish=lambda: _mark_plan_narration(room_id, client_action_id, None),
     )
-    await _settle_failed_uncommitted_plan(saved)
+    await _settle_failed_plan(saved)
     if captured is None and saved.result is not None:
         await turn_outbox_dispatcher.redispatch_turn(saved.turn_id)
     else:
@@ -280,7 +274,7 @@ async def resume_turn_by_id(turn_id: str) -> TurnRecord:
             None,
         ),
     )
-    await _settle_failed_uncommitted_plan(saved)
+    await _settle_failed_plan(saved)
     await turn_outbox_dispatcher.dispatch_due()
     return saved
 

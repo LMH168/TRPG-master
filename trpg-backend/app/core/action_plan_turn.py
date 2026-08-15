@@ -311,6 +311,9 @@ def _proposal_from_adjudication(adjudication: ActionAdjudication) -> SingleActio
             "anchor_ref": anchor_ref,
             "method_family": adjudication.method.family,
             "method_description": adjudication.method.description,
+            # Legacy ActionAdjudication 没有结构化实施手段；确定性兼容路径只声明
+            # intrinsic，涉及具体物品的生产 Proposal 必须由 Host 明确给出 item。
+            "execution_means": {"kind": "intrinsic"},
             "check_proposal": adjudication.check.model_dump(mode="json"),
             "rule_ref": (
                 adjudication.rule_decision.model_dump(mode="json")
@@ -986,6 +989,7 @@ class ActionPlanTurnApplication:
                     else result.player_safe_reason
                 ),
                 result,
+                recent_history=recent_history,
             )
         if result.execution.status in {
             "awaiting_skill_choice",
@@ -999,6 +1003,17 @@ class ActionPlanTurnApplication:
             player_input,
             self._decision_summary(decision, result),
             result,
+            recent_history=recent_history,
+            focus_entity_ids=(
+                (decision.semantic_focus.id,)
+                if isinstance(decision, SingleActionProposal)
+                and decision.semantic_focus.kind == "entity"
+                and any(
+                    entity.id == decision.semantic_focus.id
+                    for entity in result.player_view.scene.visible_entities
+                )
+                else ()
+            ),
         )
 
     @staticmethod
@@ -1224,6 +1239,21 @@ class ActionPlanTurnApplication:
         """部分提交 Turn 失败时释放当前未提交步骤，保留前序权威结果。"""
 
         return await self._orchestrator.release_uncommitted_step(
+            room_id=room_id,
+            parent_action_id=parent_action_id,
+            code=code,
+        )
+
+    async def settle_failed_turn_plan(
+        self,
+        *,
+        room_id: str,
+        parent_action_id: str,
+        code: str,
+    ) -> ActionPlanRun | None:
+        """收束终态失败 Turn 的计划占用，同时保留已经提交的步骤结果。"""
+
+        return await self._orchestrator.settle_failed_turn(
             room_id=room_id,
             parent_action_id=parent_action_id,
             code=code,
@@ -1479,6 +1509,9 @@ class ActionPlanTurnApplication:
         player_input: PlayerInput,
         summary: str,
         result: SingleActionTurnResult,
+        *,
+        recent_history: RecentTurnContext | None = None,
+        focus_entity_ids: tuple[str, ...] = (),
     ) -> ActionPlanTurnResult:
         execution = result.execution
         if execution.status in {"awaiting_skill_choice", "awaiting_post_roll_decision"}:
@@ -1525,6 +1558,11 @@ class ActionPlanTurnApplication:
             termination_status=("cancelled" if execution.status == "cancelled" else "resolved"),
             completed_steps=(completed_summary,),
             player_view=result.player_view,
+            recent_history=self._rebind_recent_history(
+                recent_history,
+                player_view=result.player_view,
+            ),
+            focus_entity_ids=focus_entity_ids,
             opening_world_time=result.opening_world_time,
             allowed_evidence_refs=execution.public_event_refs,
             narration_evidence=execution.narration_evidence,
@@ -1542,6 +1580,8 @@ class ActionPlanTurnApplication:
         player_input: PlayerInput,
         summary: str,
         result: SingleActionClarificationResult,
+        *,
+        recent_history: RecentTurnContext | None = None,
     ) -> ActionPlanTurnResult:
         """把未发生任何权威写入的单动作失败转换成自然主持人澄清。"""
 
@@ -1551,6 +1591,10 @@ class ActionPlanTurnApplication:
             plan_goal=summary,
             termination_status="needs_clarification",
             player_view=result.player_view,
+            recent_history=self._rebind_recent_history(
+                recent_history,
+                player_view=result.player_view,
+            ),
             opening_world_time=result.opening_world_time,
             blocked_step_goal=summary,
             player_safe_failure_reason=result.player_safe_reason,
@@ -1561,6 +1605,20 @@ class ActionPlanTurnApplication:
             status="needs_clarification",
             narration=await self._narrate(context),
         )
+
+    @staticmethod
+    def _rebind_recent_history(
+        recent_history: RecentTurnContext | None,
+        *,
+        player_view: PlayerView,
+    ) -> RecentTurnContext | None:
+        """将提交前读取的安全历史绑定到本回合最终视图 revision。"""
+
+        if recent_history is None or recent_history.as_of_revision == player_view.revision:
+            return recent_history
+        # 历史查询已排除当前 client_action_id；权威提交只会推进 revision，
+        # 因此这里仅更新读取截止点，不增加或改写任何历史事实。
+        return recent_history.model_copy(update={"as_of_revision": player_view.revision})
 
     async def _narrate(
         self,

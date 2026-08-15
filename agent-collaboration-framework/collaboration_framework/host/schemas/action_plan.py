@@ -421,6 +421,10 @@ class ActionPlanNarrationContext(ContractModel):
     ]
     completed_steps: tuple[CompletedPlanStepSummary, ...] = ()
     player_view: PlayerView
+    # 最终叙事与 Host 共享玩家安全历史，用于承接说话者、交互焦点和既有措辞。
+    recent_history: RecentTurnContext | None = None
+    # 从本回合已持久化 Proposal 投影；Narrator 不能自行切换到其他可见实体。
+    focus_entity_ids: tuple[str, ...] = ()
     # `player_view` is the post-turn state, so it is the *only* clock the
     # Narrator would otherwise see. This is where the turn started; each step
     # then carries the clock it ended on.
@@ -444,6 +448,16 @@ class ActionPlanNarrationContext(ContractModel):
             or self.player_input.actor_id != self.player_view.actor_id
         ):
             raise ValueError("ActionPlanNarrationContext identity scope 不一致")
+        if self.recent_history is not None:
+            self.recent_history.validate_for(
+                player_input=self.player_input,
+                player_view=self.player_view,
+            )
+        visible_entity_ids = {
+            entity.id for entity in self.player_view.scene.visible_entities
+        }
+        if not set(self.focus_entity_ids).issubset(visible_entity_ids):
+            raise ValueError("叙事焦点必须属于最终 PlayerView 的可见实体")
         evidence = tuple(
             ref for step in self.completed_steps for ref in step.event_refs
         )
