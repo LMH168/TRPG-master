@@ -22,17 +22,19 @@ Proposal 不得包含 `room_id`、`player_id`、`actor_id`、`request_id`、revi
 结果、提交状态或持久化意图。`persistence_intent` 只属于旧 ActionAdjudication 的兼容字段，
 Engine 根据开放 `method_family` 和实际 Effect 派生它，不能被 Host 用来授权结果。
 
-## 生产模式
+## 生产入口与历史兼容
 
-`AUTHORITY_PIPELINE_MODE` 支持短期 `legacy`、`shadow` 和 `v2`：
+PR3 后生产动作只有 `submit_proposal`。Host、Controller 和 Narrator 不持有
+`GameState` 或 `DomainEvent` 写端口，也不能直接构造或提交 `ValidatedActionCommand`。
+Proposal 的可信身份、当前 revision、权限分类和规则所有权只能由 Engine 在权威事务内绑定。
 
-- `v2` 是 PR2 的默认模式。单动作、ActionPlan 当前步骤和修复后的动作均调用
-  `submit_proposal`。
-- `legacy` 仅供人工回滚尚未产生 Engine receipt 的新回合；已有 receipt 的回合必须按 receipt
-  对账和恢复，不能切换路径重新执行。
-- `shadow` 只能运行无副作用的 Proposal 编译比较，不掷骰、不写状态、不生成叙事或 Outbox。
+旧的 `ActionAdjudication`、`SubmitAdjudicationRequest` 和 ActionPlan v1 JSON 仅作为历史
+reader/adopter 保留。它们不能重新成为生产 writer：有已有 execution 或 receipt 的步骤只按
+请求 ID 对账；没有 receipt 的旧未提交步骤进入 `needs_clarification`，等待玩家用新输入产生
+Proposal。历史终态不会伪造回填新的 Turn、receipt 或 Proposal。
 
-PR3 完成后删除该临时开关和 legacy 生产 writer，但历史 JSON reader 继续保留。
+PR2 期间的 `legacy|shadow|v2` 临时模式开关已在 PR3 删除。已经进入 PR3 生产链路的动作不能
+通过切换开关绕过 Validator；需要回滚时只能停止新动作并处理没有 Engine receipt 的新回合。
 
 ## 动态内容
 
@@ -59,6 +61,16 @@ Validator 拒绝且尚无 receipt 时，可以在冻结的修复预算内基于�
 修复必须保持原 `semantic_goal`。权限、规则所有权和持久结果完整性失败时进入玩家安全澄清，
 不得把内部错误、Prompt、模型原始输出或隐藏上下文发送给玩家。
 
+## 依赖边界
+
+- Host 只读取 `PlayerView`、`KeeperCapabilityView` 和历史安全上下文，并输出 Proposal 或
+  Clarification。
+- Controller 只协调身份、Turn 和玩家安全结果；它不接收 Engine 写端口以外的状态写对象。
+- Narrator 只接收已提交结果、证据和最终 PlayerView，不能写 GameState、DomainEvent、receipt
+  或 Outbox。
+- Engine 是唯一可以编译并提交 `ValidatedActionCommand` 的组件；receipt 是提交是否发生的
+  唯一证明。
+
 ## 检查与回滚
 
 PR2 的最小检查：
@@ -72,6 +84,6 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-回滚前先停止新动作并按 Turn 查询未完成回合。没有 receipt 的新回合可以人工切回 `legacy`；
-已经提交的 v2 回合必须继续使用 receipt 恢复。不得删除动态对象、事件或 receipt 来“回滚”
+回滚前先停止新动作并按 Turn 查询未完成回合。没有 receipt 的新回合可以通过可审查的代码
+回退恢复；已经提交的 Proposal 回合必须继续使用 receipt 恢复。不得删除动态对象、事件或 receipt 来“回滚”
 业务状态，也不得 force push 已进入 Review 的分支历史。
