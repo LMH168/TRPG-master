@@ -544,8 +544,9 @@ def _flatten_state(
     for entity_id, values in sorted(state.runtime_entities.items()):
         stable_entity_id = stable(entity_id)
         flattened[f"runtime_entity.{stable_entity_id}.name"] = values.get("name")
+        location_id = values.get("location_id")
         flattened[f"runtime_entity.{stable_entity_id}.location_id"] = stable(
-            values.get("location_id")
+            location_id if isinstance(location_id, str) else None
         )
     for item_id, item in sorted(state.item_instances.items()):
         stable_item_id = stable(item_id)
@@ -577,7 +578,10 @@ def _runtime_id_map(
     mapping: dict[str, str] = {}
     for turn in scenario.turns:
         output = turn.host_output or {}
-        for effect in output.get("success_effects", []):
+        effects = output.get("success_effects", [])
+        if not isinstance(effects, list):
+            continue
+        for effect in effects:
             if not isinstance(effect, dict):
                 continue
             effect_type = effect.get("type")
@@ -592,10 +596,12 @@ def _runtime_id_map(
             if not isinstance(alias, str):
                 continue
             logical_id = aliases.get(alias, alias)
+            if not isinstance(logical_id, str):
+                continue
             actual_id = derive_runtime_object_id(
                 room_id=room_id,
                 request_id=turn.client_action_id,
-                ref=ProposalRef(kind=kind, id=logical_id),  # ty: ignore[invalid-argument-type]
+                ref=ProposalRef(kind=kind, id=logical_id),
             )
             mapping[actual_id] = logical_id
     return mapping

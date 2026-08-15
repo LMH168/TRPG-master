@@ -7,7 +7,7 @@ import re
 import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Literal, Protocol, cast
 
 import structlog
 from collaboration_framework.contracts import (
@@ -799,7 +799,7 @@ class ActionPlanTurnApplication:
         recent_history_source: RecentHistorySource,
         recent_history_budget: RecentHistoryBudget,
         recent_history_enabled: bool,
-        authority_pipeline_mode: str = "legacy",
+        authority_pipeline_mode: Literal["legacy", "shadow", "v2"] = "legacy",
     ) -> None:
         self._store = store
         self._engine = engine
@@ -967,13 +967,28 @@ class ActionPlanTurnApplication:
             await _emit_phase(on_phase, "generating_narration")
         return await self._from_single(
             player_input,
-            (
-                decision.adjudication.summary
-                if isinstance(decision, SingleActionDecision)
-                else decision.semantic_goal
-            ),
+            self._decision_summary(decision, result),
             result,
         )
+
+    @staticmethod
+    def _decision_summary(
+        decision: HostTurnDecision | HostDecisionProposal,
+        result: SingleActionTurnResult | SingleActionClarificationResult,
+    ) -> str:
+        """统一提取玩家可见摘要，澄清 Proposal 使用安全问题作为回退。"""
+
+        if isinstance(decision, SingleActionDecision):
+            return decision.adjudication.summary
+        if isinstance(decision, SingleActionProposal):
+            return decision.semantic_goal
+        if isinstance(result, SingleActionClarificationResult):
+            return result.player_safe_reason
+        if isinstance(decision, ActionPlan):
+            return decision.goal
+        if isinstance(decision, ActionPlanProposal):
+            return decision.semantic_goal
+        return ""
 
     @staticmethod
     def _planning_failure_clarification(
@@ -1759,7 +1774,7 @@ def build_action_plan_turn_application(
     from app.core.config import get_settings, model_client_retry_policy, secret_value
 
     resolved = settings or get_settings()
-    authority_mode = resolved.authority_pipeline_mode
+    authority_mode = cast(Literal["legacy", "shadow", "v2"], resolved.authority_pipeline_mode)
     policy = ActionPlanPolicy(
         max_plan_steps=resolved.action_plan_max_steps,
         max_steps_per_advance=resolved.action_plan_max_steps_per_advance,
@@ -1848,9 +1863,7 @@ class _DeterministicStepAdjudicator:
     def __init__(self, *, authority_pipeline_mode: str = "legacy") -> None:
         self._authority_pipeline_mode = authority_pipeline_mode
 
-    async def adjudicate(
-        self, context: ActionPlanStepContext
-    ) -> ActionAdjudication | SingleActionProposal:
+    async def adjudicate(self, context: ActionPlanStepContext) -> Any:
         adjudication = _deterministic_step_adjudication(context)
         if adjudication is not None:
             return self._for_mode(adjudication)
@@ -1900,9 +1913,7 @@ class _RuleFirstStepAdjudicator:
         self._fallback = fallback
         self._authority_pipeline_mode = authority_pipeline_mode
 
-    async def adjudicate(
-        self, context: ActionPlanStepContext
-    ) -> ActionAdjudication | SingleActionProposal:
+    async def adjudicate(self, context: ActionPlanStepContext) -> Any:
         adjudication = _deterministic_step_adjudication(context)
         if adjudication is not None:
             return self._for_mode(adjudication)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 import structlog
@@ -732,9 +732,7 @@ class PromptActionPlanStepAdjudicator:
         self._client = client
         self._authority_pipeline_mode = authority_pipeline_mode
 
-    async def adjudicate(
-        self, context: ActionPlanStepContext
-    ) -> ActionAdjudication | SingleActionProposal:
+    async def adjudicate(self, context: ActionPlanStepContext) -> Any:
         authority_instructions = (
             _SAFE_PROPOSAL_INSTRUCTIONS
             if self._authority_pipeline_mode == "v2"

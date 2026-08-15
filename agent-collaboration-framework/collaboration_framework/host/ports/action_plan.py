@@ -5,15 +5,13 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from collaboration_framework.contracts import (
-    ActionAdjudication,
     ActionPlanProgressEvent,
     AdjudicationExecution,
     AdjudicationStatusView,
     GetAdjudicationStatusRequest,
-    SingleActionProposal,
     SubmitAdjudicationRequest,
     SubmitProposalRequest,
 )
@@ -77,9 +75,7 @@ class ActionPlanRunStore(Protocol):
 class ActionPlanStepAdjudicator(Protocol):
     """Generate one proposal from only the current step and latest PlayerView."""
 
-    async def adjudicate(
-        self, context: ActionPlanStepContext
-    ) -> SingleActionProposal | ActionAdjudication: ...
+    async def adjudicate(self, context: ActionPlanStepContext) -> Any: ...
 
 
 @dataclass(frozen=True)
