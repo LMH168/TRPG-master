@@ -1183,6 +1183,21 @@ class ActionPlanTurnApplication:
             code=code,
         )
 
+    async def release_uncommitted_plan_step(
+        self,
+        *,
+        room_id: str,
+        parent_action_id: str,
+        code: str,
+    ) -> ActionPlanRun | None:
+        """部分提交 Turn 失败时释放当前未提交步骤，保留前序权威结果。"""
+
+        return await self._orchestrator.release_uncommitted_step(
+            room_id=room_id,
+            parent_action_id=parent_action_id,
+            code=code,
+        )
+
     async def cancel_remaining(
         self,
         *,

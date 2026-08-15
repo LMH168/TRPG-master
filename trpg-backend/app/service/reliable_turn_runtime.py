@@ -50,14 +50,22 @@ turn_outbox_dispatcher = TurnOutboxDispatcher(turn_store, manager)
 async def _settle_failed_uncommitted_plan(turn: TurnRecord) -> None:
     """终态未提交 Turn 不得遗留仍占住房间的 ActionPlan。"""
 
-    if turn.status != TurnStatus.FAILED or turn.commit_state != TurnCommitState.NOT_COMMITTED:
+    if turn.status != TurnStatus.FAILED:
         return
     try:
-        await action_plan_turn_application.abandon_uncommitted_plan(
-            room_id=turn.room_id,
-            parent_action_id=turn.client_action_id,
-            code=turn.last_error.code if turn.last_error is not None else "TURN_FAILED",
-        )
+        code = turn.last_error.code if turn.last_error is not None else "TURN_FAILED"
+        if turn.commit_state == TurnCommitState.NOT_COMMITTED:
+            await action_plan_turn_application.abandon_uncommitted_plan(
+                room_id=turn.room_id,
+                parent_action_id=turn.client_action_id,
+                code=code,
+            )
+        elif turn.commit_state == TurnCommitState.PARTIALLY_COMMITTED:
+            await action_plan_turn_application.release_uncommitted_plan_step(
+                room_id=turn.room_id,
+                parent_action_id=turn.client_action_id,
+                code=code,
+            )
     except Exception as exc:
         # Turn 已经安全终止，清理失败不能改写玩家错误；记录类型供后台诊断。
         logger.error(

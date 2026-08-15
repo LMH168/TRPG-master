@@ -797,6 +797,45 @@ class ActionPlanOrchestrator:
             )
         return await self._replace_steps(run, tuple(steps), status="stopped")
 
+    async def release_uncommitted_step(
+        self,
+        *,
+        room_id: str,
+        parent_action_id: str,
+        code: str,
+    ) -> ActionPlanRun | None:
+        """保留前序已提交步骤，释放当前未提交步骤的 worker 占用。"""
+
+        run = await self._store.load(room_id, parent_action_id)
+        if run is None or run.is_terminal:
+            return run
+        if run.current_step_index >= len(run.steps):
+            return run
+        current = run.steps[run.current_step_index]
+        if current.adjudication_execution is not None or current.event_refs:
+            raise ActionPlanPolicyError(
+                "PLAN_STEP_ALREADY_COMMITTED",
+                "当前步骤已有权威执行结果，不能按未提交步骤释放",
+            )
+        steps = list(run.steps)
+        steps[run.current_step_index] = current.model_copy(
+            update={
+                "status": "pending",
+                "source_revision": None,
+                "proposal": None,
+                "adjudication": None,
+                "pending_action_request_id": None,
+                "safe_failure_code": code,
+            },
+            deep=True,
+        )
+        return await self._replace_steps(
+            run,
+            tuple(steps),
+            status="retryable_failure",
+            release_lease=True,
+        )
+
     async def build_narration_context(
         self,
         player_input: PlayerInput,
@@ -1362,6 +1401,7 @@ class ActionPlanOrchestrator:
         status: str | None = None,
         current_step_index: int | None = None,
         consume_cancel_request: bool = False,
+        release_lease: bool = False,
     ) -> ActionPlanRun:
         now = datetime.now(UTC)
         next_status = status or run.status
@@ -1371,7 +1411,7 @@ class ActionPlanOrchestrator:
         # persists: a store that validates on read (the SQLAlchemy one does)
         # could no longer load the row it had just written, so the follow-up
         # release would fail too and leave the run permanently unreadable.
-        release_lease = next_status in TERMINAL_PLAN_STATUSES
+        should_release_lease = release_lease or next_status in TERMINAL_PLAN_STATUSES
         update: dict[str, object] = {
             "steps": steps,
             "status": next_status,
@@ -1381,8 +1421,8 @@ class ActionPlanOrchestrator:
                 else current_step_index
             ),
             "run_version": run.run_version + 1,
-            "lease_owner": None if release_lease else run.lease_owner,
-            "lease_expires_at": None if release_lease else run.lease_expires_at,
+            "lease_owner": None if should_release_lease else run.lease_owner,
+            "lease_expires_at": None if should_release_lease else run.lease_expires_at,
             "updated_at": now,
         }
         if consume_cancel_request:

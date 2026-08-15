@@ -1316,6 +1316,36 @@ async def test_terminal_uncommitted_turn_can_abandon_orphan_plan() -> None:
 
 
 @pytest.mark.asyncio
+async def test_partial_commit_failure_releases_only_current_plan_step() -> None:
+    """部分提交失败只释放当前步骤，不能回滚已完成步骤。"""
+
+    module, engine_store, projector = runtime()
+    service = ActionPlanOrchestrator(
+        store=InMemoryActionPlanRunStore(),
+        adjudicator=FailSecondStepOnceAdjudicator(module.world_ref),
+        executor=AdjudicationEngineService(engine_store),
+        player_view_projector=projector,
+    )
+    original = player_input("partial-release-parent")
+    failed = await service.start_or_resume(original, plan=plan(2))
+    assert failed.run.status == "retryable_failure"
+    assert failed.run.steps[0].status == "completed"
+
+    released = await service.release_uncommitted_step(
+        room_id=original.room_id,
+        parent_action_id=original.client_action_id,
+        code="TURN_INTERNAL_ERROR",
+    )
+
+    assert released is not None
+    assert released.status == "retryable_failure"
+    assert released.lease_owner is None
+    assert released.steps[0].status == "completed"
+    assert released.steps[1].status == "pending"
+    assert len(engine_store.inspect_domain_events("room_01")) == 1
+
+
+@pytest.mark.asyncio
 async def test_step_failure_observer_error_does_not_change_plan_failure_state() -> None:
     """日志或监控不可用时，仍须保留前序提交并安全停在当前未提交步骤。"""
 
