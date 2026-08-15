@@ -271,13 +271,14 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
         self._committed = False
         self._committed_events: tuple[StateModifiedEvent, ...] = ()
         self._committed_request_id: str | None = None
+        # 缓存房间模组协议版本；写入口即使没有先加载运行时，也能安全执行只读校验。
+        self._content_schema_version: int | None = None
 
     @property
     def committed(self) -> bool:
         """说明本事务是否已经越过数据库提交边界，供故障注入对账使用。"""
 
         return self._committed
-        self._content_schema_version: int | None = None
 
     async def _completed_adjudication_from_record(
         self,
