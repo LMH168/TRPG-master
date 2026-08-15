@@ -54,16 +54,20 @@ class SqlPlanAdjudicator:
 
     async def adjudicate(self, context):
         self.revisions.append(context.player_view.revision)
-        return _proposal_from_adjudication(ActionAdjudication(
-            request_id="untrusted",
-            source_revision="untrusted",
-            actor_id="untrusted",
-            summary=context.step.semantic_goal,
-            target=ActionTarget(kind="location", id=context.player_view.scene.id),
-            method=ActionMethod(family=context.step.kind, description=context.step.semantic_goal),
-            check=NoAdjudicationCheck(),
-            success_effects=(NarrativeOnlyEffect(),),
-        ))
+        return _proposal_from_adjudication(
+            ActionAdjudication(
+                request_id="untrusted",
+                source_revision="untrusted",
+                actor_id="untrusted",
+                summary=context.step.semantic_goal,
+                target=ActionTarget(kind="location", id=context.player_view.scene.id),
+                method=ActionMethod(
+                    family=context.step.kind, description=context.step.semantic_goal
+                ),
+                check=NoAdjudicationCheck(),
+                success_effects=(NarrativeOnlyEffect(),),
+            )
+        )
 
 
 class SqlPendingPlanAdjudicator(SqlPlanAdjudicator):
@@ -75,32 +79,34 @@ class SqlPendingPlanAdjudicator(SqlPlanAdjudicator):
         self.revisions.append(context.player_view.revision)
         if context.step_index != 1:
             return await super().adjudicate(context)
-        return _proposal_from_adjudication(ActionAdjudication(
-            request_id="untrusted",
-            source_revision="untrusted",
-            actor_id="untrusted",
-            summary=context.step.semantic_goal,
-            target=ActionTarget(kind="location", id=context.player_view.scene.id),
-            method=ActionMethod(family="research", description=context.step.semantic_goal),
-            check=RequiredAdjudicationCheck(
-                candidates=(
-                    SkillCheckCandidate(
-                        candidate_id="recoverable-choice",
-                        skill_id="library-use",
-                        difficulty="regular",
-                        method_summary="观察当前可见材料",
-                        player_safe_reason="使用当前 Actor 的公开技能",
-                    ),
-                )
-            ),
-            success_effects=(
-                ChangeEntityStateEffect(
-                    entity_id=self.entity_id,
-                    key="recovery_effect_applied",
-                    value=True,
+        return _proposal_from_adjudication(
+            ActionAdjudication(
+                request_id="untrusted",
+                source_revision="untrusted",
+                actor_id="untrusted",
+                summary=context.step.semantic_goal,
+                target=ActionTarget(kind="location", id=context.player_view.scene.id),
+                method=ActionMethod(family="research", description=context.step.semantic_goal),
+                check=RequiredAdjudicationCheck(
+                    candidates=(
+                        SkillCheckCandidate(
+                            candidate_id="recoverable-choice",
+                            skill_id="library-use",
+                            difficulty="regular",
+                            method_summary="观察当前可见材料",
+                            player_safe_reason="使用当前 Actor 的公开技能",
+                        ),
+                    )
                 ),
-            ),
-        ))
+                success_effects=(
+                    ChangeEntityStateEffect(
+                        entity_id=self.entity_id,
+                        key="recovery_effect_applied",
+                        value=True,
+                    ),
+                ),
+            )
+        )
 
 
 class SqlRepairingPlanAdjudicator(SqlPlanAdjudicator):
@@ -124,16 +130,18 @@ class SqlRepairingPlanAdjudicator(SqlPlanAdjudicator):
             )
             # Proposal 修复允许更换目标，但不得偷换计划冻结的语义目标。
             summary = context.step.semantic_goal
-        return _proposal_from_adjudication(ActionAdjudication(
-            request_id="untrusted",
-            source_revision="untrusted",
-            actor_id="untrusted",
-            summary=summary,
-            target=target,
-            method=ActionMethod(family=context.step.kind, description=summary),
-            check=NoAdjudicationCheck(),
-            success_effects=(NarrativeOnlyEffect(),),
-        ))
+        return _proposal_from_adjudication(
+            ActionAdjudication(
+                request_id="untrusted",
+                source_revision="untrusted",
+                actor_id="untrusted",
+                summary=summary,
+                target=target,
+                method=ActionMethod(family=context.step.kind, description=summary),
+                check=NoAdjudicationCheck(),
+                success_effects=(NarrativeOnlyEffect(),),
+            )
+        )
 
 
 def four_step_plan() -> ActionPlan:

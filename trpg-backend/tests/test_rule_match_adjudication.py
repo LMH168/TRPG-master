@@ -71,6 +71,7 @@ def _normalize_single_travel_decision(*args, **kwargs):
     del args, kwargs
     raise AssertionError("PR3 已删除旧 Host normalizer")
 
+
 FIXTURE = (
     pathlib.Path(__file__).resolve().parents[2]
     / "agent-collaboration-framework"

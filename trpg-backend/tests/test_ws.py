@@ -108,9 +108,7 @@ class _WsSingleActionCheckPlanner:
                     ),
                 )
             ),
-            success_effect_proposals=(
-                {"type": "narrative_only"},
-            ),
+            success_effect_proposals=({"type": "narrative_only"},),
         )
 
 

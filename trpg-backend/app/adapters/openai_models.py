@@ -458,8 +458,7 @@ class PromptActionPlanStepAdjudicator:
                 schema_name="trpg_action_plan_step_proposal_v1",
                 schema=SingleActionProposal.model_json_schema(mode="serialization"),
                 instructions=(
-                    f"{current_step_adjudication_instructions()}\n\n"
-                    f"{_SAFE_PROPOSAL_INSTRUCTIONS}"
+                    f"{current_step_adjudication_instructions()}\n\n{_SAFE_PROPOSAL_INSTRUCTIONS}"
                 ),
                 input_payload=context.to_json_dict(),
             )

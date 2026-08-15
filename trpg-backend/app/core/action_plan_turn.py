@@ -350,17 +350,17 @@ class DeterministicHostTurnDecisionModel:
         if destination is not None:
             return self._as_proposal(
                 ActionAdjudication(
-                        request_id="application-owned",
-                        source_revision=context.player_view.revision,
-                        actor_id=context.player_input.actor_id,
-                        summary=utterance,
-                        target=ActionTarget(
-                            kind="location",
-                            id=destination.id,
-                        ),
-                        method=ActionMethod(family="travel", description=utterance),
-                        check=NoAdjudicationCheck(),
-                        success_effects=(EnterLocationEffect(location_id=destination.id),),
+                    request_id="application-owned",
+                    source_revision=context.player_view.revision,
+                    actor_id=context.player_input.actor_id,
+                    summary=utterance,
+                    target=ActionTarget(
+                        kind="location",
+                        id=destination.id,
+                    ),
+                    method=ActionMethod(family="travel", description=utterance),
+                    check=NoAdjudicationCheck(),
+                    success_effects=(EnterLocationEffect(location_id=destination.id),),
                 )
             )
 
@@ -392,14 +392,14 @@ class DeterministicHostTurnDecisionModel:
 
         return self._as_proposal(
             ActionAdjudication(
-                    request_id="application-owned",
-                    source_revision=context.player_view.revision,
-                    actor_id=context.player_input.actor_id,
-                    summary=utterance,
-                    target=ActionTarget(kind="location", id=context.player_view.scene.id),
-                    method=ActionMethod(family="action", description=utterance),
-                    check=NoAdjudicationCheck(),
-                    success_effects=(NarrativeOnlyEffect(),),
+                request_id="application-owned",
+                source_revision=context.player_view.revision,
+                actor_id=context.player_input.actor_id,
+                summary=utterance,
+                target=ActionTarget(kind="location", id=context.player_view.scene.id),
+                method=ActionMethod(family="action", description=utterance),
+                check=NoAdjudicationCheck(),
+                success_effects=(NarrativeOnlyEffect(),),
             )
         )
 
@@ -1863,6 +1863,7 @@ class _DeterministicStepAdjudicator:
                 success_effects=(NarrativeOnlyEffect(),),
             )
         )
+
 
 class _RuleFirstStepAdjudicator:
     """Resolve unambiguous Match View steps without a fallible model round-trip."""

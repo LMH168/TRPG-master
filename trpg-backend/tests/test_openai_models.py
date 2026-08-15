@@ -518,10 +518,7 @@ class ScriptedTurnDecisionClient:
         return {
             "kind": "action_plan",
             "semantic_goal": utterance,
-            "steps": [
-                {"semantic_goal": f"完成步骤 {index + 1}"}
-                for index in range(requested)
-            ],
+            "steps": [{"semantic_goal": f"完成步骤 {index + 1}"} for index in range(requested)],
         }
 
 
@@ -578,15 +575,15 @@ def _valid_travel_decision() -> dict:
 
     return {
         "kind": "single_action",
-            "semantic_goal": "去墓地",
-            "semantic_focus": {"kind": "location", "id": "cemetery"},
-            "method_family": "travel",
-            "method_description": "去墓地",
-            "check_proposal": {"mode": "none", "candidates": []},
-            "success_effect_proposals": [
-                {"type": "enter_location", "location_ref": {"kind": "location", "id": "cemetery"}}
-            ],
-            "failure_effect_proposals": [],
+        "semantic_goal": "去墓地",
+        "semantic_focus": {"kind": "location", "id": "cemetery"},
+        "method_family": "travel",
+        "method_description": "去墓地",
+        "check_proposal": {"mode": "none", "candidates": []},
+        "success_effect_proposals": [
+            {"type": "enter_location", "location_ref": {"kind": "location", "id": "cemetery"}}
+        ],
+        "failure_effect_proposals": [],
     }
 
 

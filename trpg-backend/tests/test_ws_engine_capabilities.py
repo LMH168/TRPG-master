@@ -168,9 +168,7 @@ def test_runtime_entity_reaches_the_client_scene(
     )
 
     clerk = next(
-        entity
-        for entity in view["scene"]["visible_entities"]
-        if entity["name"] == "送信来的信差"
+        entity for entity in view["scene"]["visible_entities"] if entity["name"] == "送信来的信差"
     )
     assert clerk["name"] == "送信来的信差"
     assert clerk["kind"] == "npc"
