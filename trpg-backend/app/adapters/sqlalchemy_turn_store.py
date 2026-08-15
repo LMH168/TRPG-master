@@ -6,9 +6,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -20,10 +20,15 @@ from app.core.turn_runtime import (
     TurnContractError,
     TurnFailureSnapshot,
     TurnNotFoundError,
+    TurnOutboxStatus,
     TurnRecord,
+    TurnReplayEvent,
     TurnResultSnapshot,
+    TurnResumePoint,
+    TurnStatus,
     validate_turn_cas_update,
 )
+from app.models.event import Event
 from app.models.turn import (
     NarrationOutboxRecord,
     RoomTurnReservation,
@@ -308,6 +313,54 @@ class SqlAlchemyTurnStore:
                 created_at=_required_utc(record.created_at),
             )
 
+    async def list_receipts(self, turn_id: str) -> tuple[TurnCommitReceipt, ...]:
+        """按提交顺序返回一个回合的全部 Engine receipt。"""
+
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(TurnCommitReceiptRecord)
+                .where(TurnCommitReceiptRecord.turn_id == turn_id)
+                .order_by(
+                    TurnCommitReceiptRecord.created_at,
+                    TurnCommitReceiptRecord.engine_request_id,
+                )
+            )
+            return tuple(self._receipt_from_record(record) for record in result.scalars())
+
+    async def list_recoverable_turns(
+        self,
+        *,
+        now: datetime,
+        limit: int,
+    ) -> tuple[TurnRecord, ...]:
+        """扫描启动后可自动接管的回合，不替玩家做选择或无限重试模型。"""
+
+        if limit < 1:
+            raise TurnContractError("limit 必须大于 0")
+        statement = (
+            select(TurnRecordModel)
+            .where(
+                TurnRecordModel.status.not_in([status.value for status in TERMINAL_TURN_STATUSES]),
+                TurnRecordModel.resume_point != TurnResumePoint.AWAITING_PLAYER.value,
+                or_(
+                    TurnRecordModel.error_json.is_(None),
+                    TurnRecordModel.status == TurnStatus.DELIVERING.value,
+                ),
+                or_(
+                    and_(
+                        TurnRecordModel.lease_owner.is_(None),
+                        TurnRecordModel.updated_at <= now - timedelta(seconds=60),
+                    ),
+                    TurnRecordModel.lease_expires_at <= now,
+                ),
+            )
+            .order_by(TurnRecordModel.updated_at, TurnRecordModel.turn_id)
+            .limit(limit)
+        )
+        async with self._session_factory() as session:
+            result = await session.scalars(statement)
+            return tuple(self._turn_from_record(record) for record in result)
+
     async def put_outbox(
         self,
         message: NarrationOutboxMessage,
@@ -343,6 +396,206 @@ class SqlAlchemyTurnStore:
             record = result.scalar_one_or_none()
             return self._outbox_from_record(record) if record is not None else None
 
+    async def publish_narration(
+        self,
+        *,
+        expected_phase_version: int,
+        updated_turn: TurnRecord,
+        message: NarrationOutboxMessage,
+        replay_event: TurnReplayEvent,
+    ) -> tuple[TurnRecord, NarrationOutboxMessage, bool]:
+        """原子持久化 ResultSnapshot、Outbox、回放事件与 delivering 状态。"""
+
+        if updated_turn.status.value != "delivering" or updated_turn.result is None:
+            raise TurnContractError("叙事发布必须把带结果的回合推进到 delivering")
+        if not (
+            updated_turn.turn_id == message.turn_id == replay_event.turn_id
+            and updated_turn.room_id == message.room_id == replay_event.room_id
+        ):
+            raise TurnContractError("叙事发布的 Turn、Outbox 与回放事件身份不一致")
+        async with self._session_factory() as session, session.begin():
+            current_record = await session.get(TurnRecordModel, updated_turn.turn_id)
+            if current_record is None:
+                raise TurnNotFoundError("TurnRecord 不存在")
+            existing = await session.scalar(
+                select(NarrationOutboxRecord).where(
+                    NarrationOutboxRecord.turn_id == message.turn_id,
+                    NarrationOutboxRecord.message_type == message.message_type,
+                )
+            )
+            if existing is not None:
+                persisted = self._outbox_from_record(existing)
+                if (
+                    persisted.message_id != message.message_id
+                    or persisted.payload != message.payload
+                ):
+                    raise TurnConflictError(
+                        "TURN_OUTBOX_CONFLICT",
+                        "回合已存在不同的最终叙事消息",
+                    )
+                return self._turn_from_record(current_record), persisted, False
+            current = self._turn_from_record(current_record)
+            validate_turn_cas_update(
+                current,
+                updated_turn,
+                expected_phase_version=expected_phase_version,
+            )
+            reservation = await session.get(RoomTurnReservation, updated_turn.room_id)
+            if reservation is None or reservation.turn_id != updated_turn.turn_id:
+                raise TurnConflictError("TURN_RESERVATION_LOST", "回合已失去房间占用")
+            result = await session.execute(
+                update(TurnRecordModel)
+                .where(
+                    TurnRecordModel.turn_id == updated_turn.turn_id,
+                    TurnRecordModel.phase_version == expected_phase_version,
+                )
+                .values(**self._record_values(updated_turn))
+                .execution_options(synchronize_session=False)
+            )
+            if getattr(result, "rowcount", None) != 1:
+                raise TurnConflictError("TURN_VERSION_CONFLICT", "回合已被其他 worker 更新")
+            reservation.updated_at = updated_turn.updated_at
+            session.add(self._outbox_record(message))
+            session.add(
+                Event(
+                    id=replay_event.event_id,
+                    turn_id=replay_event.turn_id,
+                    room_id=replay_event.room_id,
+                    player_id=replay_event.player_id,
+                    event_type=replay_event.event_type,
+                    correlation_id=replay_event.correlation_id,
+                    visibility=replay_event.visibility,
+                    actor_id=replay_event.actor_id,
+                    scene_id=replay_event.scene_id,
+                    view_revision=replay_event.view_revision,
+                    payload=replay_event.payload,
+                    created_at=replay_event.created_at,
+                )
+            )
+            await session.flush()
+            return updated_turn.model_copy(deep=True), message.model_copy(deep=True), True
+
+    async def claim_due_outbox(
+        self,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_expires_at: datetime,
+        limit: int,
+    ) -> tuple[NarrationOutboxMessage, ...]:
+        """用条件更新领取到期 Outbox，过期 lease 可由其他 worker 接管。"""
+
+        if not worker_id or lease_expires_at <= now or limit < 1:
+            raise TurnContractError("Outbox worker、lease 与 limit 必须有效")
+        claimed: list[NarrationOutboxMessage] = []
+        async with self._session_factory() as session, session.begin():
+            candidates = await session.scalars(
+                select(NarrationOutboxRecord)
+                .where(
+                    NarrationOutboxRecord.next_attempt_at <= now,
+                    or_(
+                        NarrationOutboxRecord.status == TurnOutboxStatus.PENDING.value,
+                        and_(
+                            NarrationOutboxRecord.status == TurnOutboxStatus.LEASED.value,
+                            NarrationOutboxRecord.lease_expires_at <= now,
+                        ),
+                    ),
+                )
+                .order_by(NarrationOutboxRecord.created_at, NarrationOutboxRecord.outbox_id)
+                .limit(limit)
+            )
+            for record in candidates:
+                result = await session.execute(
+                    update(NarrationOutboxRecord)
+                    .where(
+                        NarrationOutboxRecord.outbox_id == record.outbox_id,
+                        or_(
+                            NarrationOutboxRecord.status == TurnOutboxStatus.PENDING.value,
+                            and_(
+                                NarrationOutboxRecord.status == TurnOutboxStatus.LEASED.value,
+                                NarrationOutboxRecord.lease_expires_at <= now,
+                            ),
+                        ),
+                    )
+                    .values(
+                        status=TurnOutboxStatus.LEASED.value,
+                        lease_owner=worker_id,
+                        lease_expires_at=lease_expires_at,
+                        updated_at=now,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if getattr(result, "rowcount", None) != 1:
+                    continue
+                claimed.append(
+                    NarrationOutboxMessage.model_validate(
+                        {
+                            **self._outbox_from_record(record).model_dump(),
+                            "status": TurnOutboxStatus.LEASED,
+                            "lease_owner": worker_id,
+                            "lease_expires_at": lease_expires_at,
+                            "updated_at": now,
+                        }
+                    )
+                )
+        return tuple(claimed)
+
+    async def settle_outbox(
+        self,
+        *,
+        outbox_id: str,
+        worker_id: str,
+        outcome: str,
+        now: datetime,
+        next_attempt_at: datetime,
+        error_code: str | None = None,
+        max_attempts: int = 5,
+    ) -> NarrationOutboxMessage:
+        """按 lease 结束投递；无在线接收者不会消耗失败次数。"""
+
+        async with self._session_factory() as session, session.begin():
+            record = await session.get(NarrationOutboxRecord, outbox_id)
+            if (
+                record is None
+                or record.status != TurnOutboxStatus.LEASED.value
+                or record.lease_owner != worker_id
+            ):
+                raise TurnConflictError("TURN_OUTBOX_LEASE_LOST", "Outbox lease 已失效")
+            attempts = record.attempt_count + (0 if outcome == "no_recipient" else 1)
+            if outcome == "dispatched":
+                status = TurnOutboxStatus.DISPATCHED
+            elif outcome == "failed" and attempts >= max_attempts:
+                status = TurnOutboxStatus.DEAD_LETTER
+            elif outcome in {"failed", "no_recipient"}:
+                status = TurnOutboxStatus.PENDING
+            else:
+                raise TurnContractError("未知 Outbox 投递结果")
+            values = {
+                "status": status.value,
+                "attempt_count": attempts,
+                "lease_owner": None,
+                "lease_expires_at": None,
+                "next_attempt_at": next_attempt_at,
+                "last_error_code": error_code if outcome == "failed" else None,
+                "updated_at": now,
+                "last_dispatched_at": now if outcome == "dispatched" else record.last_dispatched_at,
+            }
+            result = await session.execute(
+                update(NarrationOutboxRecord)
+                .where(
+                    NarrationOutboxRecord.outbox_id == outbox_id,
+                    NarrationOutboxRecord.status == TurnOutboxStatus.LEASED.value,
+                    NarrationOutboxRecord.lease_owner == worker_id,
+                )
+                .values(**values)
+                .execution_options(synchronize_session=False)
+            )
+            if getattr(result, "rowcount", None) != 1:
+                raise TurnConflictError("TURN_OUTBOX_LEASE_LOST", "Outbox lease 已失效")
+            return NarrationOutboxMessage.model_validate(
+                {**self._outbox_from_record(record).model_dump(), **values}
+            )
+
     @staticmethod
     async def _get_by_client_action(
         session: AsyncSession,
@@ -374,6 +627,7 @@ class SqlAlchemyTurnStore:
             waiting_reason=turn.waiting_reason.value,
             commit_state=turn.commit_state.value,
             recovery_action=turn.recovery_action.value,
+            pending_decision_json=turn.pending_decision,
             error_schema_version=turn.last_error.schema_version if turn.last_error else None,
             error_json=turn.last_error.model_dump(mode="json") if turn.last_error else None,
             result_schema_version=turn.result.schema_version if turn.result else None,
@@ -394,6 +648,7 @@ class SqlAlchemyTurnStore:
             "waiting_reason": turn.waiting_reason.value,
             "commit_state": turn.commit_state.value,
             "recovery_action": turn.recovery_action.value,
+            "pending_decision_json": turn.pending_decision,
             "error_schema_version": turn.last_error.schema_version if turn.last_error else None,
             "error_json": turn.last_error.model_dump(mode="json") if turn.last_error else None,
             "result_schema_version": turn.result.schema_version if turn.result else None,
@@ -421,6 +676,7 @@ class SqlAlchemyTurnStore:
                 "waiting_reason": record.waiting_reason,
                 "commit_state": record.commit_state,
                 "recovery_action": record.recovery_action,
+                "pending_decision": record.pending_decision_json,
                 "last_error": TurnFailureSnapshot.model_validate(record.error_json)
                 if record.error_json
                 else None,
@@ -479,6 +735,21 @@ class SqlAlchemyTurnStore:
             created_at=_required_utc(record.created_at),
             updated_at=_required_utc(record.updated_at),
             last_dispatched_at=_as_utc(record.last_dispatched_at),
+        )
+
+    @staticmethod
+    def _receipt_from_record(record: TurnCommitReceiptRecord) -> TurnCommitReceipt:
+        """把 ORM receipt 转换为跨 Store 共用的核心契约。"""
+
+        return TurnCommitReceipt(
+            turn_id=record.turn_id,
+            room_id=record.room_id,
+            engine_request_id=record.engine_request_id,
+            action_request_id=record.action_request_id,
+            committed_state_version=record.committed_state_version,
+            first_event_sequence=record.first_event_sequence,
+            last_event_sequence=record.last_event_sequence,
+            created_at=_required_utc(record.created_at),
         )
 
     @staticmethod

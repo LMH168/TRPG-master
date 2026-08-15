@@ -1,0 +1,183 @@
+"""验证 Turn Coordinator 的幂等、receipt 对账与叙事发布边界。"""
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from collaboration_framework.engine import current_turn_id
+
+from app.core.turn_coordinator import TurnCoordinator, TurnExecutionOutcome
+from app.core.turn_runtime import (
+    InMemoryTurnStore,
+    TurnCommitReceipt,
+    TurnCommitState,
+    TurnInputSnapshot,
+    TurnRecoveryAction,
+    TurnStatus,
+    TurnWaitingReason,
+    new_turn_record,
+)
+from app.service.reliable_turn_runtime import TurnRuntimeSupervisor
+
+
+def _request(client_action_id: str = "action-1") -> TurnInputSnapshot:
+    return TurnInputSnapshot(
+        room_id="room-1",
+        player_id="player-1",
+        actor_id="actor-1",
+        client_action_id=client_action_id,
+        utterance="检查书桌",
+    )
+
+
+def _outcome(*, waiting: TurnWaitingReason = TurnWaitingReason.NONE) -> TurnExecutionOutcome:
+    return TurnExecutionOutcome(
+        status="waiting_for_player" if waiting != TurnWaitingReason.NONE else "completed",
+        player_view={"scene": {"id": "study"}, "revision": "1"},
+        view_revision="1",
+        scene_id="study",
+        narration=None
+        if waiting != TurnWaitingReason.NONE
+        else {"kind": "narration", "text": "你发现了线索。"},
+        waiting_reason=waiting,
+        pending_decision={"decision_id": "choice-1", "options": [{"id": "spot-hidden"}]}
+        if waiting != TurnWaitingReason.NONE
+        else None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_completed_retry_reuses_turn_without_reexecuting() -> None:
+    store = InMemoryTurnStore()
+    coordinator = TurnCoordinator(store, worker_id="worker-1")
+    executions = 0
+
+    async def execute(on_phase):  # noqa: ANN001
+        nonlocal executions
+        executions += 1
+        await on_phase("executing_action")
+        turn_id = current_turn_id()
+        assert turn_id is not None
+        await store.append_receipt(
+            TurnCommitReceipt(
+                turn_id=turn_id,
+                room_id="room-1",
+                engine_request_id="engine-1",
+                action_request_id="action-1",
+                committed_state_version=1,
+                created_at=datetime.now(UTC),
+            )
+        )
+        await on_phase("generating_narration")
+        return _outcome()
+
+    first = await coordinator.start(_request(), executor=execute)
+    second = await coordinator.start(_request(), executor=execute)
+
+    assert first.turn_id == second.turn_id
+    assert second.status == TurnStatus.COMPLETED
+    assert second.commit_state == TurnCommitState.COMMITTED
+    assert executions == 1
+    outbox = await store.get_outbox(first.turn_id)
+    assert outbox is not None
+    assert outbox.message_id == first.turn_id
+
+
+@pytest.mark.asyncio
+async def test_waiting_turn_keeps_room_reservation_and_recovery_action() -> None:
+    store = InMemoryTurnStore()
+    coordinator = TurnCoordinator(store, worker_id="worker-1")
+
+    async def execute(on_phase):  # noqa: ANN001
+        await on_phase("executing_action")
+        return _outcome(waiting=TurnWaitingReason.SKILL_CHOICE)
+
+    waiting = await coordinator.start(_request(), executor=execute)
+
+    assert waiting.status == TurnStatus.ADJUDICATING
+    assert waiting.waiting_reason == TurnWaitingReason.SKILL_CHOICE
+    assert waiting.recovery_action == TurnRecoveryAction.CHOOSE_SKILL
+    assert waiting.pending_decision == {
+        "decision_id": "choice-1",
+        "options": [{"id": "spot-hidden"}],
+    }
+    assert waiting.lease_owner is None
+    with pytest.raises(Exception, match="未完成回合"):
+        await coordinator.start(_request("action-2"), executor=execute)
+
+
+@pytest.mark.asyncio
+async def test_narrator_failure_resumes_without_second_engine_receipt() -> None:
+    store = InMemoryTurnStore()
+    coordinator = TurnCoordinator(store, worker_id="worker-1")
+    attempts = 0
+
+    async def execute(on_phase):  # noqa: ANN001
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            await on_phase("executing_action")
+            turn_id = current_turn_id()
+            assert turn_id is not None
+            await store.append_receipt(
+                TurnCommitReceipt(
+                    turn_id=turn_id,
+                    room_id="room-1",
+                    engine_request_id="engine-1",
+                    action_request_id="action-1",
+                    committed_state_version=1,
+                    created_at=datetime.now(UTC),
+                )
+            )
+        await on_phase("generating_narration")
+        if attempts == 1:
+            raise TimeoutError("narrator unavailable")
+        return _outcome()
+
+    failed = await coordinator.start(_request(), executor=execute)
+    assert failed.status == TurnStatus.AWAITING_NARRATION
+    assert failed.commit_state == TurnCommitState.COMMITTED
+    assert failed.last_error is not None
+
+    completed = await coordinator.resume(failed.turn_id, executor=execute)
+    assert completed.status == TurnStatus.COMPLETED
+    assert len(await store.list_receipts(failed.turn_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_supervisor_recovers_only_stale_safe_turns_before_outbox() -> None:
+    """启动扫描不能抢正在创建的回合，也不能替玩家或模型失败回合做决定。"""
+
+    store = InMemoryTurnStore()
+    now = datetime.now(UTC)
+    stale = new_turn_record(_request("stale-action"), now=now - timedelta(minutes=2))
+    await store.create_or_get(stale)
+    # 每个房间只能有一个活动回合，第二个请求放到另一个房间。
+    fresh_request = _request("fresh-action").model_copy(update={"room_id": "room-2"})
+    fresh = new_turn_record(fresh_request, now=now)
+    await store.create_or_get(fresh)
+    recovered: list[str] = []
+
+    class Dispatcher:
+        calls = 0
+
+        async def dispatch_due(self, *, limit: int = 20) -> int:
+            self.calls += 1
+            return 0
+
+    dispatcher = Dispatcher()
+
+    async def resume(turn_id: str):
+        recovered.append(turn_id)
+        record = await store.get(turn_id)
+        assert record is not None
+        return record
+
+    supervisor = TurnRuntimeSupervisor(
+        store=store,
+        dispatcher=dispatcher,
+        resume=resume,
+    )
+    await supervisor.run_once()
+
+    assert recovered == [stale.turn_id]
+    assert dispatcher.calls == 1
