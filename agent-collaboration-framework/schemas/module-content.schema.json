@@ -180,6 +180,35 @@
       "title": "ChangeEntityStateEffect",
       "type": "object"
     },
+    "ChangeItemConditionEffect": {
+      "additionalProperties": false,
+      "description": "修改物品对玩家公开的 condition，不把弹药等状态藏进任意 values 路径。",
+      "properties": {
+        "type": {
+          "const": "change_item_condition",
+          "default": "change_item_condition",
+          "title": "Type",
+          "type": "string"
+        },
+        "entity_id": {
+          "minLength": 1,
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "condition": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Condition",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_id",
+        "condition"
+      ],
+      "title": "ChangeItemConditionEffect",
+      "type": "object"
+    },
     "CheckpointOutcomeSpec": {
       "additionalProperties": false,
       "properties": {
@@ -804,6 +833,7 @@
               "mapping": {
                 "advance_world_time": "#/$defs/AdvanceWorldTimeEffect",
                 "change_entity_state": "#/$defs/ChangeEntityStateEffect",
+                "change_item_condition": "#/$defs/ChangeItemConditionEffect",
                 "commit_terminal_ending": "#/$defs/CommitTerminalEndingEffect",
                 "consume_entity": "#/$defs/ConsumeEntityEffect",
                 "ensure_runtime_entity": "#/$defs/EnsureRuntimeEntityEffect",
@@ -843,6 +873,9 @@
               },
               {
                 "$ref": "#/$defs/ChangeEntityStateEffect"
+              },
+              {
+                "$ref": "#/$defs/ChangeItemConditionEffect"
               },
               {
                 "$ref": "#/$defs/ConsumeEntityEffect"

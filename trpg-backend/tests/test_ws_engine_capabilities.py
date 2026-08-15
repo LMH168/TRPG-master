@@ -28,10 +28,11 @@ from collaboration_framework.contracts import (
     NoAdjudicationCheck,
     RevealInformationEffect,
     SetEndingAvailabilityEffect,
-    SingleActionDecision,
+    SingleActionProposal,
 )
 from starlette.testclient import TestClient
 
+from app.core.action_plan_turn import _proposal_from_adjudication
 from app.main import app
 from app.service import reliable_turn_runtime
 from tests.test_ws import (
@@ -70,10 +71,10 @@ class _ScriptedEffectPlanner:
         self._effects = tuple(effects)
         self.contexts: list[Any] = []
 
-    async def generate(self, context) -> SingleActionDecision:
+    async def generate(self, context) -> SingleActionProposal:
         self.contexts.append(context)
-        return SingleActionDecision(
-            adjudication=ActionAdjudication(
+        return _proposal_from_adjudication(
+            ActionAdjudication(
                 request_id="application-owned",
                 source_revision=context.player_view.revision,
                 actor_id=context.player_input.actor_id,
@@ -164,10 +165,13 @@ def test_runtime_entity_reaches_the_client_scene(
             name="送信来的信差",
             location_id=OPENING_SCENE,
         ),
+        # v2 目标完成契约要求可验证的最终状态；ensure 只是创建辅助步骤，
+        # 实体位于当前场景才是这次测试要验证的权威后置条件。
+        MoveEntityEffect(entity_id="briefing_clerk", location_id=OPENING_SCENE),
     )
 
     clerk = next(
-        entity for entity in view["scene"]["visible_entities"] if entity["id"] == "briefing_clerk"
+        entity for entity in view["scene"]["visible_entities"] if entity["name"] == "送信来的信差"
     )
     assert clerk["name"] == "送信来的信差"
     assert clerk["kind"] == "npc"
@@ -190,7 +194,8 @@ def test_runtime_object_reaches_the_client_inventory(
         MoveEntityEffect(entity_id="ordinary_pebble", holder_actor_id="actor_1"),
     )
 
-    assert [item["id"] for item in view["inventory"]] == ["ordinary_pebble"]
+    assert len(view["inventory"]) == 1
+    assert view["inventory"][0]["id"].startswith("runtime-entity-")
     assert view["self_actor"]["equipment"] == ["一枚普通石子"]
     assert "ordinary_pebble" not in {entity["id"] for entity in view["scene"]["visible_entities"]}
 
@@ -213,7 +218,7 @@ def test_runtime_location_is_created_entered_and_projected(
         EnterLocationEffect(location_id="briefing_street"),
     )
 
-    assert view["scene_id"] == "briefing_street"
+    assert view["scene_id"].startswith("runtime-location-")
     assert view["scene"]["name"] == "会客室外的街道"
     assert OPENING_SCENE in {
         exit_["destination"]["scene_id"]
@@ -245,6 +250,7 @@ def test_world_time_reaches_the_client_as_a_discrete_point(
     assert view["world"]["time_of_day"] == "day"
 
 
+@pytest.mark.skip(reason="PR3 禁止 Host 直接提交终局 Effect；必须由 Rule-owned Effect 授权")
 def test_ending_availability_reaches_the_client_without_direct_confirmation(
     sync_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

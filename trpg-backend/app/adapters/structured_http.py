@@ -10,6 +10,7 @@ HTTP 客户端的固有职责，所以重试放在这一层：三个 provider �
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 from dataclasses import dataclass
@@ -108,8 +109,16 @@ def decode_structured_json(output_text: str, *, provider_name: str) -> JsonObjec
 
     try:
         parsed = json.loads(output_text)
-    except json.JSONDecodeError as exc:
-        raise StructuredOutputError(f"{provider_name} structured output is not valid JSON") from exc
+    except json.JSONDecodeError as json_exc:
+        try:
+            # 部分兼容端点在 JSON mode 下仍会返回单引号或 Python 布尔值。
+            # literal_eval 只接受字面量；再经标准 JSON 往返，拒绝代码和非 JSON 值。
+            literal = ast.literal_eval(output_text)
+            parsed = json.loads(json.dumps(literal, allow_nan=False))
+        except (ValueError, SyntaxError, TypeError):
+            raise StructuredOutputError(
+                f"{provider_name} structured output is not valid JSON"
+            ) from json_exc
     if not isinstance(parsed, dict):
         raise StructuredOutputError(f"{provider_name} structured output must be a JSON object")
     return parsed

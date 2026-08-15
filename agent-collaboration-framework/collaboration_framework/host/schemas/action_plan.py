@@ -69,7 +69,9 @@ RESERVING_PLAN_STATUSES = frozenset(
 RESERVATION_TTL = timedelta(minutes=5)
 
 
-def reservation_is_expired(reserved_at: datetime, *, now: datetime | None = None) -> bool:
+def reservation_is_expired(
+    reserved_at: datetime, *, now: datetime | None = None
+) -> bool:
     """占用是否已过期到可以被别人接管。
 
     `reserved_at` 允许是 naive 的：SQLite 不保存时区，取回来的列即使声明了
@@ -102,25 +104,43 @@ class ActionPlanStepRun(ContractModel):
     retry_count: int = Field(default=0, ge=0)
     repair_attempts: int = Field(default=0, ge=0, le=8)
     last_validation_code: str | None = Field(default=None, min_length=1, max_length=100)
-    last_validation_message: str | None = Field(default=None, min_length=1, max_length=512)
+    last_validation_message: str | None = Field(
+        default=None, min_length=1, max_length=512
+    )
     # Player-safe repair comparison state. Stored in the existing PlanRun JSON
     # so a process restart cannot lose the original proposal and bypass the
     # semantic check before the repaired proposal reaches the Engine.
     repair_baseline: ActionAdjudication | None = None
+    # v2 修复冻结原始 Proposal 的语义边界；目标引用和 Effect 可以按 Validator
+    # 反馈修正，但 semantic_goal 与 method_family 不能被模型偷换。
+    repair_proposal_baseline: SingleActionProposal | None = None
     repair_feedback: ValidationFeedback | None = None
 
     @model_validator(mode="after")
     def validate_state(self) -> ActionPlanStepRun:
-        if (self.last_validation_code is None) != (self.last_validation_message is None):
+        if (self.last_validation_code is None) != (
+            self.last_validation_message is None
+        ):
             raise ValueError("last_validation_code/message 必须同时存在或同时为空")
-        if (self.repair_baseline is None) != (self.repair_feedback is None):
-            raise ValueError("repair_baseline/feedback 必须同时存在或同时为空")
+        repair_baselines = sum(
+            item is not None
+            for item in (self.repair_baseline, self.repair_proposal_baseline)
+        )
+        if repair_baselines > 1:
+            raise ValueError("历史 adjudication 与 Proposal 修复基线不得同时存在")
+        if (repair_baselines == 0) != (self.repair_feedback is None):
+            raise ValueError("修复基线与 feedback 必须同时存在或同时为空")
         if self.adjudication is not None:
             if self.adjudication.request_id != self.step_request_id:
-                raise ValueError("step adjudication request_id 与 step_request_id 不一致")
+                raise ValueError(
+                    "step adjudication request_id 与 step_request_id 不一致"
+                )
             if self.source_revision != self.adjudication.source_revision:
                 raise ValueError("step source_revision 与 adjudication 不一致")
-        if self.proposal is not None and self.proposal.semantic_goal != self.step.semantic_goal:
+        if (
+            self.proposal is not None
+            and self.proposal.semantic_goal != self.step.semantic_goal
+        ):
             raise ValueError("step Proposal 不得改变计划冻结的语义目标")
         if self.adjudication_execution is not None:
             if self.adjudication_execution.action_request_id != self.step_request_id:
@@ -130,7 +150,9 @@ class ActionPlanStepRun(ContractModel):
         if self.status in {"ready", "waiting_for_player", "completed"} and (
             self.adjudication is None and self.proposal is None
         ):
-            raise ValueError(f"{self.status} step 必须冻结 Proposal 或历史 adjudication")
+            raise ValueError(
+                f"{self.status} step 必须冻结 Proposal 或历史 adjudication"
+            )
         if self.proposal is not None and self.adjudication is not None:
             raise ValueError("新 Proposal 与历史 adjudication 不得同时充当步骤授权来源")
         if (
@@ -138,7 +160,10 @@ class ActionPlanStepRun(ContractModel):
             and self.adjudication_execution is None
         ):
             raise ValueError(f"{self.status} step 必须包含 execution")
-        if self.status == "waiting_for_player" and self.pending_action_request_id is None:
+        if (
+            self.status == "waiting_for_player"
+            and self.pending_action_request_id is None
+        ):
             raise ValueError("waiting_for_player step 必须记录 pending action request")
         return self
 
@@ -165,7 +190,7 @@ class ActionPlanRun(ContractModel):
     # step's `world_time_after` it gives the Narrator the whole span, so a plan
     # whose first step advances time is still narrated from where it started.
     opening_world_time: WorldClockView | None = None
-    plan_schema_version: Literal[1, 2] = 1
+    plan_schema_version: Literal[1, 2, 3] = 1
     run_version: int = Field(default=1, ge=1)
     status: PlanRunStatus = "active"
     current_step_index: int = Field(default=0, ge=0)
@@ -178,7 +203,9 @@ class ActionPlanRun(ContractModel):
     # A post-roll cancel is a two-phase operation: persist this intent first,
     # then accept the already-authoritative roll and stop the remaining plan.
     # Keeping it on the run makes the operation recoverable across a crash.
-    pending_cancel_request_id: str | None = Field(default=None, min_length=1, max_length=200)
+    pending_cancel_request_id: str | None = Field(
+        default=None, min_length=1, max_length=200
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -195,7 +222,7 @@ class ActionPlanRun(ContractModel):
         """按持久化版本显式读取，禁止用新字段默认值伪装旧协议。"""
 
         version = value.get("plan_schema_version")
-        if version not in {1, 2}:
+        if version not in {1, 2, 3}:
             raise ValueError("不支持的 ActionPlanRun schema version")
         run = cls.model_validate(
             value,
@@ -203,6 +230,11 @@ class ActionPlanRun(ContractModel):
         )
         if version == 1 and any(step.proposal is not None for step in run.steps):
             raise ValueError("ActionPlanRun v1 不得包含 Proposal v2 字段")
+        if version == 3 and any(
+            step.proposal is not None and step.proposal.schema_version != 2
+            for step in run.steps
+        ):
+            raise ValueError("ActionPlanRun v3 只能保存 Proposal v2")
         return run
 
     @model_validator(mode="after")
@@ -251,15 +283,22 @@ class ActionPlanRun(ContractModel):
         if self.pending_cancel_request_id is not None:
             if self.pending_cancel_request_id in self.cancel_request_ids:
                 raise ValueError("pending cancel request 不得已经完成")
-            if self.status != "waiting_for_player" or self.current_step_index >= len(self.steps):
-                raise ValueError("pending cancel request 只能存在于等待玩家处理的当前步骤")
+            if self.status != "waiting_for_player" or self.current_step_index >= len(
+                self.steps
+            ):
+                raise ValueError(
+                    "pending cancel request 只能存在于等待玩家处理的当前步骤"
+                )
             current = self.steps[self.current_step_index]
             if (
                 current.status != "waiting_for_player"
                 or current.adjudication_execution is None
-                or current.adjudication_execution.status != "awaiting_post_roll_decision"
+                or current.adjudication_execution.status
+                != "awaiting_post_roll_decision"
             ):
-                raise ValueError("pending cancel request 必须对应等待 post-roll 的当前步骤")
+                raise ValueError(
+                    "pending cancel request 必须对应等待 post-roll 的当前步骤"
+                )
         return self
 
     @property
@@ -275,6 +314,13 @@ class CompletedPlanStepSummary(ContractModel):
     step_index: int = Field(ge=0)
     semantic_goal: str = Field(min_length=1, max_length=1000)
     outcome: Literal["success", "failure", "cancelled"]
+    goal_outcome: Literal[
+        "achieved",
+        "partially_achieved",
+        "not_achieved",
+        "cancelled",
+        "legacy_unknown",
+    ] = "legacy_unknown"
     view_revision: str = Field(min_length=1)
     world_time_after: WorldClockView | None = None
     event_refs: tuple[str, ...] = ()
@@ -285,7 +331,9 @@ class CompletedPlanStepSummary(ContractModel):
     def validate_evidence(self) -> CompletedPlanStepSummary:
         if not {item.ref for item in self.narration_evidence}.issubset(self.event_refs):
             raise ValueError("步骤 narration_evidence 必须引用公开 event_refs")
-        if not {item.event_ref for item in self.committed_results}.issubset(self.event_refs):
+        if not {item.event_ref for item in self.committed_results}.issubset(
+            self.event_refs
+        ):
             raise ValueError("步骤 committed_results 必须引用公开 event_refs")
         return self
 
@@ -373,12 +421,21 @@ class ActionPlanNarrationContext(ContractModel):
     ]
     completed_steps: tuple[CompletedPlanStepSummary, ...] = ()
     player_view: PlayerView
+    # 最终叙事与 Host 共享玩家安全历史，用于承接说话者、交互焦点和既有措辞。
+    recent_history: RecentTurnContext | None = None
+    # 从本回合已持久化 Proposal 投影；Narrator 不能自行切换到其他可见实体。
+    focus_entity_ids: tuple[str, ...] = ()
     # `player_view` is the post-turn state, so it is the *only* clock the
     # Narrator would otherwise see. This is where the turn started; each step
     # then carries the clock it ended on.
     opening_world_time: WorldClockView | None = None
     allowed_evidence_refs: tuple[str, ...] = ()
     narration_evidence: tuple[NarrationEvidence, ...] = ()
+    blocked_step_goal: str | None = Field(default=None, min_length=1, max_length=1000)
+    remaining_step_goals: tuple[str, ...] = ()
+    player_safe_failure_reason: str | None = Field(
+        default=None, min_length=1, max_length=512
+    )
     # Only populated for the bounded second narration attempt; contains no
     # hidden data, just the player-safe requirement the first output missed.
     narration_retry_hint: str | None = Field(default=None, max_length=500)
@@ -391,7 +448,19 @@ class ActionPlanNarrationContext(ContractModel):
             or self.player_input.actor_id != self.player_view.actor_id
         ):
             raise ValueError("ActionPlanNarrationContext identity scope 不一致")
-        evidence = tuple(ref for step in self.completed_steps for ref in step.event_refs)
+        if self.recent_history is not None:
+            self.recent_history.validate_for(
+                player_input=self.player_input,
+                player_view=self.player_view,
+            )
+        visible_entity_ids = {
+            entity.id for entity in self.player_view.scene.visible_entities
+        }
+        if not set(self.focus_entity_ids).issubset(visible_entity_ids):
+            raise ValueError("叙事焦点必须属于最终 PlayerView 的可见实体")
+        evidence = tuple(
+            ref for step in self.completed_steps for ref in step.event_refs
+        )
         if set(self.allowed_evidence_refs) != set(evidence):
             raise ValueError("allowed_evidence_refs 必须等于已完成步骤的公开 evidence")
         step_evidence = tuple(
@@ -400,7 +469,9 @@ class ActionPlanNarrationContext(ContractModel):
         if self.narration_evidence != step_evidence:
             raise ValueError("narration_evidence 必须按步骤聚合")
         result_refs = {
-            result.event_ref for step in self.completed_steps for result in step.committed_results
+            result.event_ref
+            for step in self.completed_steps
+            for result in step.committed_results
         }
         if not result_refs.issubset(set(evidence)):
             raise ValueError("committed_results 必须引用对应步骤的公开 evidence")

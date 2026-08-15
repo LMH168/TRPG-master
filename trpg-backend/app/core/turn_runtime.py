@@ -211,6 +211,7 @@ class TurnFailureSnapshot(BaseModel):
     code: str = Field(min_length=1, max_length=100)
     stage: TurnErrorStage
     retryable: bool
+    attempt_count: int = Field(default=1, ge=1)
     commit_state: TurnCommitState
     recovery_action: TurnRecoveryAction
     public_message: str = Field(min_length=1, max_length=1000)
@@ -741,7 +742,11 @@ class InMemoryTurnStore(TurnStore):
             for record in self._records.values()
             if not record.is_terminal
             and record.resume_point != TurnResumePoint.AWAITING_PLAYER
-            and (record.last_error is None or record.status == TurnStatus.DELIVERING)
+            and (
+                record.last_error is None
+                or record.last_error.retryable
+                or record.status == TurnStatus.DELIVERING
+            )
             and (
                 (record.lease_owner is None and record.updated_at <= now - timedelta(seconds=60))
                 or (record.lease_expires_at is not None and record.lease_expires_at <= now)

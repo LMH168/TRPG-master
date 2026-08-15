@@ -7,7 +7,7 @@ import re
 import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, cast
+from typing import Protocol
 
 import structlog
 from collaboration_framework.contracts import (
@@ -33,8 +33,8 @@ from collaboration_framework.contracts import (
     GetAdjudicationStatusRequest,
     HideInformationEffect,
     HostDecisionProposal,
-    HostTurnDecision,
     KeeperCapabilityView,
+    MarkCoreResolvedEffect,
     MoveEntityEffect,
     NarrativeOnlyEffect,
     NoAdjudicationCheck,
@@ -44,8 +44,8 @@ from collaboration_framework.contracts import (
     RequiredAdjudicationCheck,
     RevealInformationEffect,
     RuleDecisionRef,
+    SetEndingAvailabilityEffect,
     SetVisibilityEffect,
-    SingleActionDecision,
     SingleActionProposal,
     SkillCheckCandidate,
     WorldClockView,
@@ -122,9 +122,7 @@ async def _log_step_adjudication_failure(failure: ActionPlanStepFailure) -> None
 
 
 class HostTurnDecisionModel(Protocol):
-    async def generate(
-        self, context: HostAgentContext
-    ) -> HostTurnDecision | HostDecisionProposal: ...
+    async def generate(self, context: HostAgentContext) -> HostDecisionProposal: ...
 
 
 @dataclass(frozen=True)
@@ -159,7 +157,7 @@ def _proposal_ref(kind: str, object_id: str, runtime_ids: set[str]) -> dict[str,
 
 
 def _proposal_from_adjudication(adjudication: ActionAdjudication) -> SingleActionProposal:
-    """将现有确定性裁决降为无授权 Proposal，供 PR2 过渡路径复用。"""
+    """将确定性裁决降为 v2 无授权 Proposal，并显式声明目标完成条件。"""
 
     effects = (*adjudication.success_effects, *adjudication.failure_effects)
     runtime_locations = {
@@ -246,6 +244,10 @@ def _proposal_from_adjudication(adjudication: ActionAdjudication) -> SingleActio
             }
         if isinstance(effect, AdvanceWorldTimeEffect):
             return {"type": "advance_world_time", "to_point_id": effect.to_point_id}
+        if isinstance(effect, MarkCoreResolvedEffect):
+            return {"type": "mark_core_resolved"}
+        if isinstance(effect, SetEndingAvailabilityEffect):
+            return {"type": "set_ending_availability", "available": effect.available}
         if isinstance(effect, NarrativeOnlyEffect):
             return {"type": "narrative_only"}
         # 规则专属 L4/L5 Effect 不允许从 Host Proposal 兼容转换。
@@ -271,22 +273,56 @@ def _proposal_from_adjudication(adjudication: ActionAdjudication) -> SingleActio
         anchor_ref = _proposal_ref(
             "location", created_location.connected_location_id, runtime_locations
         )
+    success_effect_proposals = [convert(item) for item in adjudication.success_effects]
+    failure_effect_proposals = [convert(item) for item in adjudication.failure_effects]
+    # 创建辅助 Effect 和 narrative_only 不是最终事实；其余成功 Effect 可以由
+    # Engine 在提交后直接验证。没有持久后置条件时，目标只声明一次过程交互。
+    completion_requirements = [
+        item
+        for item in success_effect_proposals
+        if item["type"]
+        not in {"ensure_runtime_location", "ensure_runtime_entity", "narrative_only"}
+    ]
+    family = adjudication.method.family.lower()
+    if completion_requirements:
+        completion: dict[str, object] = {
+            "kind": "effects",
+            "requirements": completion_requirements,
+        }
+    else:
+        interaction = (
+            "social"
+            if family in {"dialogue", "social", "talk"}
+            else (
+                "observe"
+                if family in {"observe", "search", "investigate", "spot_hidden"}
+                else "physical"
+                if family in {"physical", "pick_up", "drop", "use"}
+                else "other"
+            )
+        )
+        completion = {"kind": "process", "interaction": interaction}
+
     return SingleActionProposal.model_validate(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "semantic_goal": adjudication.summary,
             "semantic_focus": semantic_focus,
             "anchor_ref": anchor_ref,
             "method_family": adjudication.method.family,
             "method_description": adjudication.method.description,
+            # Legacy ActionAdjudication 没有结构化实施手段；确定性兼容路径只声明
+            # intrinsic，涉及具体物品的生产 Proposal 必须由 Host 明确给出 item。
+            "execution_means": {"kind": "intrinsic"},
             "check_proposal": adjudication.check.model_dump(mode="json"),
             "rule_ref": (
                 adjudication.rule_decision.model_dump(mode="json")
                 if adjudication.rule_decision is not None
                 else None
             ),
-            "success_effect_proposals": [convert(item) for item in adjudication.success_effects],
-            "failure_effect_proposals": [convert(item) for item in adjudication.failure_effects],
+            "success_effect_proposals": success_effect_proposals,
+            "failure_effect_proposals": failure_effect_proposals,
+            "completion": completion,
         }
     )
 
@@ -294,14 +330,12 @@ def _proposal_from_adjudication(adjudication: ActionAdjudication) -> SingleActio
 class DeterministicHostTurnDecisionModel:
     """Offline-safe model used only by fake/test composition."""
 
-    def __init__(self, *, authority_pipeline_mode: str = "legacy") -> None:
-        self._authority_pipeline_mode = authority_pipeline_mode
+    @staticmethod
+    def _as_proposal(
+        decision: ActionPlan | ActionAdjudication,
+    ) -> HostDecisionProposal:
+        """离线 Fake 也只交付 Proposal，避免测试构造第二条生产写入口。"""
 
-    def _for_mode(self, decision: HostTurnDecision) -> HostTurnDecision | HostDecisionProposal:
-        """Fake Host 在 v2 下也只交付 Proposal，避免测试绕过生产边界。"""
-
-        if self._authority_pipeline_mode != "v2":
-            return decision
         if isinstance(decision, ActionPlan):
             return ActionPlanProposal(
                 semantic_goal=decision.goal,
@@ -313,9 +347,9 @@ class DeterministicHostTurnDecisionModel:
                     for step in decision.steps
                 ),
             )
-        return _proposal_from_adjudication(decision.adjudication)
+        return _proposal_from_adjudication(decision)
 
-    async def generate(self, context: HostAgentContext) -> HostTurnDecision | HostDecisionProposal:
+    async def generate(self, context: HostAgentContext) -> HostDecisionProposal:
         utterance = context.player_input.utterance
         separators = ("然后", "接着", "随后", "再去", "，再", ";", "；")
         pieces = [utterance]
@@ -325,7 +359,7 @@ class DeterministicHostTurnDecisionModel:
                 pieces = [part for part in pieces if part]
                 break
         if len(pieces) >= 2:
-            return self._for_mode(
+            return self._as_proposal(
                 ActionPlan(
                     goal=utterance,
                     steps=tuple(
@@ -344,25 +378,23 @@ class DeterministicHostTurnDecisionModel:
 
         compact = _compact_travel_plan(context.player_view, utterance)
         if compact is not None:
-            return self._for_mode(compact)
+            return self._as_proposal(compact)
 
         destination = _match_travel_target(context.player_view, utterance)
         if destination is not None:
-            return self._for_mode(
-                SingleActionDecision(
-                    adjudication=ActionAdjudication(
-                        request_id="application-owned",
-                        source_revision=context.player_view.revision,
-                        actor_id=context.player_input.actor_id,
-                        summary=utterance,
-                        target=ActionTarget(
-                            kind="location",
-                            id=destination.id,
-                        ),
-                        method=ActionMethod(family="travel", description=utterance),
-                        check=NoAdjudicationCheck(),
-                        success_effects=(EnterLocationEffect(location_id=destination.id),),
-                    )
+            return self._as_proposal(
+                ActionAdjudication(
+                    request_id="application-owned",
+                    source_revision=context.player_view.revision,
+                    actor_id=context.player_input.actor_id,
+                    summary=utterance,
+                    target=ActionTarget(
+                        kind="location",
+                        id=destination.id,
+                    ),
+                    method=ActionMethod(family="travel", description=utterance),
+                    check=NoAdjudicationCheck(),
+                    success_effects=(EnterLocationEffect(location_id=destination.id),),
                 )
             )
 
@@ -390,20 +422,18 @@ class DeterministicHostTurnDecisionModel:
             )
         )
         if deterministic is not None:
-            return self._for_mode(SingleActionDecision(adjudication=deterministic))
+            return self._as_proposal(deterministic)
 
-        return self._for_mode(
-            SingleActionDecision(
-                adjudication=ActionAdjudication(
-                    request_id="application-owned",
-                    source_revision=context.player_view.revision,
-                    actor_id=context.player_input.actor_id,
-                    summary=utterance,
-                    target=ActionTarget(kind="location", id=context.player_view.scene.id),
-                    method=ActionMethod(family="action", description=utterance),
-                    check=NoAdjudicationCheck(),
-                    success_effects=(NarrativeOnlyEffect(),),
-                )
+        return self._as_proposal(
+            ActionAdjudication(
+                request_id="application-owned",
+                source_revision=context.player_view.revision,
+                actor_id=context.player_input.actor_id,
+                summary=utterance,
+                target=ActionTarget(kind="location", id=context.player_view.scene.id),
+                method=ActionMethod(family="action", description=utterance),
+                check=NoAdjudicationCheck(),
+                success_effects=(NarrativeOnlyEffect(),),
             )
         )
 
@@ -718,6 +748,20 @@ def _deterministic_clarification_text(context: ActionPlanNarrationContext) -> st
         _explicit_travel_phrase(getattr(step, "semantic_goal", "")) is not None
         for step in successful_steps
     )
+    blocked_step_goal = getattr(context, "blocked_step_goal", None)
+    if blocked_step_goal is not None:
+        remaining_step_goals = getattr(context, "remaining_step_goals", ())
+        completed = "此前已经完成的步骤仍然有效；" if successful_steps else ""
+        remaining = (
+            "；后续步骤尚未执行：" + "、".join(remaining_step_goals) if remaining_step_goals else ""
+        )
+        reason = (
+            getattr(context, "player_safe_failure_reason", None) or "当前步骤无法形成可确认结果"
+        )
+        return (
+            f"{completed}{reason}：「{blocked_step_goal}」{remaining}。"
+            "如需继续，请重新提交新的行动。"
+        )
     if completed_travel:
         scene_name = getattr(context.player_view.scene, "name", "") or "当前地点"
         return f"你已经抵达{scene_name}，但后续行动尚未形成可确认的结果。"
@@ -799,7 +843,6 @@ class ActionPlanTurnApplication:
         recent_history_source: RecentHistorySource,
         recent_history_budget: RecentHistoryBudget,
         recent_history_enabled: bool,
-        authority_pipeline_mode: Literal["legacy", "shadow", "v2"] = "legacy",
     ) -> None:
         self._store = store
         self._engine = engine
@@ -817,7 +860,6 @@ class ActionPlanTurnApplication:
             player_view_projector=self._projector,
             repair_adjudicator=orchestrator.adjudicator,
             policy=orchestrator.policy,
-            authority_pipeline_mode=authority_pipeline_mode,
         )
 
     async def start(
@@ -921,13 +963,6 @@ class ActionPlanTurnApplication:
                 player_input=player_input,
                 player_view=view,
             )
-        if isinstance(decision, (SingleActionDecision, ActionPlan)):
-            decision = _normalize_single_travel_decision(
-                decision,
-                player_input=player_input,
-                view=view,
-                capabilities=keeper_capabilities,
-            )
         await _emit_phase(on_phase, "executing_action")
         result = await self._dispatcher.execute(
             player_input,
@@ -941,7 +976,7 @@ class ActionPlanTurnApplication:
                 result,
                 on_phase=on_phase,
             )
-        if isinstance(decision, (ActionPlan, ActionPlanProposal)):
+        if isinstance(decision, ActionPlanProposal):
             raise TypeError("single result 不得对应 ActionPlan")
         if isinstance(result, SingleActionClarificationResult):
             await _emit_phase(on_phase, "refreshing_player_view")
@@ -949,13 +984,12 @@ class ActionPlanTurnApplication:
             return await self._from_single_clarification(
                 player_input,
                 (
-                    decision.adjudication.summary
-                    if isinstance(decision, SingleActionDecision)
-                    else decision.semantic_goal
+                    decision.semantic_goal
                     if isinstance(decision, SingleActionProposal)
                     else result.player_safe_reason
                 ),
                 result,
+                recent_history=recent_history,
             )
         if result.execution.status in {
             "awaiting_skill_choice",
@@ -969,23 +1003,30 @@ class ActionPlanTurnApplication:
             player_input,
             self._decision_summary(decision, result),
             result,
+            recent_history=recent_history,
+            focus_entity_ids=(
+                (decision.semantic_focus.id,)
+                if isinstance(decision, SingleActionProposal)
+                and decision.semantic_focus.kind == "entity"
+                and any(
+                    entity.id == decision.semantic_focus.id
+                    for entity in result.player_view.scene.visible_entities
+                )
+                else ()
+            ),
         )
 
     @staticmethod
     def _decision_summary(
-        decision: HostTurnDecision | HostDecisionProposal,
+        decision: HostDecisionProposal,
         result: SingleActionTurnResult | SingleActionClarificationResult,
     ) -> str:
         """统一提取玩家可见摘要，澄清 Proposal 使用安全问题作为回退。"""
 
-        if isinstance(decision, SingleActionDecision):
-            return decision.adjudication.summary
         if isinstance(decision, SingleActionProposal):
             return decision.semantic_goal
         if isinstance(result, SingleActionClarificationResult):
             return result.player_safe_reason
-        if isinstance(decision, ActionPlan):
-            return decision.goal
         if isinstance(decision, ActionPlanProposal):
             return decision.semantic_goal
         return ""
@@ -1172,6 +1213,51 @@ class ActionPlanTurnApplication:
 
     async def get_plan(self, room_id: str, parent_action_id: str):
         return await self._orchestrator.get_run(room_id, parent_action_id)
+
+    async def abandon_uncommitted_plan(
+        self,
+        *,
+        room_id: str,
+        parent_action_id: str,
+        code: str,
+    ) -> ActionPlanRun | None:
+        """可靠回合确认未提交终态失败后，收束对应的步骤级计划。"""
+
+        return await self._orchestrator.abandon_uncommitted(
+            room_id=room_id,
+            parent_action_id=parent_action_id,
+            code=code,
+        )
+
+    async def release_uncommitted_plan_step(
+        self,
+        *,
+        room_id: str,
+        parent_action_id: str,
+        code: str,
+    ) -> ActionPlanRun | None:
+        """部分提交 Turn 失败时释放当前未提交步骤，保留前序权威结果。"""
+
+        return await self._orchestrator.release_uncommitted_step(
+            room_id=room_id,
+            parent_action_id=parent_action_id,
+            code=code,
+        )
+
+    async def settle_failed_turn_plan(
+        self,
+        *,
+        room_id: str,
+        parent_action_id: str,
+        code: str,
+    ) -> ActionPlanRun | None:
+        """收束终态失败 Turn 的计划占用，同时保留已经提交的步骤结果。"""
+
+        return await self._orchestrator.settle_failed_turn(
+            room_id=room_id,
+            parent_action_id=parent_action_id,
+            code=code,
+        )
 
     async def cancel_remaining(
         self,
@@ -1423,6 +1509,9 @@ class ActionPlanTurnApplication:
         player_input: PlayerInput,
         summary: str,
         result: SingleActionTurnResult,
+        *,
+        recent_history: RecentTurnContext | None = None,
+        focus_entity_ids: tuple[str, ...] = (),
     ) -> ActionPlanTurnResult:
         execution = result.execution
         if execution.status in {"awaiting_skill_choice", "awaiting_post_roll_decision"}:
@@ -1444,10 +1533,18 @@ class ActionPlanTurnApplication:
                 "行动状态尚未完成，请重试",
                 retryable=True,
             )
+        if execution.goal_outcome == "pending":
+            # 完成态不能把尚未判定的目标交给 Narrator，否则会绕过目标完成门禁。
+            raise TurnExecutionError(
+                "PENDING_GOAL_OUTCOME_NOT_WAITING",
+                "行动目标状态尚未完成，请重试",
+                retryable=True,
+            )
         completed_summary = CompletedPlanStepSummary(
             step_index=0,
             semantic_goal=summary,
             outcome=completed_outcome,
+            goal_outcome=execution.goal_outcome,
             view_revision=execution.view_revision,
             world_time_after=WorldClockView.from_world(result.player_view.world),
             event_refs=execution.public_event_refs,
@@ -1461,6 +1558,11 @@ class ActionPlanTurnApplication:
             termination_status=("cancelled" if execution.status == "cancelled" else "resolved"),
             completed_steps=(completed_summary,),
             player_view=result.player_view,
+            recent_history=self._rebind_recent_history(
+                recent_history,
+                player_view=result.player_view,
+            ),
+            focus_entity_ids=focus_entity_ids,
             opening_world_time=result.opening_world_time,
             allowed_evidence_refs=execution.public_event_refs,
             narration_evidence=execution.narration_evidence,
@@ -1478,6 +1580,8 @@ class ActionPlanTurnApplication:
         player_input: PlayerInput,
         summary: str,
         result: SingleActionClarificationResult,
+        *,
+        recent_history: RecentTurnContext | None = None,
     ) -> ActionPlanTurnResult:
         """把未发生任何权威写入的单动作失败转换成自然主持人澄清。"""
 
@@ -1487,7 +1591,13 @@ class ActionPlanTurnApplication:
             plan_goal=summary,
             termination_status="needs_clarification",
             player_view=result.player_view,
+            recent_history=self._rebind_recent_history(
+                recent_history,
+                player_view=result.player_view,
+            ),
             opening_world_time=result.opening_world_time,
+            blocked_step_goal=summary,
+            player_safe_failure_reason=result.player_safe_reason,
         )
         return ActionPlanTurnResult(
             player_input=player_input,
@@ -1496,10 +1606,31 @@ class ActionPlanTurnApplication:
             narration=await self._narrate(context),
         )
 
+    @staticmethod
+    def _rebind_recent_history(
+        recent_history: RecentTurnContext | None,
+        *,
+        player_view: PlayerView,
+    ) -> RecentTurnContext | None:
+        """将提交前读取的安全历史绑定到本回合最终视图 revision。"""
+
+        if recent_history is None or recent_history.as_of_revision == player_view.revision:
+            return recent_history
+        # 历史查询已排除当前 client_action_id；权威提交只会推进 revision，
+        # 因此这里仅更新读取截止点，不增加或改写任何历史事实。
+        return recent_history.model_copy(update={"as_of_revision": player_view.revision})
+
     async def _narrate(
         self,
         context: ActionPlanNarrationContext,
     ) -> ActionPlanNarrationOutput:
+        if any(
+            getattr(step, "goal_outcome", "legacy_unknown")
+            in {"partially_achieved", "not_achieved"}
+            for step in context.completed_steps
+        ):
+            # 未完成持久目标时不让自由文本从检定成功外推伤势、死亡或物品变化。
+            return self._deterministic_narration_fallback(context)
         for attempt in range(2):
             try:
                 return await self._narrator.narrate(context)
@@ -1544,13 +1675,20 @@ class ActionPlanTurnApplication:
             except Exception as exc:
                 # 传输层的瞬态失败已经由 StructuredJsonClient 自己重试过了
                 # （见 adapters/structured_http.py）。在这里再整体重试一轮，两层
-                # 是相乘的：一轮叙事内含 client 的多次尝试，失败等待会成倍拉长。
-                # 玩家宁可早点看到失败，也不愿盯着"生成中"等上几分钟。
-                raise TurnExecutionError(
-                    "PLAN_NARRATOR_FAILED",
-                    "规则结果已保存，但叙事生成失败；请使用原请求重试",
-                    retryable=True,
-                ) from exc
+                # 是相乘的。规则结果已经提交时直接使用结构化证据生成确定性回复，
+                # 避免 Narrator 故障长期占用房间，也绝不重新执行 Engine。
+                logger.warning(
+                    "action_plan_narration_model_fallback",
+                    action=context.player_input.client_action_id,
+                    error_type=type(exc).__name__,
+                    termination_status=context.termination_status,
+                )
+                required = tuple(
+                    item for item in context.narration_evidence if item.required_in_narration
+                )
+                if required and context.termination_status != "needs_clarification":
+                    return self._required_evidence_fallback(context)
+                return self._deterministic_narration_fallback(context)
         raise AssertionError("unreachable")
 
     @staticmethod
@@ -1644,8 +1782,14 @@ class ActionPlanTurnApplication:
             if label is not None or result in inventory_results
         )
         outcomes = tuple(step.outcome for step in context.completed_steps)
+        # 历史上下文没有目标完成字段，必须按未知处理，不能倒推出目标已经达成。
+        goal_outcomes = tuple(
+            getattr(step, "goal_outcome", "legacy_unknown") for step in context.completed_steps
+        )
         if "cancelled" in outcomes or context.termination_status == "cancelled":
             status_text = "这次行动已经取消。"
+        elif any(item in {"partially_achieved", "not_achieved"} for item in goal_outcomes):
+            status_text = "检定或过程已经结束，但玩家声明的完整目标没有形成可确认的权威结果。"
         elif "failure" in outcomes:
             # ActionPlan 可能保留此前成功步骤，因此失败文案要区分全部失败和部分完成。
             status_text = (
@@ -1774,15 +1918,14 @@ def build_action_plan_turn_application(
     from app.core.config import get_settings, model_client_retry_policy, secret_value
 
     resolved = settings or get_settings()
-    authority_mode = cast(Literal["legacy", "shadow", "v2"], resolved.authority_pipeline_mode)
     policy = ActionPlanPolicy(
         max_plan_steps=resolved.action_plan_max_steps,
         max_steps_per_advance=resolved.action_plan_max_steps_per_advance,
         max_repair_attempts=resolved.action_plan_max_repair_attempts,
     )
     if resolved.host_model_provider == "fake":
-        planner = DeterministicHostTurnDecisionModel(authority_pipeline_mode=authority_mode)
-        adjudicator = _DeterministicStepAdjudicator(authority_pipeline_mode=authority_mode)
+        planner = DeterministicHostTurnDecisionModel()
+        adjudicator = _DeterministicStepAdjudicator()
         narration_model = DeterministicActionPlanNarrationModel()
     else:
         if client is None:
@@ -1816,11 +1959,9 @@ def build_action_plan_turn_application(
         planner = PromptHostTurnDecisionModel(
             client,
             policy=policy,
-            authority_pipeline_mode=authority_mode,
         )
         adjudicator = _RuleFirstStepAdjudicator(
-            PromptActionPlanStepAdjudicator(client, authority_pipeline_mode=authority_mode),
-            authority_pipeline_mode=authority_mode,
+            PromptActionPlanStepAdjudicator(client),
         )
         narration_model = PromptActionPlanNarrationModel(client)
 
@@ -1840,7 +1981,6 @@ def build_action_plan_turn_application(
         on_step_failure=_log_step_adjudication_failure,
         recent_history_source=(history_source if resolved.recent_history_enabled else None),
         recent_history_budget=recent_history_budget,
-        authority_pipeline_mode=authority_mode,
     )
     return ActionPlanTurnApplication(
         store=store,
@@ -1852,7 +1992,6 @@ def build_action_plan_turn_application(
         recent_history_source=history_source,
         recent_history_budget=recent_history_budget,
         recent_history_enabled=resolved.recent_history_enabled,
-        authority_pipeline_mode=authority_mode,
     )
 
 
@@ -1860,13 +1999,10 @@ class _DeterministicStepAdjudicator:
     # Deliberately conservative: the offline composition only resolves steps
     # fully implied by the safe view, then falls back to narrative-only.
 
-    def __init__(self, *, authority_pipeline_mode: str = "legacy") -> None:
-        self._authority_pipeline_mode = authority_pipeline_mode
-
-    async def adjudicate(self, context: ActionPlanStepContext) -> Any:
+    async def adjudicate(self, context: ActionPlanStepContext) -> SingleActionProposal:
         adjudication = _deterministic_step_adjudication(context)
         if adjudication is not None:
-            return self._for_mode(adjudication)
+            return _proposal_from_adjudication(adjudication)
 
         action_text = context.step.semantic_goal.replace(
             context.player_view.scene.name,
@@ -1875,7 +2011,7 @@ class _DeterministicStepAdjudicator:
         target = _match_visible_entity(context.player_view, action_text)
         target_kind = "entity" if target is not None else "location"
         target_id = target.id if target is not None else context.player_view.scene.id
-        return self._for_mode(
+        return _proposal_from_adjudication(
             ActionAdjudication(
                 request_id=context.step_request_id,
                 source_revision=context.player_view.revision,
@@ -1891,15 +2027,6 @@ class _DeterministicStepAdjudicator:
             )
         )
 
-    def _for_mode(
-        self, adjudication: ActionAdjudication
-    ) -> ActionAdjudication | SingleActionProposal:
-        return (
-            _proposal_from_adjudication(adjudication)
-            if self._authority_pipeline_mode == "v2"
-            else adjudication
-        )
-
 
 class _RuleFirstStepAdjudicator:
     """Resolve unambiguous Match View steps without a fallible model round-trip."""
@@ -1907,68 +2034,16 @@ class _RuleFirstStepAdjudicator:
     def __init__(
         self,
         fallback: ActionPlanStepAdjudicator,
-        *,
-        authority_pipeline_mode: str = "legacy",
     ) -> None:
         self._fallback = fallback
-        self._authority_pipeline_mode = authority_pipeline_mode
 
-    async def adjudicate(self, context: ActionPlanStepContext) -> Any:
+    async def adjudicate(self, context: ActionPlanStepContext) -> SingleActionProposal:
+        # 确定性路径只处理当前 PlayerView 已完整证明的动作；无法确定时才调用
+        # Host。整个异常收束由 ActionPlanOrchestrator 的步骤冻结边界统一负责。
         adjudication = _deterministic_step_adjudication(context)
         if adjudication is not None:
-            return self._for_mode(adjudication)
-        adjudication = await self._fallback.adjudicate(context)
-        if isinstance(adjudication, SingleActionProposal):
-            return adjudication
-        if (
-            context.step.kind == "travel"
-            and _explicit_travel_phrase(context.player_input.utterance) is not None
-            and _has_unmatched_explicit_travel_destination(
-                context.player_view,
-                context.step.semantic_goal,
-            )
-            and not any(
-                isinstance(effect, EnsureRuntimeLocationEffect)
-                for effect in adjudication.success_effects
-            )
-        ):
-            # A model may choose a protocol-legal known id merely to satisfy the
-            # schema. Treat that as an unresolved destination, never as travel to
-            # the substituted place. The plan then ends with a zero-write,
-            # player-facing "not found" narration.
-            if context.plan_id != "single-action":
-                raise TurnExecutionError(
-                    "TRAVEL_DESTINATION_NOT_FOUND",
-                    "没有找到与玩家描述相符且可安全创建或到达的地点",
-                    retryable=False,
-                )
-            return adjudication.model_copy(
-                update={
-                    "summary": context.player_input.utterance,
-                    "target": ActionTarget(
-                        kind="location",
-                        id=context.player_view.scene.id,
-                    ),
-                    "method": ActionMethod(
-                        family="travel",
-                        description=context.player_input.utterance,
-                    ),
-                    "persistence_intent": "location",
-                    "success_effects": (NarrativeOnlyEffect(),),
-                    "failure_effects": (),
-                },
-                deep=True,
-            )
-        return adjudication
-
-    def _for_mode(
-        self, adjudication: ActionAdjudication
-    ) -> ActionAdjudication | SingleActionProposal:
-        return (
-            _proposal_from_adjudication(adjudication)
-            if self._authority_pipeline_mode == "v2"
-            else adjudication
-        )
+            return _proposal_from_adjudication(adjudication)
+        return await self._fallback.adjudicate(context)
 
 
 def _deterministic_step_adjudication(
@@ -2209,175 +2284,6 @@ def _requested_companions(
         if any(label and label in combined for label in labels):
             requested.append(entity)
     return tuple(requested)
-
-
-def _normalize_single_travel_decision(
-    decision: HostTurnDecision,
-    *,
-    player_input: PlayerInput,
-    view: PlayerView,
-    capabilities: KeeperCapabilityView | None,
-) -> HostTurnDecision:
-    """让单动作旅行服从玩家原话，并补齐明确同行 NPC 的权威移动效果。"""
-
-    if not isinstance(decision, SingleActionDecision):
-        return decision
-    adjudication = decision.adjudication
-    enter_effects = tuple(
-        effect for effect in adjudication.success_effects if isinstance(effect, EnterLocationEffect)
-    )
-    created_locations = {
-        effect.location_id: effect
-        for effect in adjudication.success_effects
-        if isinstance(effect, EnsureRuntimeLocationEffect)
-    }
-    proposed_destination = (
-        adjudication.target.id if adjudication.target.kind == "location" else None
-    )
-    # 玩家明确说出已知地点时绝不能被模型改写覆盖；原话没有地点时，才允许
-    # 模型根据“去找守墓人”之类的语义选择目的地。
-    explicit_destination = _match_travel_target(view, player_input.utterance)
-    if explicit_destination is not None and explicit_destination.id == view.scene.id:
-        mentioned_companions = _requested_companions(
-            player_input=player_input,
-            semantic_text=f"{adjudication.summary} {adjudication.method.description}",
-            capabilities=capabilities,
-        )
-        has_offscene_companion = any(
-            entity.location_id is not None and entity.location_id != view.scene.id
-            for entity in mentioned_companions
-        )
-        if not has_offscene_companion:
-            already_there = adjudication.model_copy(
-                update={
-                    "summary": f"已经位于{explicit_destination.name}",
-                    "target": ActionTarget(kind="location", id=explicit_destination.id),
-                    "method": ActionMethod(
-                        family="action",
-                        description=f"确认当前已在{explicit_destination.name}",
-                    ),
-                    "persistence_intent": "none",
-                    "check": NoAdjudicationCheck(),
-                    "success_effects": (NarrativeOnlyEffect(),),
-                    "failure_effects": (),
-                },
-                deep=True,
-            )
-            return decision.model_copy(update={"adjudication": already_there}, deep=True)
-    runtime_destination = next(
-        (effect.location_id for effect in enter_effects if effect.location_id in created_locations),
-        None,
-    )
-    if (
-        explicit_destination is None
-        and _has_unmatched_explicit_travel_destination(view, player_input.utterance)
-        and runtime_destination is None
-    ):
-        # Re-run an unknown, directly named destination through the stricter
-        # per-step location-creation path. This prevents a single-action planner
-        # from turning (for example) an unlisted requested venue into an unrelated
-        # known location just because that id is legal in the schema.
-        invalid_for_bounded_repair = adjudication.model_copy(
-            update={
-                "summary": player_input.utterance,
-                "target": ActionTarget(kind="location", id=view.scene.id),
-                "method": ActionMethod(
-                    family="travel",
-                    description=player_input.utterance,
-                ),
-                "persistence_intent": "location",
-                "success_effects": (NarrativeOnlyEffect(),),
-                "failure_effects": (),
-            },
-            deep=True,
-        )
-        return decision.model_copy(
-            update={"adjudication": invalid_for_bounded_repair},
-            deep=True,
-        )
-    if adjudication.method.family != "travel" or not enter_effects:
-        return decision
-    destination_id = (
-        explicit_destination.id
-        if explicit_destination is not None
-        else runtime_destination or proposed_destination
-    )
-    if destination_id is None:
-        return decision
-    semantic_text = f"{adjudication.summary} {adjudication.method.description}"
-    requested_companions = _requested_companions(
-        player_input=player_input,
-        semantic_text=semantic_text,
-        capabilities=capabilities,
-    )
-    offscene_companions = tuple(
-        entity
-        for entity in requested_companions
-        if entity.location_id is not None and entity.location_id != view.scene.id
-    )
-    if offscene_companions:
-        companion = offscene_companions[0]
-        source_id = companion.location_id
-        assert source_id is not None
-        assert capabilities is not None
-        location_names = {location.id: location.name for location in capabilities.locations}
-        location_names.update(
-            {location_id: effect.name for location_id, effect in created_locations.items()}
-        )
-        source_name = location_names.get(source_id, source_id)
-        destination_name = location_names.get(destination_id, destination_id)
-        # 同行者不在身边时，单次“带他去”必须展开为先会合、再同行两步；
-        # 不能原地提交一次玩家旅行后靠旁白假装 NPC 已经到场。
-        return ActionPlan(
-            goal=player_input.utterance,
-            steps=(
-                ActionPlanStep(
-                    kind="travel",
-                    semantic_goal=f"前往{source_name}找到{companion.name}",
-                ),
-                ActionPlanStep(
-                    kind="travel",
-                    semantic_goal=f"带{companion.name}前往{destination_name}",
-                ),
-            ),
-        )
-    companion_moves = _companion_move_effects(
-        player_input=player_input,
-        semantic_text=semantic_text,
-        view=view,
-        capabilities=capabilities,
-        destination_id=destination_id,
-    )
-    companion_ids = {effect.entity_id for effect in companion_moves}
-    effects = tuple(
-        EnterLocationEffect(location_id=destination_id)
-        if isinstance(effect, EnterLocationEffect)
-        else MoveEntityEffect(entity_id=effect.entity_id, location_id=destination_id)
-        if isinstance(effect, MoveEntityEffect) and effect.entity_id in companion_ids
-        else effect
-        for effect in adjudication.success_effects
-    )
-    existing_moves = {
-        effect.entity_id for effect in effects if isinstance(effect, MoveEntityEffect)
-    }
-    missing_companion_moves = tuple(
-        effect for effect in companion_moves if effect.entity_id not in existing_moves
-    )
-    normalized = adjudication.model_copy(
-        update={
-            # 新地点尚不存在，必须继续以已有连接锚点作为 target；普通已知地点
-            # 才把 target 归一到最终目的地。
-            "target": (
-                adjudication.target
-                if destination_id in created_locations
-                else ActionTarget(kind="location", id=destination_id)
-            ),
-            "persistence_intent": "location",
-            "success_effects": (*effects, *missing_companion_moves),
-        },
-        deep=True,
-    )
-    return decision.model_copy(update={"adjudication": normalized}, deep=True)
 
 
 def _match_rule_candidate(capabilities, text: str, target_id: str | None):

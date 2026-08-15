@@ -35,9 +35,7 @@ class InMemoryActionPlanRunStore(ActionPlanRunStore):
         permissive hides exactly that class of bug, so it round-trips too.
         """
 
-        return ActionPlanRun.from_persistence_json_dict(
-            run.to_persistence_json_dict()
-        )
+        return ActionPlanRun.from_persistence_json_dict(run.to_persistence_json_dict())
 
     def _reservation_expired(self, room_id: str, parent_action_id: str) -> bool:
         """占用是否已过期，判据与持久化 store 完全一致。
@@ -89,7 +87,9 @@ class InMemoryActionPlanRunStore(ActionPlanRunStore):
     ) -> ActionPlanRun | None:
         async with self._lock:
             parent_action_id = self._reservations.get(room_id)
-            if parent_action_id is None or self._reservation_expired(room_id, parent_action_id):
+            if parent_action_id is None or self._reservation_expired(
+                room_id, parent_action_id
+            ):
                 return None
             run = self._runs[(room_id, parent_action_id)]
             if run.player_id != player_id:
@@ -100,7 +100,9 @@ class InMemoryActionPlanRunStore(ActionPlanRunStore):
         async with self._lock:
             parent_action_id = self._reservations.get(room_id)
             # 过期占用不再挡住房间，判断与写入分离：删除留给 `create()` 的抢占方。
-            if parent_action_id is None or self._reservation_expired(room_id, parent_action_id):
+            if parent_action_id is None or self._reservation_expired(
+                room_id, parent_action_id
+            ):
                 return None
             return self._runs[(room_id, parent_action_id)].model_copy(deep=True)
 
@@ -206,13 +208,24 @@ class InMemoryActionPlanRunStore(ActionPlanRunStore):
             "player_id",
             "actor_id",
             "created_revision",
-            "plan_schema_version",
             "policy_snapshot",
             "plan",
             "created_at",
         )
-        if any(getattr(current, field) != getattr(candidate, field) for field in immutable):
+        if any(
+            getattr(current, field) != getattr(candidate, field) for field in immutable
+        ):
             raise ActionPlanConflictError(
                 "PARENT_ACTION_CONFLICT",
                 "同一 parent action id 已绑定到不同输入、所有者或计划",
+            )
+        # schema 版本属于持久化 writer 的单向迁移状态，不是 parent 身份。
+        # 仅允许历史 v1/v2 在首次冻结 Proposal v2 时升级到 v3，禁止降级或
+        # 改写成其他版本。
+        if current.plan_schema_version != candidate.plan_schema_version and not (
+            current.plan_schema_version in {1, 2} and candidate.plan_schema_version == 3
+        ):
+            raise ActionPlanConflictError(
+                "PLAN_SCHEMA_TRANSITION_INVALID",
+                "ActionPlanRun schema version 只能单向升级到 v3",
             )

@@ -16,6 +16,18 @@
         "target": {"kind": "entity", "id": "@npc"},
         "method": {"family": "kill", "description": "致命攻击"},
         "persistence_intent": "character_state",
+        "check": {
+          "mode": "required",
+          "candidates": [
+            {
+              "candidate_id": "fighting-brawl",
+              "skill_id": "fighting-brawl",
+              "difficulty": "regular",
+              "method_summary": "在冲突中制服并杀死梅洛迪亚斯",
+              "player_safe_reason": "致命结果必须先由受控检定证明"
+            }
+          ]
+        },
         "success_effects": [
           {
             "type": "change_entity_state",

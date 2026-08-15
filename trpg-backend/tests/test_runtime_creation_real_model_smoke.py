@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any
 
 import pytest
 from collaboration_framework.contracts import (
@@ -142,7 +143,7 @@ async def test_real_model_does_not_treat_service_request_as_physical_open() -> N
         "开一间房",
         step_kind="action",
     )
-    result = await PromptActionPlanStepAdjudicator(_structured_client(settings)).adjudicate(
+    result: Any = await PromptActionPlanStepAdjudicator(_structured_client(settings)).adjudicate(
         step_context
     )
 
@@ -180,7 +181,7 @@ async def test_real_model_materializes_ordinary_item_from_soft_narration_on_pick
         ),
     )
 
-    result = await PromptActionPlanStepAdjudicator(_structured_client(settings)).adjudicate(
+    result: Any = await PromptActionPlanStepAdjudicator(_structured_client(settings)).adjudicate(
         context.model_copy(update={"recent_history": history})
     )
 
@@ -220,7 +221,7 @@ async def test_real_model_respects_runtime_creation_boundary(
     assert settings.host_model_provider != "fake"
     adjudicator = PromptActionPlanStepAdjudicator(_structured_client(settings))
     step_kind = "travel" if expectation.endswith("location") else "action"
-    result = await adjudicator.adjudicate(
+    result: Any = await adjudicator.adjudicate(
         await _cemetery_context(
             utterance,
             scene_id=scene_id,

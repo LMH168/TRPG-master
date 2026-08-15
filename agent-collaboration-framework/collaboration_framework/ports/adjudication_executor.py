@@ -6,13 +6,12 @@ from collaboration_framework.contracts import (
     AdjudicationExecution,
     CheckDecisionRequest,
     PostRollDecisionRequest,
-    SubmitAdjudicationRequest,
     SubmitProposalRequest,
 )
 
 
 class AdjudicationExecutor(Protocol):
-    """v3's authoritative write boundary.
+    """玩家检定选择的权威续接端口。
 
     This replaces the deleted `ActionExecutor` (#226). The shape changed with the
     runtime: v2 crossed the boundary once per action with an `ActionRequest` that
@@ -27,10 +26,6 @@ class AdjudicationExecutor(Protocol):
     (#226 §5), so a caller can never choose consequences directly.
     """
 
-    async def submit(
-        self, request: SubmitAdjudicationRequest
-    ) -> AdjudicationExecution: ...
-
     async def decide(self, request: CheckDecisionRequest) -> AdjudicationExecution: ...
 
     async def decide_post_roll(
@@ -40,7 +35,7 @@ class AdjudicationExecutor(Protocol):
 
 
 class ProposalSubmissionExecutor(Protocol):
-    """Host 可见的 Proposal 提交端口，具体实现必须在 Engine 事务内重新校验。"""
+    """Host 可见的唯一动作提交端口，Engine 必须在事务内重新校验。"""
 
     async def submit_proposal(
         self,

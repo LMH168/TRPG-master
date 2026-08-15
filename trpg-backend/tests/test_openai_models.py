@@ -10,7 +10,7 @@ import httpx
 import pytest
 from collaboration_framework.contracts import (
     ActionAdjudication,
-    ActionPlan,
+    ActionPlanProposal,
     ActionPlanStep,
     ActionResult,
     DefaultCheck,
@@ -22,7 +22,7 @@ from collaboration_framework.contracts import (
     RuleCheckResult,
     SceneView,
     SelfActorView,
-    SingleActionDecision,
+    SingleActionProposal,
     VisibleEntity,
     VisibleFact,
 )
@@ -60,6 +60,7 @@ from app.adapters.qwen_models import QwenChatCompletionsJsonClient
 from app.adapters.structured_http import (
     ModelClientRetryPolicy,
     StructuredOutputError,
+    decode_structured_json,
     is_transient_model_error,
 )
 from app.core.action_plan_turn import build_action_plan_turn_application
@@ -500,32 +501,28 @@ async def test_narration_receives_authoritative_default_check_result() -> None:
 
 class ScriptedTurnDecisionClient:
     async def generate(self, *, schema_name, schema, instructions, input_payload):
-        assert schema_name == "trpg_host_turn_decision"
+        assert schema_name == "trpg_host_decision_proposal_v2"
         assert schema and "32 步" in instructions
         utterance = input_payload["player_input"]["utterance"]
         requested = int(utterance.split(":", 1)[1])
         if requested == 1:
             return {
                 "kind": "single_action",
-                "adjudication": {
-                    "request_id": "model-value",
-                    "source_revision": "model-value",
-                    "actor_id": "model-value",
-                    "summary": "观察当前场景",
-                    "target": {"kind": "location", "id": "conversation"},
-                    "method": {"family": "action", "description": "观察"},
-                    "check": {"mode": "none", "candidates": []},
-                    "success_effects": [{"type": "narrative_only"}],
-                    "failure_effects": [],
-                },
+                "schema_version": 2,
+                "semantic_goal": "观察当前场景",
+                "semantic_focus": {"kind": "location", "id": "conversation"},
+                "method_family": "action",
+                "method_description": "观察",
+                "execution_means": {"kind": "intrinsic"},
+                "check_proposal": {"mode": "none", "candidates": []},
+                "success_effect_proposals": [{"type": "narrative_only"}],
+                "failure_effect_proposals": [],
+                "completion": {"kind": "process", "interaction": "observe"},
             }
         return {
             "kind": "action_plan",
-            "goal": utterance,
-            "steps": [
-                {"kind": "action", "semantic_goal": f"完成步骤 {index + 1}"}
-                for index in range(requested)
-            ],
+            "semantic_goal": utterance,
+            "steps": [{"semantic_goal": f"完成步骤 {index + 1}"} for index in range(requested)],
         }
 
 
@@ -571,28 +568,36 @@ async def test_prompt_turn_decision_accepts_single_and_variable_plan_lengths(
     )
 
     if step_count == 1:
-        assert isinstance(decision, SingleActionDecision)
+        assert isinstance(decision, SingleActionProposal)
     else:
-        assert isinstance(decision, ActionPlan)
+        assert isinstance(decision, ActionPlanProposal)
         assert len(decision.steps) == step_count
 
 
 def _valid_travel_decision() -> dict:
-    """构造一个符合 HostTurnDecision 契约的旅行结果。"""
+    """构造一个符合 Proposal 契约的旅行结果。"""
 
     return {
         "kind": "single_action",
-        "adjudication": {
-            "request_id": "model-value",
-            "source_revision": "revision-1",
-            "actor_id": "actor-1",
-            "summary": "去墓地",
-            "target": {"kind": "location", "id": "cemetery"},
-            "method": {"family": "travel", "description": "去墓地"},
-            "persistence_intent": "location",
-            "check": {"mode": "none", "candidates": []},
-            "success_effects": [{"type": "enter_location", "location_id": "cemetery"}],
-            "failure_effects": [],
+        "schema_version": 2,
+        "semantic_goal": "去墓地",
+        "semantic_focus": {"kind": "location", "id": "cemetery"},
+        "method_family": "travel",
+        "method_description": "去墓地",
+        "execution_means": {"kind": "intrinsic"},
+        "check_proposal": {"mode": "none", "candidates": []},
+        "success_effect_proposals": [
+            {"type": "enter_location", "location_ref": {"kind": "location", "id": "cemetery"}}
+        ],
+        "failure_effect_proposals": [],
+        "completion": {
+            "kind": "effects",
+            "requirements": [
+                {
+                    "type": "enter_location",
+                    "location_ref": {"kind": "location", "id": "cemetery"},
+                }
+            ],
         },
     }
 
@@ -605,7 +610,7 @@ async def test_turn_planner_retries_schema_failure_once_then_succeeds() -> None:
 
     decision = await PromptHostTurnDecisionModel(client).generate(context)
 
-    assert isinstance(decision, SingleActionDecision)
+    assert isinstance(decision, SingleActionProposal)
     assert client.calls == 2
 
 
@@ -879,7 +884,7 @@ class _ScriptedStepClient:
         instructions: str,
         input_payload: dict,
     ) -> dict:
-        assert schema_name == "trpg_action_plan_step_adjudication"
+        assert schema_name == "trpg_action_plan_step_proposal_v2"
         assert schema
         assert instructions
         assert input_payload["plan_id"] == "plan-step-error"
@@ -1005,16 +1010,17 @@ async def test_step_adjudicator_receives_published_narration_as_soft_context() -
     )
     client = _ScriptedStepClient(
         {
-            "request_id": context.step_request_id,
-            "source_revision": context.player_view.revision,
-            "actor_id": context.player_input.actor_id,
-            "summary": context.step.semantic_goal,
-            "target": {"kind": "location", "id": context.player_view.scene.id},
-            "method": {"family": "action", "description": context.step.semantic_goal},
-            "persistence_intent": "none",
-            "check": {"mode": "none"},
-            "success_effects": [{"type": "narrative_only"}],
-            "failure_effects": [],
+            "kind": "single_action",
+            "schema_version": 2,
+            "semantic_goal": context.step.semantic_goal,
+            "semantic_focus": {"kind": "location", "id": context.player_view.scene.id},
+            "method_family": "action",
+            "method_description": context.step.semantic_goal,
+            "execution_means": {"kind": "intrinsic"},
+            "check_proposal": {"mode": "none"},
+            "success_effect_proposals": [{"type": "narrative_only"}],
+            "failure_effect_proposals": [],
+            "completion": {"kind": "process", "interaction": "observe"},
         }
     )
 
@@ -1390,6 +1396,25 @@ async def test_client_raises_structured_output_error_when_json_is_not_an_object(
 
     with pytest.raises(StructuredOutputError):
         await _generate(_deepseek_client(handler))
+
+
+def test_structured_decoder_normalizes_safe_python_style_object() -> None:
+    """JSON mode 偶发单引号时可安全收养，但结果必须重新规范化为 JSON 值。"""
+
+    assert decode_structured_json(
+        "{'kind': 'narration', 'claimed': (), 'enabled': True}",
+        provider_name="DeepSeek",
+    ) == {"kind": "narration", "claimed": [], "enabled": True}
+
+
+def test_structured_decoder_never_executes_python_expression() -> None:
+    """兼容解析只能接受字面量，不能扩大为模型代码执行入口。"""
+
+    with pytest.raises(StructuredOutputError):
+        decode_structured_json(
+            "{'text': __import__('os').getcwd()}",
+            provider_name="DeepSeek",
+        )
 
 
 class _RecordingLogger:

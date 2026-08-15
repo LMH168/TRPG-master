@@ -1,17 +1,17 @@
 """WebSocket protocol, authorization, persistence, and reconnect regression tests."""
 
 from dataclasses import replace
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 from collaboration_framework.contracts import (
-    ActionAdjudication,
-    ActionMethod,
-    ActionTarget,
     ContractError,
     JsonObject,
-    NarrativeOnlyEffect,
+    ProposalRef,
     RequiredAdjudicationCheck,
-    SingleActionDecision,
+    SingleActionProposal,
     SkillCheckCandidate,
 )
 from collaboration_framework.engine import DiceRoller, SequenceDiceSource
@@ -29,10 +29,56 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from app.controller import ws as ws_controller
+from app.core.turn_runtime import TurnCommitState, TurnRecord
 from app.main import app
 from app.service import reliable_turn_runtime
 
 ROOMS_BASE = "/api/v1/rooms"
+
+
+@pytest.mark.asyncio
+async def test_partial_commit_sends_authoritative_player_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """整回合尚未完成时，已提交物品状态也必须立即刷新到角色卡。"""
+
+    current_view = object()
+    project = AsyncMock(return_value=current_view)
+    send = AsyncMock()
+    monkeypatch.setattr(
+        ws_controller,
+        "session_view_application",
+        SimpleNamespace(current_player_view=project),
+    )
+    monkeypatch.setattr(ws_controller, "_send_view_updated", send)
+    # 这里只验证发送分支，不需要构造包含全部持久字段的真实 TurnRecord。
+    turn = cast(
+        TurnRecord,
+        SimpleNamespace(
+            result=None,
+            commit_state=TurnCommitState.PARTIALLY_COMMITTED,
+            room_id="room-partial",
+            turn_id="turn-partial",
+        ),
+    )
+    websocket = cast(WebSocket, object())
+
+    await ws_controller._send_unpublished_committed_view(
+        websocket,
+        "player-partial",
+        turn,
+    )
+
+    project.assert_awaited_once_with(
+        room_id="room-partial",
+        player_id="player-partial",
+    )
+    send.assert_awaited_once_with(
+        websocket,
+        "player-partial",
+        current_view,
+        turn_id="turn-partial",
+    )
 
 
 class _WsCandidateIntentModel:
@@ -90,35 +136,28 @@ class _WsSingleActionCheckPlanner:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def generate(self, context) -> SingleActionDecision:
+    async def generate(self, context) -> SingleActionProposal:
         self.calls += 1
-        return SingleActionDecision(
-            adjudication=ActionAdjudication(
-                request_id="application-owned",
-                source_revision=context.player_view.revision,
-                actor_id=context.player_input.actor_id,
-                summary=context.player_input.utterance,
-                target=ActionTarget(
-                    kind="location",
-                    id=context.player_view.scene.id,
-                ),
-                method=ActionMethod(
-                    family="investigate",
-                    description=context.player_input.utterance,
-                ),
-                check=RequiredAdjudicationCheck(
-                    candidates=(
-                        SkillCheckCandidate(
-                            candidate_id="library-use",
-                            skill_id="library-use",
-                            difficulty="regular",
-                            method_summary="查阅现场资料",
-                            player_safe_reason="需要理解现场留下的文字线索",
-                        ),
-                    )
-                ),
-                success_effects=(NarrativeOnlyEffect(),),
-            )
+        return SingleActionProposal(
+            semantic_goal=context.player_input.utterance,
+            semantic_focus=ProposalRef(
+                kind="location",
+                id=context.player_view.scene.id,
+            ),
+            method_family="investigate",
+            method_description=context.player_input.utterance,
+            check_proposal=RequiredAdjudicationCheck(
+                candidates=(
+                    SkillCheckCandidate(
+                        candidate_id="library-use",
+                        skill_id="library-use",
+                        difficulty="regular",
+                        method_summary="查阅现场资料",
+                        player_safe_reason="需要理解现场留下的文字线索",
+                    ),
+                )
+            ),
+            success_effect_proposals=({"type": "narrative_only"},),
         )
 
 
@@ -1527,7 +1566,7 @@ def test_single_action_pending_resumes_without_plan_run(
     assert "_turnCompletion" not in conversation_narration[0]["payload"]
 
 
-def test_action_plan_narrator_failure_retries_narration_without_replaying_steps(
+def test_action_plan_narrator_failure_uses_fallback_without_blocking_room(
     sync_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1561,27 +1600,13 @@ def test_action_plan_narrator_failure_retries_narration_without_replaying_steps(
         receive_replayed_opening(ws)
 
         ws.send_json(action)
-        failed, first_seen = receive_until(
-            ws,
-            lambda message: message.get("type") == "turn.failed",
-            limit=40,
-        )
-        assert failed["payload"]["code"] == "PLAN_NARRATOR_FAILED"
-        assert all(message.get("type") != "plan.completed" for message in first_seen)
+        completed, narration, seen = receive_turn_outbox(ws, limit=40)
 
-        ws.send_json(action)
-        terminal, retry_seen = receive_until(
-            ws,
-            lambda message: message.get("type") == "plan.completed",
-            limit=40,
-        )
-        completed, _, completion_seen = receive_turn_outbox(ws, limit=40)
-        retry_seen.extend(completion_seen)
-
-    assert narrator.calls == 2
+    assert narrator.calls == 1
     assert completed["correlation_id"] == "plan-narrator-retry-246"
-    assert terminal["payload"]["correlationId"] == "plan-narrator-retry-246"
-    assert all(message.get("type") != "adjudication.pending" for message in retry_seen)
+    assert narration["payload"]["text"]
+    assert all(message.get("type") != "turn.failed" for message in seen)
+    assert all(message.get("type") != "adjudication.pending" for message in seen)
 
 
 def test_subject_ownership_failure_retries_before_publishing_narration(

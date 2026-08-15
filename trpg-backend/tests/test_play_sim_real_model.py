@@ -202,7 +202,7 @@ def _trace_adjudications(
 
     monkeypatch.setattr(adjudicator, "adjudicate", traced_adjudicate)
 
-    original_submit = adjudication_engine.submit
+    original_submit = adjudication_engine.submit_proposal
 
     async def traced_submit(request):
         try:
@@ -210,15 +210,15 @@ def _trace_adjudications(
         except Exception as exc:
             transcript.write(
                 "engine_submit_rejected",
-                request_id=request.adjudication.request_id,
-                summary=request.adjudication.summary,
+                request_id=request.request_id,
+                summary=request.proposal.semantic_goal,
                 error_type=type(exc).__name__,
                 error=str(exc)[:800],
-                adjudication=json.loads(request.adjudication.model_dump_json(by_alias=True)),
+                proposal=json.loads(request.proposal.model_dump_json(by_alias=True)),
             )
             raise
 
-    monkeypatch.setattr(adjudication_engine, "submit", traced_submit)
+    monkeypatch.setattr(adjudication_engine, "submit_proposal", traced_submit)
 
 
 # --------------------------------------------------------------------------- #

@@ -10,6 +10,7 @@ import structlog
 from collaboration_framework.contracts import ActionRequest, PlayerInput, PlayerView, VisibleFact
 from collaboration_framework.engine import EngineExecutionResult
 from collaboration_framework.host.schemas import (
+    ActionPlanRun,
     HistoryVisibility,
     RecentHistoryBudget,
     RecentSafeResult,
@@ -20,7 +21,7 @@ from collaboration_framework.host.schemas import (
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models.engine import ActionExecution
+from app.models.engine import ActionExecution, ActionPlanRunRecord
 from app.models.event import Event
 
 _CANDIDATE_LIMIT = 24
@@ -251,9 +252,24 @@ class SqlAlchemyRecentHistorySource:
                 if correlations
                 else []
             )
+            plan_records = (
+                list(
+                    (
+                        await session.scalars(
+                            select(ActionPlanRunRecord).where(
+                                ActionPlanRunRecord.room_id == player_input.room_id,
+                                ActionPlanRunRecord.parent_action_id.in_(correlations),
+                            )
+                        )
+                    ).all()
+                )
+                if correlations
+                else []
+            )
 
         event_by_key = {(event.correlation_id, event.event_type): event for event in related_events}
         execution_by_correlation = {execution.request_id: execution for execution in executions}
+        plan_by_correlation = {record.parent_action_id: record for record in plan_records}
         safe_participant_ids = {
             player_view.actor_id,
             *(item.id for item in player_view.scene.visible_entities),
@@ -330,6 +346,25 @@ class SqlAlchemyRecentHistorySource:
                 target_id = getattr(target, "id", None)
                 if target_id in safe_participant_ids and target_id not in participants:
                     participants.append(target_id)
+            if own_turn and (record := plan_by_correlation.get(correlation_id)) is not None:
+                try:
+                    plan_run = ActionPlanRun.from_persistence_json_dict(record.run_json)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "recent_history_plan_projection_skipped",
+                        correlation_id=correlation_id,
+                    )
+                else:
+                    # 只投影当前 PlayerView 仍允许看到的交互实体，不能把历史
+                    # Proposal 中的隐藏或已离场对象重新暴露给模型。
+                    for step in reversed(plan_run.steps):
+                        proposal = step.proposal
+                        if proposal is None or proposal.semantic_focus.kind != "entity":
+                            continue
+                        focus_id = proposal.semantic_focus.id
+                        if focus_id in safe_participant_ids and focus_id not in participants:
+                            participants.append(focus_id)
+                        break
 
             evidence = [f"transport_event:{action_event.id}"]
             if execution is not None and own_turn:

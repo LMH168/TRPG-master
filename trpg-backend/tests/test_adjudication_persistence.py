@@ -67,7 +67,7 @@ async def test_pending_check_and_authoritative_roll_survive_service_rebuild(
             ),
         ),
     )
-    pending = await AdjudicationEngineService(store).submit(request)
+    pending = await AdjudicationEngineService(store)._submit_internal_adjudication(request)
     assert pending.pending_decision is not None
     decision_request = CheckDecisionRequest(
         request_id="sql-choice-212",
@@ -126,11 +126,11 @@ async def test_pending_check_and_authoritative_roll_survive_service_rebuild(
     assert [event.type for event in events] == ["check.choice_requested", "check.rolled"]
 
 
-async def test_proposal_command_uses_explicit_v2_persistence_reader(
+async def test_proposal_v2_command_uses_goal_completion_persistence_reader(
     db_session: AsyncSession,
     engine_store_factory: Callable[..., SqlAlchemyEngineStore],
 ) -> None:
-    """v2 请求保存内部命令快照，重建 Store 后仍按原 Proposal 幂等恢复。"""
+    """Proposal v2 保存目标完成快照，重建 Store 后仍按原请求幂等恢复。"""
 
     room, players, _ = await _start_room(db_session, prepare_checkpoint=False)
     store = engine_store_factory()
@@ -149,13 +149,17 @@ async def test_proposal_command_uses_explicit_v2_persistence_reader(
         actor_id=actor_id,
         source_revision=runtime.revision,
         proposal=SingleActionProposal(
+            schema_version=2,
             semantic_goal="回顾已经看见的材料",
             semantic_focus={"kind": "information", "id": information_id},
             method_family="reflect",
             method_description="整理当前已知内容",
+            execution_means={"kind": "intrinsic"},
             check_proposal={"mode": "none", "candidates": ()},
             success_effect_proposals=({"type": "narrative_only"},),
+            completion={"kind": "process", "interaction": "observe"},
         ),
+        requested_goal="回顾已经看见的材料",
     )
 
     first = await AdjudicationEngineService(store).submit_proposal(request)
@@ -169,16 +173,18 @@ async def test_proposal_command_uses_explicit_v2_persistence_reader(
             )
         )
     ).one()
-    assert record.request_schema_version == 2
-    assert record.result_schema_version == 4
+    assert record.request_schema_version == 3
+    assert record.result_schema_version == 5
+    assert record.result_json["execution"]["goal_outcome"] == "achieved"
+    assert record.result_json["validated_command"]["schema_version"] == 2
     assert record.result_json["validated_command"]["request"]["proposal"]["kind"] == "single_action"
 
 
-async def test_proposal_check_snapshots_use_v2_and_v3_readers(
+async def test_proposal_v2_check_snapshots_use_v3_and_v4_readers(
     db_session: AsyncSession,
     engine_store_factory: Callable[..., SqlAlchemyEngineStore],
 ) -> None:
-    """跨玩家选择的 Proposal 必须冻结同一内部命令，不能恢复成 legacy 猜测。"""
+    """跨玩家选择的 Proposal v2 必须冻结目标完成条件，不能恢复成 legacy 猜测。"""
 
     room, players, _ = await _start_room(db_session, prepare_checkpoint=False)
     store = engine_store_factory()
@@ -198,10 +204,12 @@ async def test_proposal_check_snapshots_use_v2_and_v3_readers(
             actor_id=actor_id,
             source_revision=runtime.revision,
             proposal=SingleActionProposal(
+                schema_version=2,
                 semantic_goal="检查材料",
                 semantic_focus={"kind": "information", "id": information_id},
                 method_family="research",
                 method_description="仔细检查",
+                execution_means={"kind": "intrinsic"},
                 check_proposal={
                     "mode": "required",
                     "candidates": (
@@ -214,7 +222,10 @@ async def test_proposal_check_snapshots_use_v2_and_v3_readers(
                         },
                     ),
                 },
+                success_effect_proposals=({"type": "narrative_only"},),
+                completion={"kind": "process", "interaction": "observe"},
             ),
+            requested_goal="检查材料",
         )
     )
     assert submitted.pending_decision is not None
@@ -241,9 +252,11 @@ async def test_proposal_check_snapshots_use_v2_and_v3_readers(
     check = (
         await db_session.scalars(select(CheckRunRecord).where(CheckRunRecord.room_id == room.id))
     ).one()
-    assert decision.decision_schema_version == 2
-    assert check.check_schema_version == 3
+    assert decision.decision_schema_version == 3
+    assert check.check_schema_version == 4
     snapshot = decision.decision_json["validated_command"]
+    assert snapshot["schema_version"] == 2
+    assert snapshot["completion_mode"] == "process"
     assert snapshot["request"]["request_id"] == "proposal-check-10"
     assert check.check_json["validated_command"] == snapshot
 
@@ -270,7 +283,7 @@ async def test_checks_persisted_before_the_skill_name_field_still_load(
         if actor.player_id == players[0].id
     )
     information_id = sorted(runtime.canon_information_ids)[0]
-    submitted = await AdjudicationEngineService(store).submit(
+    submitted = await AdjudicationEngineService(store)._submit_internal_adjudication(
         SubmitAdjudicationRequest(
             room_id=room.id,
             player_id=players[0].id,

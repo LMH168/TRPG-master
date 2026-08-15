@@ -33,10 +33,8 @@ from collaboration_framework.contracts import (
     RequiredAdjudicationCheck,
     SceneSpec,
     SelectCheckChoice,
-    SingleActionDecision,
     SingleActionProposal,
     SkillCheckCandidate,
-    SubmitAdjudicationRequest,
     ValidationResult,
 )
 from collaboration_framework.engine import (
@@ -72,6 +70,10 @@ from collaboration_framework.host.schemas import (
     ActionPlanStepRun,
     SingleActionClarificationResult,
     SingleActionTurnResult,
+    RecentHistoryBudget,
+    RecentTurn,
+    RecentTurnContext,
+    VisibleHistoryText,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -107,7 +109,88 @@ def plan(length: int) -> ActionPlan:
     )
 
 
+def proposal_from_adjudication(
+    adjudication: ActionAdjudication,
+) -> SingleActionProposal:
+    """把旧测试夹具转换成无授权 Proposal，避免测试继续依赖生产 legacy writer。"""
+
+    def effect_proposal(effect):
+        if isinstance(effect, NarrativeOnlyEffect):
+            return {"type": "narrative_only"}
+        if isinstance(effect, EnterLocationEffect):
+            return {
+                "type": "enter_location",
+                "location_ref": {"kind": "location", "id": effect.location_id},
+            }
+        if isinstance(effect, ChangeEntityStateEffect):
+            return {
+                "type": "change_entity_state",
+                "entity_ref": {"kind": "entity", "id": effect.entity_id},
+                "key": effect.key,
+                "value": effect.value,
+            }
+        if isinstance(effect, AdvanceWorldTimeEffect):
+            return {"type": "advance_world_time", "to_point_id": effect.to_point_id}
+        raise TypeError(f"测试夹具尚未支持 Effect: {type(effect).__name__}")
+
+    return SingleActionProposal.model_validate(
+        {
+            "semantic_goal": adjudication.summary,
+            "semantic_focus": {
+                "kind": adjudication.target.kind,
+                "id": adjudication.target.id,
+            },
+            # 旧夹具常把计划调度 kind 直接写进 method.family；Proposal 编译器会
+            # 正确地把 travel 解释为持久移动，因此纯叙事夹具统一降为 action。
+            "method_family": (
+                "action"
+                if adjudication.method.family == "travel"
+                and adjudication.success_effects
+                and all(
+                    isinstance(effect, NarrativeOnlyEffect)
+                    for effect in (
+                        *adjudication.success_effects,
+                        *adjudication.failure_effects,
+                    )
+                )
+                else adjudication.method.family
+            ),
+            "method_description": adjudication.method.description,
+            "check_proposal": adjudication.check.model_dump(mode="json"),
+            "rule_ref": (
+                adjudication.rule_decision.model_dump(mode="json")
+                if adjudication.rule_decision is not None
+                else None
+            ),
+            "success_effect_proposals": [
+                effect_proposal(effect) for effect in adjudication.success_effects
+            ],
+            "failure_effect_proposals": [
+                effect_proposal(effect) for effect in adjudication.failure_effects
+            ],
+        }
+    )
+
+
 class RecordingAdjudicator:
+    def __init_subclass__(cls) -> None:
+        """旧测试 Adjudicator 的输出统一适配为 Proposal。"""
+
+        super().__init_subclass__()
+        original = cls.__dict__.get("adjudicate")
+        if original is None:
+            return
+
+        async def proposal_only(self, context):
+            candidate = await original(self, context)
+            return (
+                proposal_from_adjudication(candidate)
+                if isinstance(candidate, ActionAdjudication)
+                else candidate
+            )
+
+        cls.adjudicate = proposal_only
+
     def __init__(self, world_ref: str, *, check_step: int | None = None) -> None:
         self.world_ref = world_ref
         self.check_step = check_step
@@ -128,18 +211,20 @@ class RecordingAdjudicator:
                     ),
                 )
             )
-        return ActionAdjudication(
-            request_id="model-cannot-control-this",
-            source_revision="model-cannot-control-this",
-            actor_id="model-cannot-control-this",
-            summary=context.step.semantic_goal,
-            target=ActionTarget(kind="world", id=self.world_ref),
-            method=ActionMethod(
-                family=context.step.kind, description=context.step.semantic_goal
-            ),
-            check=check,
-            success_effects=(NarrativeOnlyEffect(),),
-            failure_effects=(NarrativeOnlyEffect(),),
+        return proposal_from_adjudication(
+            ActionAdjudication(
+                request_id="model-cannot-control-this",
+                source_revision="model-cannot-control-this",
+                actor_id="model-cannot-control-this",
+                summary=context.step.semantic_goal,
+                target=ActionTarget(kind="world", id=self.world_ref),
+                method=ActionMethod(
+                    family=context.step.kind, description=context.step.semantic_goal
+                ),
+                check=check,
+                success_effects=(NarrativeOnlyEffect(),),
+                failure_effects=(NarrativeOnlyEffect(),),
+            )
         )
 
 
@@ -182,8 +267,8 @@ class CrashAfterCommitExecutor:
         self.service = service
         self.crashed = False
 
-    async def submit(self, request):
-        execution = await self.service.submit(request)
+    async def submit_proposal(self, request):
+        execution = await self.service.submit_proposal(request)
         if not self.crashed:
             self.crashed = True
             raise RuntimeError("simulated process crash after Engine commit")
@@ -198,21 +283,14 @@ class RevisionChangesBeforeFirstSubmitExecutor:
         self.service = service
         self.changed = False
 
-    async def submit(self, request):
+    async def submit_proposal(self, request):
         if not self.changed:
             self.changed = True
-            competing = request.adjudication.model_copy(
-                update={"request_id": "competing-single-action"},
-                deep=True,
+            competing = request.model_copy(
+                update={"request_id": "competing-single-action"}, deep=True
             )
-            await self.service.submit(
-                SubmitAdjudicationRequest(
-                    room_id=request.room_id,
-                    player_id=request.player_id,
-                    adjudication=competing,
-                )
-            )
-        return await self.service.submit(request)
+            await self.service.submit_proposal(competing)
+        return await self.service.submit_proposal(request)
 
     async def get_status(self, request):
         return await self.service.get_status(request)
@@ -224,6 +302,17 @@ class ClarificationAdjudicator:
             "STEP_AMBIGUOUS",
             "当前步骤目标不明确",
             retryable=False,
+        )
+
+
+class AlwaysUnreadableAdjudicator:
+    """模拟模型连续返回不可解析 Proposal 的步骤裁决器。"""
+
+    async def adjudicate(self, context):
+        raise TurnExecutionError(
+            "MODEL_OUTPUT_UNREADABLE",
+            "主持模型返回了无法解读的结果，请重试",
+            retryable=True,
         )
 
 
@@ -298,7 +387,7 @@ class MissingTargetAdjudicator(RecordingAdjudicator):
                 request_id="untrusted",
                 source_revision="untrusted",
                 actor_id="untrusted",
-                summary="调查书架",
+                summary=context.step.semantic_goal,
                 target=ActionTarget(kind="entity", id="bookshelf"),
                 method=ActionMethod(family="action", description="调查书架"),
                 check=NoAdjudicationCheck(),
@@ -309,7 +398,7 @@ class MissingTargetAdjudicator(RecordingAdjudicator):
             request_id="untrusted",
             source_revision="untrusted",
             actor_id="untrusted",
-            summary="调查书架",
+            summary=context.step.semantic_goal,
             target=ActionTarget(kind="entity", id="missing-bookshelf"),
             method=ActionMethod(family="action", description="调查书架"),
             check=NoAdjudicationCheck(),
@@ -366,11 +455,11 @@ class ValidationRejectingExecutor:
         self.rejected_summary = rejected_summary
         self.submit_calls = []
 
-    async def submit(self, request):
+    async def submit_proposal(self, request):
         self.submit_calls.append(request)
         if (
             self.rejected_summary is None
-            or request.adjudication.summary == self.rejected_summary
+            or request.proposal.semantic_goal == self.rejected_summary
         ):
             raise AdjudicationValidationError(
                 ValidationResult(
@@ -383,7 +472,7 @@ class ValidationRejectingExecutor:
                     classification_coverage="partial_validation_failure",
                 )
             )
-        return await self.service.submit(request)
+        return await self.service.submit_proposal(request)
 
     async def get_status(self, request):
         return await self.service.get_status(request)
@@ -394,11 +483,27 @@ class ContractRejectingExecutor:
         self.service = service
         self.submit_calls = []
 
-    async def submit(self, request):
+    async def submit_proposal(self, request):
         self.submit_calls.append(request)
-        if request.adjudication.summary == "完成步骤 2":
+        if request.proposal.semantic_goal == "完成步骤 2":
             raise ContractError("ordinary contract failure")
-        return await self.service.submit(request)
+        return await self.service.submit_proposal(request)
+
+    async def get_status(self, request):
+        return await self.service.get_status(request)
+
+
+class GoalNotAchievedExecutor:
+    """模拟 Engine 已提交过程结果、但完整玩家目标未达成的权威响应。"""
+
+    def __init__(self, service: AdjudicationEngineService) -> None:
+        self.service = service
+        self.submit_calls = []
+
+    async def submit_proposal(self, request):
+        self.submit_calls.append(request)
+        execution = await self.service.submit_proposal(request)
+        return execution.model_copy(update={"goal_outcome": "not_achieved"})
 
     async def get_status(self, request):
         return await self.service.get_status(request)
@@ -414,7 +519,7 @@ class AlwaysMissingTargetAdjudicator(RecordingAdjudicator):
             summary=context.step.semantic_goal,
             target=ActionTarget(kind="world", id="missing-target"),
             method=ActionMethod(
-                family="action", description=context.step.semantic_goal
+                family="observe", description=context.step.semantic_goal
             ),
             check=NoAdjudicationCheck(),
             success_effects=(NarrativeOnlyEffect(),),
@@ -426,6 +531,8 @@ class PersistentRepairAdjudicator(RecordingAdjudicator):
 
     async def adjudicate(self, context):
         self.contexts.append(context)
+        if context.step_index != 0:
+            return await super().adjudicate(context)
         if context.previous_rejection is None:
             return ActionAdjudication(
                 request_id="untrusted",
@@ -557,6 +664,7 @@ def orchestrator(
     policy=None,
     two_scenes: bool = False,
     on_step_failure=None,
+    recent_history_source=None,
 ):
     module, engine_store, projector = runtime(two_scenes=two_scenes)
     adjudicator = adjudicator or RecordingAdjudicator(module.world_ref)
@@ -571,12 +679,49 @@ def orchestrator(
             policy=policy,
             lease_seconds=1,
             on_step_failure=on_step_failure,
+            recent_history_source=recent_history_source,
         ),
         adjudicator,
         service,
         plan_store,
         engine_store,
     )
+
+
+class StaticRecentHistorySource:
+    """为 Narrator 上下文测试提供同一份玩家安全历史。"""
+
+    async def read(
+        self,
+        *,
+        player_input: PlayerInput,
+        player_view,
+        exclude_correlation_id: str,
+        budget: RecentHistoryBudget,
+    ) -> RecentTurnContext:
+        del exclude_correlation_id, budget
+        return RecentTurnContext(
+            room_id=player_input.room_id,
+            viewer_player_id=player_input.player_id,
+            as_of_revision=player_view.revision,
+            turns=(
+                RecentTurn(
+                    correlation_id="prior-dialogue",
+                    source_player_id=player_input.player_id,
+                    source_actor_id=player_input.actor_id,
+                    scene_id=player_view.scene_id,
+                    participants=(player_input.actor_id, "butler"),
+                    player_utterance=VisibleHistoryText(
+                        text="询问守墓人昨夜的异常",
+                        visibility="player_scoped",
+                    ),
+                    published_narration=VisibleHistoryText(
+                        text="守墓人提到昨夜传来三声敲击。",
+                        visibility="player_scoped",
+                    ),
+                ),
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -623,6 +768,30 @@ async def test_five_steps_cross_soft_window_without_becoming_product_limit() -> 
 
 
 @pytest.mark.asyncio
+async def test_unachieved_goal_stops_plan_without_running_later_steps() -> None:
+    """当前目标未达成时必须停止计划，不能静默执行后续步骤。"""
+
+    service, _, engine, _, _ = orchestrator()
+    executor = GoalNotAchievedExecutor(engine)
+    # 测试替换同一运行时的执行端口，确保 Engine 和 PlayerView 使用同一个状态源。
+    service._executor = executor
+    original = player_input("goal-not-achieved-plan")
+
+    stopped = await service.start_or_resume(original, plan=plan(2))
+
+    assert stopped.run.status == "stopped"
+    assert stopped.run.current_step_index == 0
+    assert [step.status for step in stopped.run.steps] == ["stopped", "pending"]
+    assert stopped.run.steps[0].safe_failure_code == "GOAL_NOT_ACHIEVED"
+    assert len(executor.submit_calls) == 1
+
+    # 重放停止态不能再次调用 Engine，也不能推进尚未执行的第二步。
+    replayed = await service.start_or_resume(original, plan=plan(2))
+    assert replayed.run == stopped.run
+    assert len(executor.submit_calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_persisted_narration_recovery_finishes_plan_without_replaying_engine_steps() -> (
     None
 ):
@@ -650,6 +819,25 @@ async def test_persisted_narration_recovery_finishes_plan_without_replaying_engi
     )
     assert completed.status == "completed"
     assert replay == completed
+
+
+@pytest.mark.asyncio
+async def test_final_narration_receives_same_recent_dialogue_context() -> None:
+    """最终 Narrator 必须收到近期说话者和已发布信息，不能在回合边界丢失焦点。"""
+
+    service, _, _, _, _ = orchestrator(
+        recent_history_source=StaticRecentHistorySource()
+    )
+    original = player_input("narration-history-parent")
+    await service.start_or_resume(original, plan=plan(2))
+
+    context = await service.build_narration_context(original)
+
+    assert context.recent_history is not None
+    prior = context.recent_history.turns[-1]
+    assert prior.participants == (original.actor_id, "butler")
+    assert prior.published_narration is not None
+    assert "三声敲击" in prior.published_narration.text
 
 
 def test_decision_parser_accepts_variable_lengths_and_rejects_invalid_shape() -> None:
@@ -1080,7 +1268,7 @@ async def test_unsubmitted_stale_step_is_refreshed_on_same_parent_retry() -> Non
         "2",
     ]
     assert adjudicator.contexts[1].previous_rejection == (
-        "SOURCE_REVISION_STALE: 动作基于过期的玩家视图，请刷新后重试"
+        "SOURCE_REVISION_STALE: 动作基于过期视图，请刷新后重试"
     )
     assert len(engine_store.inspect_domain_events("room_01")) == 3
 
@@ -1131,6 +1319,164 @@ async def test_second_step_provider_failure_retries_from_same_cursor() -> None:
         "1",
     ]
     assert len(engine_store.inspect_domain_events("room_01")) == 2
+
+
+@pytest.mark.asyncio
+async def test_second_step_context_failure_releases_adjudicating_state() -> None:
+    """步骤上下文准备失败也必须回到 pending，不能永久占住房间。"""
+
+    module, engine_store, projector = runtime()
+
+    class FailSecondProjection:
+        def __init__(self, delegate) -> None:
+            self._delegate = delegate
+            self._failed = False
+
+        async def project(self, player_input):
+            view = await self._delegate.project(player_input)
+            if view.revision == "1" and not self._failed:
+                self._failed = True
+                raise RuntimeError("temporary projection failure")
+            return view
+
+        def __getattr__(self, name):
+            return getattr(self._delegate, name)
+
+    service = ActionPlanOrchestrator(
+        store=InMemoryActionPlanRunStore(),
+        adjudicator=RecordingAdjudicator(module.world_ref),
+        executor=AdjudicationEngineService(engine_store),
+        player_view_projector=FailSecondProjection(projector),
+    )
+    original = player_input("projection-retry-parent")
+
+    failed = await service.start_or_resume(original, plan=plan(2))
+
+    assert failed.run.status == "retryable_failure"
+    assert [step.status for step in failed.run.steps] == ["completed", "pending"]
+    assert failed.run.steps[1].safe_failure_code == "STEP_ADJUDICATOR_FAILED"
+    assert failed.run.lease_owner is None
+    active = await service.active_for_room(original.room_id)
+    assert active is not None
+    assert active.status == "retryable_failure"
+
+
+@pytest.mark.asyncio
+async def test_repeated_unreadable_model_output_stops_and_releases_plan_lease() -> None:
+    """连续不可读输出只自动重试一次，随后进入澄清而不是持续占用房间。"""
+
+    module, engine_store, projector = runtime()
+    service = ActionPlanOrchestrator(
+        store=InMemoryActionPlanRunStore(),
+        adjudicator=AlwaysUnreadableAdjudicator(),
+        executor=AdjudicationEngineService(engine_store),
+        player_view_projector=projector,
+    )
+    original = player_input("unreadable-model-parent")
+
+    first = await service.start_or_resume(original, plan=plan(2))
+    assert first.run.status == "retryable_failure"
+    assert first.run.lease_owner is None
+    assert first.run.steps[0].status == "pending"
+
+    settled = await service.start_or_resume(original, plan=plan(4))
+    assert settled.run.status == "needs_clarification"
+    assert settled.run.steps[0].status == "stopped"
+    assert settled.run.lease_owner is None
+    assert len(engine_store.inspect_domain_events("room_01")) == 0
+
+
+@pytest.mark.asyncio
+async def test_terminal_uncommitted_turn_can_abandon_orphan_plan() -> None:
+    """Turn 已确认未提交失败时，孤儿计划必须释放房间 reservation。"""
+
+    module, engine_store, projector = runtime()
+    service = ActionPlanOrchestrator(
+        store=InMemoryActionPlanRunStore(),
+        adjudicator=AlwaysUnreadableAdjudicator(),
+        executor=AdjudicationEngineService(engine_store),
+        player_view_projector=projector,
+    )
+    original = player_input("abandon-uncommitted-parent")
+
+    failed = await service.start_or_resume(original, plan=plan(2))
+    assert failed.run.status == "retryable_failure"
+
+    abandoned = await service.abandon_uncommitted(
+        room_id=original.room_id,
+        parent_action_id=original.client_action_id,
+        code="PARENT_ACTION_CONFLICT",
+    )
+
+    assert abandoned is not None
+    assert abandoned.status == "stopped"
+    assert abandoned.lease_owner is None
+    assert abandoned.steps[0].status == "stopped"
+    assert await service.active_for_room(original.room_id) is None
+    assert len(engine_store.inspect_domain_events("room_01")) == 0
+
+
+@pytest.mark.asyncio
+async def test_partial_commit_failure_releases_only_current_plan_step() -> None:
+    """部分提交失败只释放当前步骤，不能回滚已完成步骤。"""
+
+    module, engine_store, projector = runtime()
+    service = ActionPlanOrchestrator(
+        store=InMemoryActionPlanRunStore(),
+        adjudicator=FailSecondStepOnceAdjudicator(module.world_ref),
+        executor=AdjudicationEngineService(engine_store),
+        player_view_projector=projector,
+    )
+    original = player_input("partial-release-parent")
+    failed = await service.start_or_resume(original, plan=plan(2))
+    assert failed.run.status == "retryable_failure"
+    assert failed.run.steps[0].status == "completed"
+
+    released = await service.release_uncommitted_step(
+        room_id=original.room_id,
+        parent_action_id=original.client_action_id,
+        code="TURN_INTERNAL_ERROR",
+    )
+
+    assert released is not None
+    assert released.status == "retryable_failure"
+    assert released.lease_owner is None
+    assert released.steps[0].status == "completed"
+    assert released.steps[1].status == "pending"
+    assert len(engine_store.inspect_domain_events("room_01")) == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_failed_turn_preserves_commit_and_releases_room_reservation() -> (
+    None
+):
+    """Turn 终态失败后保留第一步提交，但不能继续占住房间。"""
+
+    module, engine_store, projector = runtime()
+    service = ActionPlanOrchestrator(
+        store=InMemoryActionPlanRunStore(),
+        adjudicator=FailSecondStepOnceAdjudicator(module.world_ref),
+        executor=AdjudicationEngineService(engine_store),
+        player_view_projector=projector,
+    )
+    original = player_input("terminal-failed-parent")
+    failed = await service.start_or_resume(original, plan=plan(2))
+    assert failed.run.steps[0].status == "completed"
+    committed_events = engine_store.inspect_domain_events("room_01")
+
+    settled = await service.settle_failed_turn(
+        room_id=original.room_id,
+        parent_action_id=original.client_action_id,
+        code="TURN_INTERNAL_ERROR",
+    )
+
+    assert settled is not None
+    assert settled.status == "stopped"
+    assert settled.steps[0].status == "completed"
+    assert settled.steps[0].adjudication_execution is not None
+    assert settled.steps[1].status == "stopped"
+    assert await service.active_for_room(original.room_id) is None
+    assert engine_store.inspect_domain_events("room_01") == committed_events
 
 
 @pytest.mark.asyncio
@@ -1333,7 +1679,7 @@ async def test_plan_semantic_drift_stops_before_second_engine_submit() -> None:
         "SEMANTIC_REPAIR_REQUIRES_CLARIFICATION"
     )
     assert result.run.steps[1].repair_baseline is None
-    assert result.run.steps[1].repair_feedback is None
+    assert result.run.steps[1].repair_feedback is not None
     assert "keeper-only" not in result.run.model_dump_json()
     assert "hidden target evidence" not in result.run.model_dump_json()
     assert len(engine_store.inspect_domain_events("room_01")) == 1
@@ -1721,8 +2067,8 @@ async def test_reservation_within_ttl_still_blocks_the_room() -> None:
 async def test_single_action_fast_path_creates_no_plan_run() -> None:
     service, _, engine, store, engine_store = orchestrator()
     original = player_input("single-action", "观察四周")
-    decision = SingleActionDecision(
-        adjudication=ActionAdjudication(
+    decision = proposal_from_adjudication(
+        ActionAdjudication(
             request_id="untrusted",
             source_revision="untrusted",
             actor_id="untrusted",
@@ -1750,9 +2096,9 @@ async def test_single_action_fast_path_creates_no_plan_run() -> None:
 
 def single_action_decision(
     *, world_ref: str, valid_target: bool
-) -> SingleActionDecision:
-    return SingleActionDecision(
-        adjudication=ActionAdjudication(
+) -> SingleActionProposal:
+    return proposal_from_adjudication(
+        ActionAdjudication(
             request_id="untrusted",
             source_revision="untrusted",
             actor_id="untrusted",
@@ -1768,9 +2114,9 @@ def single_action_decision(
     )
 
 
-def single_travel_decision(*, target_id: str) -> SingleActionDecision:
-    return SingleActionDecision(
-        adjudication=ActionAdjudication(
+def single_travel_decision(*, target_id: str) -> SingleActionProposal:
+    return proposal_from_adjudication(
+        ActionAdjudication(
             request_id="untrusted",
             source_revision="untrusted",
             actor_id="untrusted",
@@ -1806,14 +2152,12 @@ async def test_single_action_auto_repair_succeeds_without_creating_plan_run() ->
     decision = single_action_decision(world_ref=module.world_ref, valid_target=False)
     decision = decision.model_copy(
         update={
-            "adjudication": decision.adjudication.model_copy(
-                update={
-                    "summary": "检查书架",
-                    "target": ActionTarget(kind="entity", id="missing-bookshelf"),
-                    "method": ActionMethod(family="observe", description="检查书架"),
-                },
-                deep=True,
-            )
+            "semantic_goal": "检查书架",
+            "semantic_focus": decision.semantic_focus.model_copy(
+                update={"kind": "entity", "id": "missing-bookshelf"}
+            ),
+            "method_family": "observe",
+            "method_description": "检查书架",
         },
         deep=True,
     )
@@ -1868,7 +2212,7 @@ async def test_single_travel_repair_with_changed_effect_requires_clarification()
     )
 
     assert isinstance(result, SingleActionClarificationResult)
-    assert result.player_safe_reason == "修复方案可能改变原本行动，需要玩家确认下一步"
+    assert result.player_safe_reason == "修复后的动作改变了玩家原意，请明确目标或做法"
     assert len(repair_adjudicator.contexts) == 1
     context = repair_adjudicator.contexts[0]
     assert context.step.kind == "travel"
@@ -2004,8 +2348,10 @@ async def test_action_plan_persistent_empty_effect_is_repaired_once() -> None:
     assert result.run.status == "awaiting_narration"
     assert len([c for c in adjudicator.contexts if c.step_index == 0]) == 2
     assert result.latest_execution is not None
-    assert result.latest_execution.committed_results[0].state_value == "unconscious"
-    assert len(engine_store.inspect_domain_events("room_01")) == 4
+    first_execution = result.run.steps[0].adjudication_execution
+    assert first_execution is not None
+    assert first_execution.committed_results[0].state_value == "unconscious"
+    assert len(engine_store.inspect_domain_events("room_01")) == 3
 
 
 @pytest.mark.asyncio
@@ -2046,6 +2392,35 @@ async def test_parent_id_reuse_with_different_input_fails_closed() -> None:
             plan=plan(4),
         )
     assert raised.value.code == "PARENT_ACTION_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_resume_uses_frozen_plan_when_model_plan_shape_changes() -> None:
+    """恢复同一请求时不应因模型重新规划的步骤结构变化而卡死。"""
+
+    service, _, _, _, _ = orchestrator()
+    original = player_input(utterance="先调查现场，然后离开")
+    frozen = plan(4)
+
+    first = await service.start_or_resume(
+        original,
+        plan=frozen,
+        worker_id="worker-1",
+        auto_continue=False,
+    )
+
+    # 这是同一条玩家请求的重试，但 Host 重新生成了不同数量的步骤。
+    # 恢复必须继续使用已持久化的 frozen，而不是抛出 PARENT_ACTION_CONFLICT。
+    resumed = await service.start_or_resume(
+        original,
+        plan=plan(2),
+        worker_id="worker-2",
+        auto_continue=False,
+    )
+
+    assert resumed.run.plan == frozen
+    assert resumed.run.parent_input_fingerprint == first.run.parent_input_fingerprint
+    assert resumed.run.status in {"checkpointed", "awaiting_narration", "completed"}
 
 
 @pytest.mark.asyncio
@@ -2176,18 +2551,20 @@ class SleepAfterTravelAdjudicator:
                 AdvanceWorldTimeEffect(to_point_id="hour_20"),
             )
         )
-        return ActionAdjudication(
-            request_id="model-cannot-control-this",
-            source_revision="model-cannot-control-this",
-            actor_id="model-cannot-control-this",
-            summary=context.step.semantic_goal,
-            target=ActionTarget(kind="location", id=context.player_view.scene.id),
-            method=ActionMethod(
-                family=context.step.kind,
-                description=context.step.semantic_goal,
-            ),
-            check=NoAdjudicationCheck(),
-            success_effects=effects,
+        return proposal_from_adjudication(
+            ActionAdjudication(
+                request_id="model-cannot-control-this",
+                source_revision="model-cannot-control-this",
+                actor_id="model-cannot-control-this",
+                summary=context.step.semantic_goal,
+                target=ActionTarget(kind="location", id=context.player_view.scene.id),
+                method=ActionMethod(
+                    family=context.step.kind,
+                    description=context.step.semantic_goal,
+                ),
+                check=NoAdjudicationCheck(),
+                success_effects=effects,
+            )
         )
 
 

@@ -244,6 +244,36 @@
           ],
           "default": null
         },
+        "destination_kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "actor_inventory",
+                "location",
+                "retired"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Destination Kind"
+        },
+        "destination_ref": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Destination Ref"
+        },
         "event_ref": {
           "minLength": 1,
           "title": "Event Ref",
@@ -548,6 +578,19 @@
         "pending"
       ],
       "title": "Outcome",
+      "type": "string"
+    },
+    "goal_outcome": {
+      "default": "legacy_unknown",
+      "enum": [
+        "pending",
+        "achieved",
+        "partially_achieved",
+        "not_achieved",
+        "cancelled",
+        "legacy_unknown"
+      ],
+      "title": "Goal Outcome",
       "type": "string"
     },
     "pending_decision": {

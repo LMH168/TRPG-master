@@ -5,14 +5,14 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Protocol
 
 from collaboration_framework.contracts import (
     ActionPlanProgressEvent,
     AdjudicationExecution,
     AdjudicationStatusView,
     GetAdjudicationStatusRequest,
-    SubmitAdjudicationRequest,
+    SingleActionProposal,
     SubmitProposalRequest,
 )
 from collaboration_framework.host.schemas import ActionPlanRun, ActionPlanStepContext
@@ -75,7 +75,7 @@ class ActionPlanRunStore(Protocol):
 class ActionPlanStepAdjudicator(Protocol):
     """Generate one proposal from only the current step and latest PlayerView."""
 
-    async def adjudicate(self, context: ActionPlanStepContext) -> Any: ...
+    async def adjudicate(self, context: ActionPlanStepContext) -> SingleActionProposal: ...
 
 
 @dataclass(frozen=True)
@@ -95,7 +95,7 @@ class ActionPlanStepFailure:
 
 
 class SingleAdjudicationExecutor(Protocol):
-    async def submit(self, request: SubmitAdjudicationRequest) -> AdjudicationExecution: ...
+    """Host 可见的唯一动作写端口；可信字段由 Engine 在事务内绑定。"""
 
     async def submit_proposal(self, request: SubmitProposalRequest) -> AdjudicationExecution: ...
 

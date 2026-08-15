@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import uuid4
 
+import structlog
 from collaboration_framework.engine import engine_turn_context
 
 from app.core.turn_events import TurnPhase
@@ -34,6 +36,11 @@ from app.core.turn_runtime import (
 )
 
 TurnPhaseObserver = Callable[[TurnPhase], Awaitable[None]]
+
+# Narrator 或模型持续失败时最多自动恢复三次；耗尽后结束当前 Turn，避免一个
+# 永远无法生成叙事的回合永久占用房间。Engine receipt 已存在时只恢复叙事，绝不重做提交。
+MAX_TURN_RECOVERY_ATTEMPTS = 3
+logger = structlog.get_logger()
 
 
 @dataclass(frozen=True)
@@ -127,6 +134,9 @@ class TurnCoordinator:
             now=now,
             lease_expires_at=now + timedelta(seconds=self._lease_seconds),
         )
+        # 阶段推进可能会清理上一轮的错误投影；恢复次数必须在执行前锁存，
+        # 否则每次 Narrator 重试都会被重新计为第一次失败。
+        previous_failure_attempts = current.last_error.attempt_count if current.last_error else 0
 
         async def move(
             status: TurnStatus,
@@ -271,7 +281,11 @@ class TurnCoordinator:
             )
             return current
         except Exception as exc:
-            return await self._record_failure(current, exc)
+            return await self._record_failure(
+                current,
+                exc,
+                previous_attempts=previous_failure_attempts,
+            )
 
     async def _publish(
         self,
@@ -353,19 +367,59 @@ class TurnCoordinator:
         )
         return saved
 
-    async def _record_failure(self, current: TurnRecord, exc: Exception) -> TurnRecord:
-        """持久化脱敏错误；可恢复故障保留当前阶段和房间占用。"""
+    async def _record_failure(
+        self,
+        current: TurnRecord,
+        exc: Exception,
+        *,
+        previous_attempts: int = 0,
+    ) -> TurnRecord:
+        """持久化脱敏错误；有限次恢复失败后终止回合并释放房间占用。"""
 
         receipts = await self._store.list_receipts(current.turn_id)
         commit_state = current.commit_state
         if receipts and commit_state == TurnCommitState.NOT_COMMITTED:
             commit_state = TurnCommitState.PARTIALLY_COMMITTED
-        retryable = bool(getattr(exc, "retryable", True))
+        attempt_count = previous_attempts + 1
         stage, resume_point = self._error_location(current)
+        # 执行阶段已经部分提交时，继续占用原 Turn 会阻止玩家用新行动接管，
+        # 还可能把复合计划未执行步骤误当成可无限恢复。保留 receipt 和已提交
+        # 状态后立即终止 Turn；只有 Narrator/投递阶段允许沿原 Turn 重试。
+        partial_execution_failure = bool(receipts) and stage in {
+            TurnErrorStage.PLANNING,
+            TurnErrorStage.VALIDATION,
+            TurnErrorStage.ADJUDICATION,
+            TurnErrorStage.EXECUTION,
+        }
+        retryable = (
+            bool(getattr(exc, "retryable", True))
+            and attempt_count < MAX_TURN_RECOVERY_ATTEMPTS
+            and not partial_execution_failure
+        )
+        # 协调器会把异常转换成玩家安全快照；这里仅记录类型和稳定阶段，
+        # 不记录玩家原话、Prompt、模型输出或异常正文，便于定位泛化错误来源。
+        logger.error(
+            "turn_execution_failed",
+            turn_id=current.turn_id,
+            room_ref=current.room_id.split("-", 1)[0][:8],
+            stage=stage.value,
+            error_code=str(getattr(exc, "code", "TURN_INTERNAL_ERROR")),
+            error_type=type(exc).__name__,
+            attempt_count=attempt_count,
+            retryable=retryable,
+            # 仅写服务端日志。客户端仍只收到脱敏错误码，堆栈用于定位未分类
+            # 异常究竟发生在计划恢复、Engine 对账还是叙事发布阶段。
+            stack=(
+                "".join(traceback.format_exception(exc))
+                if str(getattr(exc, "code", "TURN_INTERNAL_ERROR")) == "TURN_INTERNAL_ERROR"
+                else None
+            ),
+        )
         failure = TurnFailureSnapshot(
             code=str(getattr(exc, "code", "TURN_INTERNAL_ERROR")),
             stage=stage,
             retryable=retryable,
+            attempt_count=attempt_count,
             commit_state=commit_state,
             recovery_action=(
                 TurnRecoveryAction.RETRY_SAME_INPUT
@@ -374,8 +428,16 @@ class TurnCoordinator:
             ),
             public_message=(
                 "规则结果已保存，请稍后恢复本次回合"
-                if receipts
-                else "本次回合暂时未完成，请稍后使用原请求恢复"
+                if retryable and receipts
+                else (
+                    (
+                        "已完成的步骤已经保存，未执行步骤已停止；请提交新的行动"
+                        if partial_execution_failure
+                        else "规则结果已保存，本次叙事生成失败，请继续提交新的行动"
+                    )
+                    if receipts
+                    else "本次回合暂时未完成，请重新提交新的行动"
+                )
             ),
             occurred_at=datetime.now(UTC),
         )

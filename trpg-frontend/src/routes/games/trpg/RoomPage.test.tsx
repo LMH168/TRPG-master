@@ -521,6 +521,45 @@ describe('RoomPage conversation history', () => {
     expect(sessionStorage.getItem('trpg:pending-turn:room-1:player-1')).toBeNull()
   })
 
+  it('clears a terminal failed turn so the same room can accept a new action', async () => {
+    sessionStorage.setItem(
+      'trpg:pending-turn:room-1:player-1',
+      JSON.stringify({ clientActionId: 'action-failed', utterance: '带托马斯去墓地', turnId: 'turn-failed' }),
+    )
+    mockGetTurn.mockResolvedValue({
+      turnId: 'turn-failed',
+      roomId: 'room-1',
+      clientActionId: 'action-failed',
+      status: 'failed',
+      commitState: 'committed',
+      resumePoint: 'none',
+      waitingReason: 'none',
+      recoveryAction: 'submit_new_input',
+      phaseVersion: 7,
+      error: {
+        code: 'TURN_INTERNAL_ERROR',
+        stage: 'narration',
+        retryable: false,
+        publicMessage: '规则结果已保存，请提交新的行动',
+        occurredAt: '2026-08-15T00:00:02Z',
+      },
+      playerView: playerViewFixture(),
+      viewRevision: 'revision-33',
+      createdAt: '2026-08-15T00:00:00Z',
+      updatedAt: '2026-08-15T00:00:02Z',
+      completedAt: '2026-08-15T00:00:02Z',
+    })
+
+    renderRoomPage()
+
+    expect(await screen.findByText('规则结果已保存，请提交新的行动')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(sessionStorage.getItem('trpg:pending-turn:room-1:player-1')).toBeNull()
+    })
+    expect(screen.queryByRole('button', { name: '使用原请求重试' })).not.toBeInTheDocument()
+    expect(screen.getByPlaceholderText('输入行动…')).toBeEnabled()
+  })
+
   it('restores a persisted skill decision without resubmitting the action', async () => {
     sessionStorage.setItem(
       'trpg:pending-turn:room-1:player-1',
@@ -1357,6 +1396,44 @@ describe('RoomPage conversation history', () => {
 
     expect(screen.getByTestId('derived-stat-hp')).toHaveTextContent('10')
     expect(screen.queryByTestId('initial-values-note')).not.toBeInTheDocument()
+  })
+
+  it('shows an empty live inventory instead of the character creation equipment', async () => {
+    useCharacterStore.getState().setCharacter(
+      {
+        info: {
+          name: '杜调查员',
+          playerName: '陈探员',
+          age: '32',
+          gender: '男',
+          residence: '阿卡姆',
+          birthplace: '波士顿',
+          occupationId: 1,
+        },
+        attr: {},
+        skillAlloc: {},
+        skillFinalValues: {},
+        equipment: '手枪、笔',
+        background: '',
+        notes: '',
+        derived: { hp: 10, san: 60, mp: 10, db: '0', build: 0, move: 8 },
+      },
+      'room-1',
+    )
+    mockListConversation.mockResolvedValue([])
+    renderRoomPage()
+
+    act(() =>
+      emitWsMessage({
+        type: 'view.updated',
+        payload: { playerId: 'player-1', playerView: playerViewFixture() },
+      }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: '角色卡' }))
+    fireEvent.click(screen.getByRole('button', { name: '背景装备' }))
+
+    expect(screen.getByText('暂无随身装备')).toBeInTheDocument()
+    expect(screen.queryByText('手枪、笔')).not.toBeInTheDocument()
   })
 
   // jsdom 没有 WebGL，supports3DDice() 为 false —— 正好覆盖降级路径：

@@ -12,6 +12,8 @@ from app.core.turn_runtime import (
     TurnCommitReceipt,
     TurnConflictError,
     TurnContractError,
+    TurnErrorStage,
+    TurnFailureSnapshot,
     TurnInputSnapshot,
     TurnRecoveryAction,
     TurnResumePoint,
@@ -116,6 +118,66 @@ async def test_room_reservation_survives_wait_and_releases_only_at_terminal(
     )
     assert was_created is True
     assert replacement.client_action_id == "action-2"
+
+
+@pytest.mark.asyncio
+async def test_retryable_failure_is_recoverable_from_sql_store(
+    db_session: AsyncSession,
+    turn_store_factory,
+) -> None:
+    """数据库恢复扫描要保留可重试失败，同时过滤不可重试失败。"""
+
+    room_id, player_id = await _room_player(db_session)
+    store: SqlAlchemyTurnStore = turn_store_factory()
+    current, _ = await store.create_or_get(_turn(room_id, player_id))
+    retryable = transition_turn(
+        current,
+        status=TurnStatus.PLANNING,
+        resume_point=TurnResumePoint.PLANNING,
+        recovery_action=TurnRecoveryAction.RETRY_SAME_INPUT,
+        last_error=TurnFailureSnapshot(
+            code="RULE_ENGINE_UNAVAILABLE",
+            stage=TurnErrorStage.EXECUTION,
+            retryable=True,
+            commit_state=current.commit_state,
+            recovery_action=TurnRecoveryAction.RETRY_SAME_INPUT,
+            public_message="规则引擎暂时不可用",
+            occurred_at=current.updated_at,
+        ),
+    )
+    await store.compare_and_swap(
+        expected_phase_version=current.phase_version,
+        updated=retryable,
+    )
+
+    recoverable = await store.list_recoverable_turns(
+        now=retryable.updated_at + timedelta(minutes=2),
+        limit=10,
+    )
+    assert [item.turn_id for item in recoverable] == [retryable.turn_id]
+
+    # 类型检查器无法从 transition_turn 推断错误快照仍然存在，先固定该不变量。
+    assert retryable.last_error is not None
+    non_retryable = transition_turn(
+        retryable,
+        status=TurnStatus.PLANNING,
+        resume_point=TurnResumePoint.PLANNING,
+        recovery_action=TurnRecoveryAction.SUBMIT_NEW_INPUT,
+        last_error=retryable.last_error.model_copy(
+            update={"retryable": False, "recovery_action": TurnRecoveryAction.SUBMIT_NEW_INPUT}
+        ),
+    )
+    await store.compare_and_swap(
+        expected_phase_version=retryable.phase_version,
+        updated=non_retryable,
+    )
+    assert (
+        await store.list_recoverable_turns(
+            now=non_retryable.updated_at + timedelta(minutes=2),
+            limit=10,
+        )
+        == ()
+    )
 
 
 @pytest.mark.asyncio

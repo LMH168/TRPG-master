@@ -84,6 +84,13 @@ _FAMILY_POLICIES: dict[str, _FamilyPolicy] = {
     "drop": _FamilyPolicy("inventory", effect_kind="move"),
     "consume": _FamilyPolicy("inventory", effect_kind="consume"),
     "travel": _FamilyPolicy("location", effect_kind="enter"),
+    # Host 可以使用开放字符串表达战斗方式；这些常见别名仍必须提供由
+    # Engine 提交的角色状态 Effect，不能退化成纯叙事。
+    "combat": _FamilyPolicy("character_state"),
+    "attack": _FamilyPolicy("character_state"),
+    "shoot": _FamilyPolicy("character_state"),
+    "fire": _FamilyPolicy("character_state"),
+    "firearm": _FamilyPolicy("character_state"),
 }
 
 
@@ -152,8 +159,13 @@ def _has_matching_effect(
                 continue
             if effect.value not in allowed[effect.key]:
                 continue
-            if policy is None or (
-                effect.key == policy.state_key and effect.value == policy.state_value
+            if (
+                policy is None
+                or policy.state_key is None
+                or (
+                    effect.key == policy.state_key
+                    and effect.value == policy.state_value
+                )
             ):
                 return True
         return False
@@ -270,6 +282,33 @@ def committed_results_from_events(
                 CommittedResult(
                     kind="inventory",
                     target_id=entity_id,
+                    destination_kind=(
+                        "actor_inventory"
+                        if isinstance(payload.get("holder_actor_id"), str)
+                        else "location"
+                    ),
+                    destination_ref=(
+                        payload.get("holder_actor_id")
+                        if isinstance(payload.get("holder_actor_id"), str)
+                        else payload.get("location_id")
+                        if isinstance(payload.get("location_id"), str)
+                        else None
+                    ),
+                    event_ref=event.event_id,
+                )
+            )
+        elif event.type == "item.condition_changed" and isinstance(
+            payload.get("entity_id"), str
+        ):
+            condition = payload.get("condition")
+            if not isinstance(condition, str):
+                continue
+            results.append(
+                CommittedResult(
+                    kind="object_state",
+                    target_id=payload["entity_id"],
+                    state_key="condition",
+                    state_value=condition,
                     event_ref=event.event_id,
                 )
             )
@@ -282,6 +321,7 @@ def committed_results_from_events(
                 CommittedResult(
                     kind="inventory",
                     target_id=entity_id,
+                    destination_kind="retired",
                     event_ref=event.event_id,
                 )
             )

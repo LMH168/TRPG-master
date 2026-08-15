@@ -502,6 +502,9 @@ class SqlAlchemyTurnStore:
                 TurnRecordModel.resume_point != TurnResumePoint.AWAITING_PLAYER.value,
                 or_(
                     TurnRecordModel.error_json.is_(None),
+                    # 可重试错误仍然绑定原 Turn；租约过期后必须重新进入恢复队列，
+                    # 否则房间 reservation 会永久阻塞新的玩家动作。
+                    TurnRecordModel.error_json["retryable"].as_boolean().is_(True),
                     TurnRecordModel.status == TurnStatus.DELIVERING.value,
                 ),
                 or_(

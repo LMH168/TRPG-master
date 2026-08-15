@@ -46,6 +46,29 @@ turn_coordinator = TurnCoordinator(turn_store)
 turn_outbox_dispatcher = TurnOutboxDispatcher(turn_store, manager)
 
 
+async def _settle_failed_plan(turn: TurnRecord) -> None:
+    """终态失败 Turn 不得遗留仍占住房间的 ActionPlan。"""
+
+    if turn.status != TurnStatus.FAILED:
+        return
+    try:
+        code = turn.last_error.code if turn.last_error is not None else "TURN_FAILED"
+        # Turn 已是最终恢复来源。无论此前提交到哪一步，都要保留 receipt 并把
+        # ActionPlan 收束为 stopped，避免步骤级 reservation 永久阻塞新行动。
+        await action_plan_turn_application.settle_failed_turn_plan(
+            room_id=turn.room_id,
+            parent_action_id=turn.client_action_id,
+            code=code,
+        )
+    except Exception as exc:
+        # Turn 已经安全终止，清理失败不能改写玩家错误；记录类型供后台诊断。
+        logger.error(
+            "failed_turn_plan_cleanup_failed",
+            turn_id=turn.turn_id,
+            error_type=type(exc).__name__,
+        )
+
+
 @dataclass(frozen=True)
 class ReliableTurnResponse:
     """供 WebSocket Controller 投影即时等待状态的协调结果。"""
@@ -107,6 +130,7 @@ async def start_action(
         executor=execute,
         after_publish=lambda: _mark_plan_narration(room_id, client_action_id, on_progress),
     )
+    await _settle_failed_plan(turn)
     if captured is None and turn.result is not None:
         await turn_outbox_dispatcher.redispatch_turn(turn.turn_id)
     else:
@@ -151,6 +175,7 @@ async def continue_after_decision(
         executor=execute,
         after_publish=lambda: _mark_plan_narration(room_id, client_action_id, on_progress),
     )
+    await _settle_failed_plan(saved)
     if captured is None and saved.result is not None:
         await turn_outbox_dispatcher.redispatch_turn(saved.turn_id)
     else:
@@ -187,6 +212,7 @@ async def cancel_action(
         executor=execute,
         after_publish=lambda: _mark_plan_narration(room_id, client_action_id, None),
     )
+    await _settle_failed_plan(saved)
     if captured is None and saved.result is not None:
         await turn_outbox_dispatcher.redispatch_turn(saved.turn_id)
     else:
@@ -248,6 +274,7 @@ async def resume_turn_by_id(turn_id: str) -> TurnRecord:
             None,
         ),
     )
+    await _settle_failed_plan(saved)
     await turn_outbox_dispatcher.dispatch_due()
     return saved
 

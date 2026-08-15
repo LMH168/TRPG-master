@@ -249,6 +249,40 @@ class ProjectionV3Tests(unittest.IsolatedAsyncioTestCase):
             "douglas_diary", {item.id for item in revealed.scene.loose_items}
         )
 
+    async def test_empty_runtime_inventory_does_not_restore_character_equipment(self) -> None:
+        """物品全部离开角色后，PlayerView 不得回退到建卡装备快照。"""
+
+        dropped = ItemInstance(
+            id="dropped_pistol",
+            room_id=ROOM,
+            origin="runtime",
+            definition_id="pistol",
+            display=ItemDisplay(name="手枪"),
+            item_component=ItemComponent(),
+            custody=ItemCustody(kind="location", ref_id="thomas_office", form="loose"),
+            created_event_id="drop-1",
+            last_event_id="drop-1",
+            updated_revision="1",
+        )
+        snapshot = await self.project(
+            game_state(
+                self.content,
+                item_instances={dropped.id: dropped},
+                actors={
+                    ACTOR: ActorState(
+                        player_id=PLAYER,
+                        name="陈探员",
+                        source_character_id="character_v3",
+                        source_character_version=1,
+                        state={"equipment": ["手枪", "笔"]},
+                    )
+                },
+            )
+        )
+
+        self.assertEqual(snapshot.inventory, ())
+        self.assertEqual(snapshot.self_actor.equipment, ())
+
     async def test_stolen_books_are_gated_to_the_opened_crypt(self) -> None:
         """The physical books start in the crypt and stay hidden behind its gate."""
 
@@ -352,7 +386,7 @@ class ProjectionV3Tests(unittest.IsolatedAsyncioTestCase):
             persistence_intent: PersistenceIntent = "none",
         ) -> None:
             before = await engine.read(scope)
-            await adjudicator.submit(
+            await adjudicator._submit_internal_adjudication(
                 SubmitAdjudicationRequest(
                     room_id=ROOM,
                     player_id=PLAYER,
@@ -688,7 +722,7 @@ class AdjudicationAgainstV3Tests(unittest.IsolatedAsyncioTestCase):
         return store, AdjudicationEngineService(store), RuleEngineService(store)
 
     async def submit(self, engine, revision, *effects, target=None):
-        return await engine.submit(
+        return await engine._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id=ROOM,
                 player_id=PLAYER,
@@ -737,7 +771,7 @@ class AdjudicationAgainstV3Tests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         with self.assertRaises(AdjudicationValidationError) as rejected:
-            await engine.submit(
+            await engine._submit_internal_adjudication(
                 SubmitAdjudicationRequest(
                     room_id=ROOM, player_id=PLAYER, adjudication=greeting
                 )
@@ -756,7 +790,7 @@ class AdjudicationAgainstV3Tests(unittest.IsolatedAsyncioTestCase):
             update={"request_id": "greet-neighbour-313-repaired", "rule_decision": None},
             deep=True,
         )
-        await engine.submit(
+        await engine._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id=ROOM, player_id=PLAYER, adjudication=repaired
             )
@@ -775,7 +809,7 @@ class AdjudicationAgainstV3Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(capabilities.world_id, self.content.world_ref)
 
         snapshot = await rules.read(scope)
-        await engine.submit(
+        await engine._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id=ROOM,
                 player_id=PLAYER,
@@ -1044,7 +1078,7 @@ class EventRuleChainingTests(unittest.IsolatedAsyncioTestCase):
         snapshot = await rules.read(
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
-        await engine.submit(
+        await engine._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id=ROOM,
                 player_id=PLAYER,
@@ -1122,7 +1156,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
         snapshot = await rules.read(
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
-        execution = await engine.submit(
+        execution = await engine._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id=ROOM,
                 player_id=PLAYER,
@@ -1195,7 +1229,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
         snapshot = await rules.read(
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
-        pending_execution = await engine.submit(
+        pending_execution = await engine._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id=ROOM,
                 player_id=PLAYER,
@@ -1288,7 +1322,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             "collaboration_framework.engine.adjudication.project_v3",
             side_effect=AssertionError("projection should be skipped"),
         ):
-            execution = await engine.submit(
+            execution = await engine._submit_internal_adjudication(
                 SubmitAdjudicationRequest(
                     room_id=ROOM,
                     player_id=PLAYER,
@@ -1325,7 +1359,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
         snapshot = await rules.read(
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
-        return await engine.submit(
+        return await engine._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id=ROOM,
                 player_id=PLAYER,
@@ -1364,7 +1398,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
 
-        execution = await engine.submit(
+        execution = await engine._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id=ROOM,
                 player_id=PLAYER,
@@ -1428,7 +1462,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             return snapshot.revision
 
         # 1. 在墓地搬开石板（规则自有检定，STR）。
-        execution = await engine.submit(
+        execution = await engine._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id=ROOM,
                 player_id=PLAYER,
@@ -1501,7 +1535,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        await engine.submit(
+        await engine._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id=ROOM,
                 player_id=PLAYER,
@@ -1520,7 +1554,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.inspect_state(ROOM).scene_id, "crypt")
 
         # 3. 与身影对话：纯效果规则，必须真的收束主线。
-        await engine.submit(
+        await engine._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id=ROOM,
                 player_id=PLAYER,
@@ -1568,7 +1602,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaises(ContractError):
-            await engine.submit(
+            await engine._submit_internal_adjudication(
                 SubmitAdjudicationRequest(
                     room_id=ROOM,
                     player_id=PLAYER,
@@ -1705,7 +1739,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
         with self.assertRaises(ContractError):
-            await engine.submit(
+            await engine._submit_internal_adjudication(
                 SubmitAdjudicationRequest(
                     room_id=ROOM,
                     player_id=PLAYER,
@@ -1731,7 +1765,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
         with self.assertRaises(ContractError):
-            await engine.submit(
+            await engine._submit_internal_adjudication(
                 SubmitAdjudicationRequest(
                     room_id=ROOM,
                     player_id=PLAYER,

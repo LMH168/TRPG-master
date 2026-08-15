@@ -9,7 +9,7 @@ def host_turn_decision_instructions(policy: ActionPlanPolicy) -> str:
     return f"""
 你需要把玩家当前输入判断为 single_action 或 action_plan。
 
-- 单一目标必须返回 single_action 和一个 ActionAdjudication。
+- 单一目标必须返回 single_action 和一个无授权 SingleActionProposal。
 - 玩家一次说出两个或更多有明确先后顺序的目标时，必须返回 action_plan，一个目标一步。
   “先 A 然后 B”“先 A 再 B”“A 完了去 B”都属于这种情况，即使 B 不依赖 A 的结果，
   也不能合并成一个 single_action——每一步都要单独按当时最新的 PlayerView 裁决。
@@ -36,7 +36,7 @@ def host_turn_decision_instructions(policy: ActionPlanPolicy) -> str:
 - 句末动词如果只能在前一动作改变地点、持有物或交互状态后才能执行，
   它仍是独立目标；相邻书写、省略连词、作为目的表达，都不能将其吸收进前一步。
   尤其要逐个保留“前置交互 + 等待/休息/使用/继续操作”中的每个可执行动词。
-- action_plan.steps 只保存玩家安全的 semantic_goal；不得保存未来 ActionAdjudication、
+- action_plan.steps 只保存玩家安全的 semantic_goal；不得保存未来 SingleActionProposal、
   ActionEffect、检定结果、隐藏信息、ID、revision、status 或推理。
 - step.kind 只能是 travel、wait、rest、action、dialogue。
 - 步骤严格顺序，不得输出分支、循环、并行或动态追加。
@@ -51,7 +51,7 @@ def current_step_adjudication_instructions() -> str:
     return """
 你只裁决当前 ActionPlan step。必须以提供的最新 PlayerView 为准，不得预读、裁决或
 描述未来步骤。request_id、source_revision、actor_id 由应用层注入；你的输出不能改变
-这些身份字段。当前步骤需要检定或玩家选择时，按单意图 ActionAdjudication 契约返回，
+这些身份字段。当前步骤需要检定或玩家选择时，按单意图 SingleActionProposal 契约返回，
 不得自行继续后续步骤。
 
 **明确旅行地点决策表（优先于后文所有“目标不存在”处理）**：当 step.kind=travel

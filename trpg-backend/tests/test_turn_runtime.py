@@ -12,6 +12,7 @@ from app.core.turn_runtime import (
     TurnCommitState,
     TurnInputSnapshot,
     TurnRecoveryAction,
+    TurnResumePoint,
     TurnStatus,
     TurnWaitingReason,
     new_turn_record,
@@ -185,6 +186,142 @@ async def test_narrator_failure_resumes_without_second_engine_receipt() -> None:
     completed = await coordinator.resume(failed.turn_id, executor=execute)
     assert completed.status == TurnStatus.COMPLETED
     assert len(await store.list_receipts(failed.turn_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_retryable_rule_failure_remains_recoverable_after_restart() -> None:
+    """规则引擎暂时失败后，恢复扫描不能把房间永久锁死。"""
+
+    store = InMemoryTurnStore()
+    coordinator = TurnCoordinator(store, worker_id="worker-1")
+    attempts = 0
+
+    async def execute(on_phase):  # noqa: ANN001
+        nonlocal attempts
+        attempts += 1
+        await on_phase("executing_action")
+        if attempts == 1:
+            raise RuntimeError("temporary rule engine failure")
+        return _outcome()
+
+    failed = await coordinator.start(_request(), executor=execute)
+    assert failed.status == TurnStatus.EXECUTING
+    assert failed.last_error is not None
+    assert failed.last_error.retryable is True
+    assert failed.resume_point == TurnResumePoint.EXECUTING
+    assert failed.lease_owner is None
+
+    recoverable = await store.list_recoverable_turns(
+        now=failed.updated_at + timedelta(minutes=2),
+        limit=10,
+    )
+    assert [item.turn_id for item in recoverable] == [failed.turn_id]
+
+    recovered = await coordinator.resume(failed.turn_id, executor=execute)
+    assert recovered.status == TurnStatus.COMPLETED
+    assert attempts == 2
+
+    # 终态转换必须删除 reservation，后续新输入不应继续得到 ACTION_IN_PROGRESS。
+    async def execute_replacement(_on_phase):  # noqa: ANN001
+        return _outcome()
+
+    replacement = await coordinator.start(
+        _request("action-2"),
+        executor=execute_replacement,
+    )
+    assert replacement.client_action_id == "action-2"
+
+
+@pytest.mark.asyncio
+async def test_partial_execution_failure_releases_room_for_new_action() -> None:
+    """复合计划部分提交后失败，保留 receipt 但不得阻塞玩家的新行动。"""
+
+    store = InMemoryTurnStore()
+    coordinator = TurnCoordinator(store, worker_id="worker-1")
+
+    async def execute_partial(on_phase):  # noqa: ANN001
+        await on_phase("executing_action")
+        turn_id = current_turn_id()
+        assert turn_id is not None
+        await store.append_receipt(
+            TurnCommitReceipt(
+                turn_id=turn_id,
+                room_id="room-1",
+                engine_request_id="engine-partial-1",
+                action_request_id="step-partial-1",
+                committed_state_version=1,
+                created_at=datetime.now(UTC),
+            )
+        )
+        raise RuntimeError("second step failed")
+
+    failed = await coordinator.start(_request(), executor=execute_partial)
+
+    assert failed.status == TurnStatus.FAILED
+    assert failed.commit_state == TurnCommitState.PARTIALLY_COMMITTED
+    assert failed.last_error is not None
+    assert failed.last_error.retryable is False
+    assert failed.last_error.recovery_action == TurnRecoveryAction.SUBMIT_NEW_INPUT
+    assert "已完成的步骤已经保存" in failed.last_error.public_message
+
+    async def execute_replacement(_on_phase):  # noqa: ANN001
+        return _outcome()
+
+    replacement = await coordinator.start(
+        _request("action-after-partial"),
+        executor=execute_replacement,
+    )
+    assert replacement.status == TurnStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_repeated_narration_failure_releases_room_after_retry_budget() -> None:
+    """叙事服务持续失败时，不能无限保留房间 reservation。"""
+
+    store = InMemoryTurnStore()
+    coordinator = TurnCoordinator(store, worker_id="worker-1")
+
+    async def execute(on_phase):  # noqa: ANN001
+        await on_phase("executing_action")
+        turn_id = current_turn_id()
+        assert turn_id is not None
+        await store.append_receipt(
+            TurnCommitReceipt(
+                turn_id=turn_id,
+                room_id="room-1",
+                engine_request_id="engine-narration-budget",
+                action_request_id="action-1",
+                committed_state_version=1,
+                created_at=datetime.now(UTC),
+            )
+        )
+        await on_phase("generating_narration")
+        raise TimeoutError("narrator unavailable")
+
+    current = await coordinator.start(_request(), executor=execute)
+    assert current.status == TurnStatus.AWAITING_NARRATION
+    assert current.last_error is not None
+    assert current.last_error.attempt_count == 1
+
+    current = await coordinator.resume(current.turn_id, executor=execute)
+    assert current.status == TurnStatus.AWAITING_NARRATION
+    assert current.last_error is not None
+    assert current.last_error.attempt_count == 2
+
+    current = await coordinator.resume(current.turn_id, executor=execute)
+    assert current.status == TurnStatus.FAILED
+    assert current.last_error is not None
+    assert current.last_error.retryable is False
+    assert current.last_error.attempt_count == 3
+
+    async def execute_replacement(_on_phase):  # noqa: ANN001
+        return _outcome()
+
+    replacement = await coordinator.start(
+        _request("action-after-narration-failure"),
+        executor=execute_replacement,
+    )
+    assert replacement.client_action_id == "action-after-narration-failure"
 
 
 @pytest.mark.asyncio
