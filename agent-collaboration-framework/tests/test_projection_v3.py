@@ -249,6 +249,40 @@ class ProjectionV3Tests(unittest.IsolatedAsyncioTestCase):
             "douglas_diary", {item.id for item in revealed.scene.loose_items}
         )
 
+    async def test_empty_runtime_inventory_does_not_restore_character_equipment(self) -> None:
+        """物品全部离开角色后，PlayerView 不得回退到建卡装备快照。"""
+
+        dropped = ItemInstance(
+            id="dropped_pistol",
+            room_id=ROOM,
+            origin="runtime",
+            definition_id="pistol",
+            display=ItemDisplay(name="手枪"),
+            item_component=ItemComponent(),
+            custody=ItemCustody(kind="location", ref_id="thomas_office", form="loose"),
+            created_event_id="drop-1",
+            last_event_id="drop-1",
+            updated_revision="1",
+        )
+        snapshot = await self.project(
+            game_state(
+                self.content,
+                item_instances={dropped.id: dropped},
+                actors={
+                    ACTOR: ActorState(
+                        player_id=PLAYER,
+                        name="陈探员",
+                        source_character_id="character_v3",
+                        source_character_version=1,
+                        state={"equipment": ["手枪", "笔"]},
+                    )
+                },
+            )
+        )
+
+        self.assertEqual(snapshot.inventory, ())
+        self.assertEqual(snapshot.self_actor.equipment, ())
+
     async def test_stolen_books_are_gated_to_the_opened_crypt(self) -> None:
         """The physical books start in the crypt and stay hidden behind its gate."""
 

@@ -1945,7 +1945,24 @@ class _RuleFirstStepAdjudicator:
         adjudication = _deterministic_step_adjudication(context)
         if adjudication is not None:
             return _proposal_from_adjudication(adjudication)
-        return await self._fallback.adjudicate(context)
+        try:
+            return await self._fallback.adjudicate(context)
+        except Exception as exc:
+            # 明确且可由当前 PlayerView 完整证明的旅行不需要模型参与裁决。
+            # 模型暂时不可用时重新走一次确定性分支，仍然不会创建未知地点或
+            # 代替 Host 猜测隐藏事实；其他动作继续保留原有恢复语义。
+            if context.step.kind == "travel":
+                recovered = _deterministic_step_adjudication(context)
+                if recovered is not None:
+                    logger.warning(
+                        "action_plan_step_deterministic_fallback",
+                        extra={
+                            "step_kind": context.step.kind,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+                    return _proposal_from_adjudication(recovered)
+            raise
 
 
 def _deterministic_step_adjudication(

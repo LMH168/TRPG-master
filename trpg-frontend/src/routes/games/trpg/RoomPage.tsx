@@ -2555,8 +2555,10 @@ export default function RoomPage() {
               <>
                 <h4 className="text-xs font-semibold text-brass-dark mb-2.5">装备</h4>
                 <p className="text-sm text-text-body leading-[1.7] mb-4">
-                  {playerView?.inventory?.length
-                    ? playerView.inventory.map(item => `${item.name}${item.quantity > 1 ? ` ×${item.quantity}` : ''}`).join('、')
+                  {playerView
+                    ? (playerView.inventory?.length
+                      ? playerView.inventory.map(item => `${item.name}${item.quantity > 1 ? ` ×${item.quantity}` : ''}`).join('、')
+                      : '暂无随身装备')
                     : character.equipment || '未填写装备'}
                 </p>
                 <h4 className="text-xs font-semibold text-brass-dark mb-2.5">背景故事</h4>

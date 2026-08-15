@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -395,6 +396,13 @@ class TurnCoordinator:
             error_type=type(exc).__name__,
             attempt_count=attempt_count,
             retryable=retryable,
+            # 仅写服务端日志。客户端仍只收到脱敏错误码，堆栈用于定位未分类
+            # 异常究竟发生在计划恢复、Engine 对账还是叙事发布阶段。
+            stack=(
+                "".join(traceback.format_exception(exc))
+                if str(getattr(exc, "code", "TURN_INTERNAL_ERROR")) == "TURN_INTERNAL_ERROR"
+                else None
+            ),
         )
         failure = TurnFailureSnapshot(
             code=str(getattr(exc, "code", "TURN_INTERNAL_ERROR")),

@@ -1359,6 +1359,44 @@ describe('RoomPage conversation history', () => {
     expect(screen.queryByTestId('initial-values-note')).not.toBeInTheDocument()
   })
 
+  it('shows an empty live inventory instead of the character creation equipment', async () => {
+    useCharacterStore.getState().setCharacter(
+      {
+        info: {
+          name: '杜调查员',
+          playerName: '陈探员',
+          age: '32',
+          gender: '男',
+          residence: '阿卡姆',
+          birthplace: '波士顿',
+          occupationId: 1,
+        },
+        attr: {},
+        skillAlloc: {},
+        skillFinalValues: {},
+        equipment: '手枪、笔',
+        background: '',
+        notes: '',
+        derived: { hp: 10, san: 60, mp: 10, db: '0', build: 0, move: 8 },
+      },
+      'room-1',
+    )
+    mockListConversation.mockResolvedValue([])
+    renderRoomPage()
+
+    act(() =>
+      emitWsMessage({
+        type: 'view.updated',
+        payload: { playerId: 'player-1', playerView: playerViewFixture() },
+      }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: '角色卡' }))
+    fireEvent.click(screen.getByRole('button', { name: '背景装备' }))
+
+    expect(screen.getByText('暂无随身装备')).toBeInTheDocument()
+    expect(screen.queryByText('手枪、笔')).not.toBeInTheDocument()
+  })
+
   // jsdom 没有 WebGL，supports3DDice() 为 false —— 正好覆盖降级路径：
   // 渲染能力缺失时不能把检定卡住（issue #217）。
   // 自由骰没有技能、没有难度、没有目标值，后端也不知道它发生过——就没有判定

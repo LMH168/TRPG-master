@@ -95,7 +95,12 @@ def project_v3(
         scene_id=location.id,
         phase=state.phase,
         revision=runtime.revision,
-        self_actor=_self_actor(actor_id, actor, inventory),
+        self_actor=_self_actor(
+            actor_id,
+            actor,
+            inventory,
+            runtime_inventory_initialized=bool(state.item_instances),
+        ),
         scene=ProjectionScene(
             id=location.id,
             name=location.player_visible_name or location.name,
@@ -599,6 +604,8 @@ def _self_actor(
     actor_id: str,
     actor,
     inventory: tuple[InventoryItemView, ...],
+    *,
+    runtime_inventory_initialized: bool,
 ) -> ProjectionSelfActor:
     actor_state = actor.state
     return ProjectionSelfActor(
@@ -619,11 +626,12 @@ def _self_actor(
         conditions=tuple(
             item for item in actor.conditions if isinstance(item, str) and item.strip()
         ),
-        # Once ItemInstances exist they are the only runtime inventory authority.
-        # Legacy v2 character equipment remains a read fallback for old rooms.
+        # 游戏开始后 ItemInstance/custody 是装备唯一权威来源；空库存也必须
+        # 投影为空，不能用建卡快照把已经放下的物品重新显示到角色身上。
+        # 只有完全没有运行时物品的历史房间才允许读取旧角色卡快照。
         equipment=(
             tuple(item.name for item in inventory)
-            if inventory
+            if runtime_inventory_initialized
             else _equipment(actor_state.get("equipment"))
         ),
         background_summary=_optional_text(actor_state.get("background")) or "",
@@ -651,6 +659,8 @@ def _actor_values(values, labels) -> tuple[ProjectionActorValue, ...]:
 
 
 def _equipment(value) -> tuple[str, ...]:
+    """读取旧房间的角色卡装备快照，仅用于没有运行时物品的兼容场景。"""
+
     if not isinstance(value, list):
         return ()
     names = []

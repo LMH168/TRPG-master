@@ -404,6 +404,32 @@ async def test_runtime_venue_can_be_reused_through_a_synonym() -> None:
 
 
 @pytest.mark.asyncio
+async def test_visible_travel_falls_back_when_model_adjudication_fails() -> None:
+    """明确可见的旅行不应因模型瞬时失败而把复合行动卡在重试状态。"""
+
+    class FailingFallback:
+        async def adjudicate(self, context):
+            del context
+            raise TurnExecutionError(
+                "MODEL_UPSTREAM_UNAVAILABLE",
+                "模型暂时不可用",
+                retryable=True,
+            )
+
+    context = await _cemetery_context(
+        "去墓地",
+        step_kind="travel",
+        semantic_goal="前往阿诺兹堡公共墓地",
+        scene_id="thomas_office",
+    )
+    proposal = await _RuleFirstStepAdjudicator(FailingFallback()).adjudicate(context)
+
+    assert proposal.semantic_goal == context.step.semantic_goal
+    assert proposal.success_effect_proposals[0].type == "enter_location"
+    assert proposal.success_effect_proposals[0].location_ref.id == "cemetery"
+
+
+@pytest.mark.asyncio
 @pytest.mark.skip(reason="PR3 删除旧 Host normalizer；Proposal/Engine 测试覆盖新的权威路径")
 @pytest.mark.asyncio
 async def test_travel_to_current_runtime_venue_is_a_successful_noop() -> None:
