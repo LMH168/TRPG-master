@@ -84,6 +84,46 @@ def _submission(**updates: object) -> SubmitProposalRequest:
     return SubmitProposalRequest.model_validate(values)
 
 
+def _v2_pickup_submission(**updates: object) -> SubmitProposalRequest:
+    """构造不依赖 method_family 词表的 v2 拾取请求。"""
+
+    payload = _dynamic_pickup_payload()
+    payload["schema_version"] = 2
+    payload["method_family"] = "拾取临时物品"
+    effects = payload["success_effect_proposals"]
+    assert isinstance(effects, list)
+    payload["completion"] = {"kind": "effects", "requirements": [effects[1]]}
+    values: dict[str, object] = {
+        "proposal": SingleActionProposal.model_validate(payload),
+        "requested_goal": payload["semantic_goal"],
+    }
+    values.update(updates)
+    return _submission(**values)
+
+
+def test_v2_compiles_open_method_family_from_declared_completion() -> None:
+    """开放中文动作方式不会绕过或阻断结构化持久结果。"""
+
+    command = ProposalCompiler().compile(_runtime(), _v2_pickup_submission())
+
+    assert command.schema_version == 2
+    assert command.completion_mode == "effects"
+    assert command.adjudication.persistence_intent == "inventory"
+    assert command.completion_requirements[0].type == "move_entity"
+
+
+def test_v2_rejects_model_narrowing_the_trusted_goal() -> None:
+    """模型不能把玩家的完整目标静默缩减成较弱的动作。"""
+
+    with pytest.raises(AdjudicationValidationError) as raised:
+        ProposalCompiler().compile(
+            _runtime(),
+            _v2_pickup_submission(requested_goal="拾起钥匙并把它交给同伴"),
+        )
+
+    assert raised.value.result.code == "PROPOSAL_SEMANTIC_GOAL_CHANGED"
+
+
 def test_compiler_binds_trusted_actor_and_resolves_ordered_runtime_refs() -> None:
     command = ProposalCompiler().compile(_runtime(), _submission())
 

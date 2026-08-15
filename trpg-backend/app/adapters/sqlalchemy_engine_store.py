@@ -54,12 +54,14 @@ from app.models.turn import TurnCommitReceiptRecord, TurnRecordModel
 # 落库 JSON 的 schema 版本。#310 给 CheckRun / CheckRunView 各加了字段，老行没有
 # 这些键，直接 model_validate 会当场失败——正卡在 awaiting_post_roll_decision 的
 # 房间一提交奖惩骰决定就炸。读路径按版本升级，写路径一律写当前版本。
-_CHECK_RUN_SCHEMA_VERSION = 3
-_SUPPORTED_CHECK_RUN_VERSIONS = frozenset({1, 2, _CHECK_RUN_SCHEMA_VERSION})
-_PENDING_DECISION_SCHEMA_VERSION = 2
-_SUPPORTED_PENDING_DECISION_VERSIONS = frozenset({1, _PENDING_DECISION_SCHEMA_VERSION})
-_ADJUDICATION_RESULT_SCHEMA_VERSION = 4
-_SUPPORTED_ADJUDICATION_RESULT_VERSIONS = frozenset({1, 2, 3, _ADJUDICATION_RESULT_SCHEMA_VERSION})
+_CHECK_RUN_SCHEMA_VERSION = 4
+_SUPPORTED_CHECK_RUN_VERSIONS = frozenset({1, 2, 3, _CHECK_RUN_SCHEMA_VERSION})
+_PENDING_DECISION_SCHEMA_VERSION = 3
+_SUPPORTED_PENDING_DECISION_VERSIONS = frozenset({1, 2, _PENDING_DECISION_SCHEMA_VERSION})
+_ADJUDICATION_RESULT_SCHEMA_VERSION = 5
+_SUPPORTED_ADJUDICATION_RESULT_VERSIONS = frozenset(
+    {1, 2, 3, 4, _ADJUDICATION_RESULT_SCHEMA_VERSION}
+)
 
 
 class SqlAlchemyEngineStore(EngineStore):
@@ -287,12 +289,14 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
         record: AdjudicationCommandExecution,
     ) -> CompletedAdjudicationCommand:
         if (
-            record.request_schema_version not in {1, 2}
+            record.request_schema_version not in {1, 2, 3}
             or record.result_schema_version not in _SUPPORTED_ADJUDICATION_RESULT_VERSIONS
         ):
             raise ContractError("不支持的裁决命令 schema version")
         if (record.request_schema_version == 2) != (record.result_schema_version == 4):
             raise ContractError("Proposal 请求与 validated command snapshot 版本不一致")
+        if (record.request_schema_version == 3) != (record.result_schema_version == 5):
+            raise ContractError("Proposal v2 请求与目标完成快照版本不一致")
         if record.result_schema_version == 1:
             result_payload = {
                 "execution": deepcopy(record.result_json),
@@ -572,8 +576,14 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
             # 这条记录当年确实只有这一个可用名称。新写入一律带真实显示名。
             payload.setdefault("selected_skill_name", payload.get("selected_skill_id"))
         check_run = CheckRun.model_validate(payload)
-        if record.check_schema_version == 3 and check_run.validated_command is None:
-            raise ContractError("CheckRun v3 缺少 validated command snapshot")
+        if record.check_schema_version in {3, 4} and check_run.validated_command is None:
+            raise ContractError("新版 CheckRun 缺少 validated command snapshot")
+        if (
+            record.check_schema_version == 4
+            and check_run.validated_command is not None
+            and check_run.validated_command.schema_version != 2
+        ):
+            raise ContractError("CheckRun v4 必须保存 v2 validated command")
         if (
             check_run.room_id != record.room_id
             or check_run.check_id != record.check_id
@@ -855,11 +865,19 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
                 request_id=completed_command.request_id,
                 action_request_id=completed_command.execution.action_request_id,
                 request_schema_version=(
-                    2 if completed_command.validated_command is not None else 1
+                    3
+                    if completed_command.validated_command is not None
+                    and completed_command.validated_command.schema_version == 2
+                    else 2
+                    if completed_command.validated_command is not None
+                    else 1
                 ),
                 request_json=completed_command.request.to_json_dict(),
                 result_schema_version=(
                     _ADJUDICATION_RESULT_SCHEMA_VERSION
+                    if completed_command.validated_command is not None
+                    and completed_command.validated_command.schema_version == 2
+                    else 4
                     if completed_command.validated_command is not None
                     else 3
                 ),
@@ -1039,8 +1057,14 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
         if record.decision_schema_version not in _SUPPORTED_PENDING_DECISION_VERSIONS:
             raise ContractError("不支持的 PendingCheckDecision schema version")
         decision = PendingCheckDecision.model_validate(deepcopy(record.decision_json))
-        if record.decision_schema_version == 2 and decision.validated_command is None:
-            raise ContractError("PendingCheckDecision v2 缺少 validated command snapshot")
+        if record.decision_schema_version in {2, 3} and decision.validated_command is None:
+            raise ContractError("新版 PendingCheckDecision 缺少 validated command snapshot")
+        if (
+            record.decision_schema_version == 3
+            and decision.validated_command is not None
+            and decision.validated_command.schema_version != 2
+        ):
+            raise ContractError("PendingCheckDecision v3 必须保存 v2 validated command")
         if (
             decision.room_id != record.room_id
             or decision.decision_id != record.decision_id
@@ -1073,6 +1097,9 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
                     decision_schema_version=(
                         _PENDING_DECISION_SCHEMA_VERSION
                         if decision.validated_command is not None
+                        and decision.validated_command.schema_version == 2
+                        else 2
+                        if decision.validated_command is not None
                         else 1
                     ),
                     decision_json=decision.to_json_dict(),
@@ -1084,7 +1111,12 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
         record.status = decision.status
         record.decision_version = decision.decision_version
         record.decision_schema_version = (
-            _PENDING_DECISION_SCHEMA_VERSION if decision.validated_command is not None else 1
+            _PENDING_DECISION_SCHEMA_VERSION
+            if decision.validated_command is not None
+            and decision.validated_command.schema_version == 2
+            else 2
+            if decision.validated_command is not None
+            else 1
         )
         record.decision_json = decision.to_json_dict()
         record.updated_at = now
@@ -1107,7 +1139,12 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
                     version=check_run.version,
                     roll_count=check_run.roll_count,
                     check_schema_version=(
-                        _CHECK_RUN_SCHEMA_VERSION if check_run.validated_command is not None else 2
+                        _CHECK_RUN_SCHEMA_VERSION
+                        if check_run.validated_command is not None
+                        and check_run.validated_command.schema_version == 2
+                        else 3
+                        if check_run.validated_command is not None
+                        else 2
                     ),
                     check_json=check_run.to_json_dict(),
                     created_at=now,
@@ -1119,7 +1156,12 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
         record.version = check_run.version
         record.roll_count = check_run.roll_count
         record.check_schema_version = (
-            _CHECK_RUN_SCHEMA_VERSION if check_run.validated_command is not None else 2
+            _CHECK_RUN_SCHEMA_VERSION
+            if check_run.validated_command is not None
+            and check_run.validated_command.schema_version == 2
+            else 3
+            if check_run.validated_command is not None
+            else 2
         )
         record.check_json = check_run.to_json_dict()
         record.updated_at = now

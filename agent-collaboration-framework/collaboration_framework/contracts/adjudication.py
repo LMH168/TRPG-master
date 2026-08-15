@@ -143,6 +143,14 @@ class ChangeEntityStateEffect(ContractModel):
     value: JsonValue
 
 
+class ChangeItemConditionEffect(ContractModel):
+    """修改物品对玩家公开的 condition，不把弹药等状态藏进任意 values 路径。"""
+
+    type: Literal["change_item_condition"] = "change_item_condition"
+    entity_id: str = Field(min_length=1)
+    condition: str = Field(min_length=1, max_length=100)
+
+
 class ConsumeEntityEffect(ContractModel):
     type: Literal["consume_entity"] = "consume_entity"
     entity_id: str = Field(min_length=1)
@@ -193,6 +201,7 @@ ActionEffect = Annotated[
     | EnsureRuntimeEntityEffect
     | MoveEntityEffect
     | ChangeEntityStateEffect
+    | ChangeItemConditionEffect
     | ConsumeEntityEffect
     | MarkCoreResolvedEffect
     | SetEndingAvailabilityEffect
@@ -446,6 +455,8 @@ class CommittedResult(ContractModel):
     target_id: str = Field(min_length=1)
     state_key: str | None = Field(default=None, min_length=1)
     state_value: JsonValue | None = None
+    destination_kind: Literal["actor_inventory", "location", "retired"] | None = None
+    destination_ref: str | None = Field(default=None, min_length=1)
     event_ref: str = Field(min_length=1)
 
 
@@ -460,6 +471,15 @@ class AdjudicationExecution(ContractModel):
     ]
     view_revision: str = Field(min_length=1)
     outcome: Literal["success", "failure", "cancelled", "pending"]
+    # outcome 只表示检定分支；goal_outcome 才表示玩家声明的完整目标是否实现。
+    goal_outcome: Literal[
+        "pending",
+        "achieved",
+        "partially_achieved",
+        "not_achieved",
+        "cancelled",
+        "legacy_unknown",
+    ] = "legacy_unknown"
     pending_decision: PendingCheckDecisionView | None = None
     check_run: CheckRunView | None = None
     event_refs: tuple[str, ...] = ()

@@ -5,10 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
 from collaboration_framework.contracts import (
     ActionAdjudication,
+    ActionEffect,
     ActionRequest,
     ActionResult,
     AdjudicationExecution,
@@ -250,11 +251,30 @@ class DomainEvent(ContractModel):
 class ValidatedActionCommand(ContractModel):
     """仅在 Engine 权威边界内有效的已编译命令，不作为外部授权令牌。"""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     request: SubmitProposalRequest
     proposal_fingerprint: str = Field(min_length=64, max_length=64)
     adjudication: ActionAdjudication
     validation: ValidationResult
+    completion_mode: Literal["legacy", "process", "effects"] = "legacy"
+    process_interaction: Literal["observe", "social", "physical", "other"] | None = None
+    completion_requirements: tuple[ActionEffect, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_completion_snapshot(self) -> ValidatedActionCommand:
+        """v2 命令必须冻结完成条件，避免恢复时重新解释玩家原话。"""
+
+        if self.schema_version == 1:
+            if self.completion_mode != "legacy" or self.completion_requirements:
+                raise ValueError("ValidatedActionCommand v1 不得包含 v2 完成条件")
+            return self
+        if self.completion_mode == "legacy":
+            raise ValueError("ValidatedActionCommand v2 不得使用 legacy 完成模式")
+        if self.completion_mode == "process" and self.process_interaction is None:
+            raise ValueError("process 完成模式必须包含 interaction")
+        if self.completion_mode == "effects" and not self.completion_requirements:
+            raise ValueError("effects 完成模式必须包含后置条件")
+        return self
 
     def to_internal_request(self) -> SubmitAdjudicationRequest:
         """生成 Engine 内部执行载荷；该结构不会越过权威边界。"""

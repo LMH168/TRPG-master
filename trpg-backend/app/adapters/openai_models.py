@@ -56,10 +56,17 @@ source_revision、authority、骰点结果、提交状态、状态路径或 pers
 ProposalRef 引用；当前视图对象使用其实际 kind/id，本次新建对象使用 runtime_location 或
 runtime_entity 的逻辑别名，并先 ensure 再引用。
 
-单动作必须保留玩家的 semantic_goal，并给出 semantic_focus、可选 anchor_ref、开放字符串
+单动作固定输出 schema_version=2，必须逐字保留输入中冻结的 semantic_goal，并给出
+semantic_focus、可选 anchor_ref、开放字符串
 method_family/method_description、check_proposal 及有序的成功/失败 Effect Proposal。纯叙事动作
-使用 narrative_only；任何声称已经产生持久结果的动作都必须提供匹配 Effect。命中模组规则时
-只填写 rule_ref，成功与失败 Effect 留空，规则后果只能由 Engine 决定。
+使用 completion={"kind":"process","interaction":"observe|social|physical|other"} 和
+narrative_only。持久目标使用 completion.kind=effects，requirements 只列完成目标必需的最终事实，
+成功 Effect 必须包含完全匹配的结果。命中模组规则时只填写 rule_ref，成功与失败 Effect 留空，
+但仍要声明玩家目标的 completion requirements，规则后果只能由 Engine 决定。
+
+杀死或击昏 NPC 必须分别要求 change_entity_state 的 consciousness=dead/unconscious，并提供检定；
+不得改用 health 等私有键。打光弹药使用 change_item_condition(condition=empty)。丢下物品使用
+move_entity(destination.location_ref=当前地点)，并将相同 Effect 放入 completion requirements。
 
 动态地点必须在同一分支按 ensure_runtime_location、enter_location 排序；动态普通物品必须按
 ensure_runtime_entity、move_entity(self_inventory) 排序。无法安全建立或引用目标时返回
@@ -407,7 +414,10 @@ class PromptHostTurnDecisionModel:
                     ),
                     input_payload=context.to_json_dict(),
                 )
-                return _HOST_DECISION_PROPOSAL_ADAPTER.validate_python(raw)
+                proposal = _HOST_DECISION_PROPOSAL_ADAPTER.validate_python(raw)
+                if isinstance(proposal, SingleActionProposal) and proposal.schema_version != 2:
+                    raise ValueError("生产单动作必须使用 Proposal v2")
+                return proposal
             except TurnExecutionError as exc:
                 if exc.code != "MODEL_OUTPUT_UNREADABLE":
                     raise
@@ -455,7 +465,7 @@ class PromptActionPlanStepAdjudicator:
     async def adjudicate(self, context: ActionPlanStepContext) -> SingleActionProposal:
         try:
             raw = await self._client.generate(
-                schema_name="trpg_action_plan_step_proposal_v1",
+                schema_name="trpg_action_plan_step_proposal_v2",
                 schema=SingleActionProposal.model_json_schema(mode="serialization"),
                 instructions=(
                     f"{current_step_adjudication_instructions()}\n\n{_SAFE_PROPOSAL_INSTRUCTIONS}"
@@ -482,8 +492,11 @@ class PromptActionPlanStepAdjudicator:
             raise
 
         try:
-            return SingleActionProposal.model_validate(raw)
-        except ValidationError as exc:
+            proposal = SingleActionProposal.model_validate(raw)
+            if proposal.schema_version != 2:
+                raise ValueError("生产计划步骤必须使用 Proposal v2")
+            return proposal
+        except (ValidationError, ValueError) as exc:
             # HTTP 与 JSON 都成功也不代表输出符合 Proposal 契约；这一类同样
             # 属于“模型结果不可读”，并保留异常链供步骤级诊断记录字段路径和错误类型。
             raise TurnExecutionError(

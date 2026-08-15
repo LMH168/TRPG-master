@@ -16,6 +16,7 @@ from collaboration_framework.contracts import (
     AdjudicationValidationError,
     AdvanceWorldTimeEffect,
     ChangeEntityStateEffect,
+    ChangeItemConditionEffect,
     CommitTerminalEndingEffect,
     ConsumeEntityEffect,
     EnsureRuntimeEntityEffect,
@@ -37,6 +38,8 @@ from collaboration_framework.contracts import (
 from collaboration_framework.contracts.proposal import (
     AdvanceWorldTimeEffectProposal,
     ChangeEntityStateEffectProposal,
+    ChangeItemConditionEffectProposal,
+    EffectsGoalCompletionProposal,
     CommitTerminalEndingEffectProposal,
     ConsumeEntityEffectProposal,
     EffectProposal,
@@ -47,6 +50,7 @@ from collaboration_framework.contracts.proposal import (
     MarkCoreResolvedEffectProposal,
     MoveEntityEffectProposal,
     NarrativeOnlyEffectProposal,
+    ProcessGoalCompletionProposal,
     RevealInformationEffectProposal,
     SetEndingAvailabilityEffectProposal,
     SetVisibilityEffectProposal,
@@ -66,9 +70,9 @@ _HOST_FORBIDDEN_EFFECTS = (
 def derive_runtime_object_id(*, room_id: str, request_id: str, ref: ProposalRef) -> str:
     """由可信回合身份和逻辑引用派生稳定 ID，供恢复与规范化代码复用。"""
 
-    digest = hashlib.sha256(f"{room_id}\0{request_id}\0{ref.kind}\0{ref.id}".encode()).hexdigest()[
-        :20
-    ]
+    digest = hashlib.sha256(
+        f"{room_id}\0{request_id}\0{ref.kind}\0{ref.id}".encode()
+    ).hexdigest()[:20]
     prefix = "location" if ref.kind == "runtime_location" else "entity"
     return f"runtime-{prefix}-{digest}"
 
@@ -108,7 +112,9 @@ class ProposalShadowCompiler:
             "failure_effects",
         )
         differing = tuple(
-            field for field in fields if getattr(candidate, field) != getattr(legacy, field)
+            field
+            for field in fields
+            if getattr(candidate, field) != getattr(legacy, field)
         )
         return ProposalShadowComparison(
             matches=not differing,
@@ -129,6 +135,15 @@ class ProposalCompiler:
 
         self._require_trusted_context(runtime, request)
         proposal = request.proposal
+        if (
+            proposal.schema_version == 2
+            and proposal.semantic_goal != request.requested_goal
+        ):
+            self._reject(
+                "PROPOSAL_SEMANTIC_GOAL_CHANGED",
+                "动作提议改变了玩家目标，请重新确认行动",
+                repairability="requires_player_choice",
+            )
         if proposal.rule_ref is not None and (
             proposal.success_effect_proposals or proposal.failure_effect_proposals
         ):
@@ -141,8 +156,23 @@ class ProposalCompiler:
         )
 
         runtime_refs: dict[tuple[str, str], str] = {}
-        success = self._compile_effects(request, proposal.success_effect_proposals, runtime_refs)
-        failure = self._compile_effects(request, proposal.failure_effect_proposals, runtime_refs)
+        success = self._compile_effects(
+            request, proposal.success_effect_proposals, runtime_refs
+        )
+        failure = self._compile_effects(
+            request, proposal.failure_effect_proposals, runtime_refs
+        )
+        completion_mode: str = "legacy"
+        process_interaction = None
+        completion_requirements: tuple[ActionEffect, ...] = ()
+        if isinstance(proposal.completion, ProcessGoalCompletionProposal):
+            completion_mode = "process"
+            process_interaction = proposal.completion.interaction
+        elif isinstance(proposal.completion, EffectsGoalCompletionProposal):
+            completion_mode = "effects"
+            completion_requirements = self._compile_effects(
+                request, proposal.completion.requirements, runtime_refs
+            )
         focus = self._resolve_focus(runtime, proposal, runtime_refs)
         adjudication = ActionAdjudication(
             request_id=request.request_id,
@@ -162,10 +192,20 @@ class ProposalCompiler:
             success_effects=success,
             failure_effects=failure,
         )
-        # 规则托管的效果不在 Host Proposal 中出现，由规则匹配阶段负责补齐；
-        # 没有 rule_ref 时则必须在 Proposal 中显式提供可提交结果，不能把
-        # 空 Effect 或持久动作的 narrative_only 当成已完成动作。
-        if proposal.rule_ref is None:
+        if proposal.schema_version == 2:
+            self._validate_requirement_permissions(runtime, request, success)
+            self._validate_requirement_permissions(runtime, request, failure)
+            self._validate_completion_contract(
+                runtime,
+                request,
+                completion_mode=completion_mode,
+                process_interaction=process_interaction,
+                requirements=completion_requirements,
+                success_effects=success,
+                rule_owned=proposal.rule_ref is not None,
+            )
+        # v1 仅供历史读取，继续沿用原完整性规则；生产 writer 不再依赖 family 词表。
+        elif proposal.rule_ref is None:
             problem = validate_persistent_effects(adjudication)
             if problem is not None:
                 self._reject(problem.code, problem.player_safe_reason)
@@ -178,6 +218,7 @@ class ProposalCompiler:
             ).encode("utf-8")
         ).hexdigest()
         return ValidatedActionCommand(
+            schema_version=2 if proposal.schema_version == 2 else 1,
             request=request,
             proposal_fingerprint=fingerprint,
             adjudication=adjudication,
@@ -187,6 +228,158 @@ class ProposalCompiler:
                 code="OK",
                 player_safe_reason="动作提议已通过权威编译",
             ),
+            completion_mode=completion_mode,
+            process_interaction=process_interaction,
+            completion_requirements=completion_requirements,
+        )
+
+    def _validate_completion_contract(
+        self,
+        runtime: EngineRuntimeSnapshot,
+        request: SubmitProposalRequest,
+        *,
+        completion_mode: str,
+        process_interaction: str | None,
+        requirements: tuple[ActionEffect, ...],
+        success_effects: tuple[ActionEffect, ...],
+        rule_owned: bool,
+    ) -> None:
+        """校验目标完成条件、成功 Effect 和当前权威状态之间的一致性。"""
+
+        if completion_mode == "process":
+            if any(
+                not isinstance(item, NarrativeOnlyEffect) for item in success_effects
+            ):
+                self._reject("GOAL_EFFECT_MISMATCH", "过程行动不能夹带未声明的持久结果")
+            if process_interaction == "social":
+                target_id = request.proposal.semantic_focus.id
+                state = runtime.game_state.entities.get(target_id, {})
+                if state.get("consciousness") in {"dead", "unconscious"}:
+                    self._reject(
+                        "TARGET_NOT_RESPONSIVE",
+                        "目标当前无法回应这次交互",
+                        repairability="requires_player_choice",
+                        fault="player",
+                    )
+            return
+        if completion_mode != "effects":
+            self._reject("GOAL_COMPLETION_REQUIRED", "新动作必须声明目标完成条件")
+        self._validate_requirement_permissions(runtime, request, requirements)
+        if rule_owned:
+            return
+        missing = tuple(item for item in requirements if item not in success_effects)
+        if missing:
+            self._reject(
+                "GOAL_EFFECT_MISMATCH",
+                "成功结果不足以完成玩家声明的目标",
+            )
+        supporting = (
+            NarrativeOnlyEffect,
+            EnsureRuntimeEntityEffect,
+            EnsureRuntimeLocationEffect,
+        )
+        undeclared = tuple(
+            item
+            for item in success_effects
+            if not isinstance(item, supporting) and item not in requirements
+        )
+        if undeclared:
+            self._reject("GOAL_EFFECT_MISMATCH", "成功分支包含未声明的持久结果")
+
+    def _validate_requirement_permissions(
+        self,
+        runtime: EngineRuntimeSnapshot,
+        request: SubmitProposalRequest,
+        requirements: tuple[ActionEffect, ...],
+    ) -> None:
+        """限制 AI 可裁量的高权威结果，并阻止物品或死亡状态绕过前置条件。"""
+
+        for requirement in requirements:
+            if isinstance(requirement, ChangeEntityStateEffect):
+                allowed = {
+                    "consciousness": {"conscious", "unconscious", "dead"},
+                    "posture": {"standing", "prone"},
+                    "restraint": {"free", "restrained"},
+                    "injury": {"none", "minor", "major", "critical"},
+                    "open": {True, False},
+                    "locked": {True, False},
+                    "broken": {True, False},
+                }
+                if (
+                    requirement.key not in allowed
+                    or requirement.value not in allowed[requirement.key]
+                ):
+                    self._reject("AUTHORITY_NOT_GRANTED", "该状态不在 AI 可裁量范围内")
+                current = runtime.game_state.entities.get(requirement.entity_id, {})
+                if current.get("consciousness") == "dead" and not (
+                    requirement.key == "consciousness" and requirement.value == "dead"
+                ):
+                    self._reject(
+                        "TERMINAL_STATE_CONFLICT", "死亡状态只能由明确模组规则改变"
+                    )
+                severe = (
+                    requirement.key == "consciousness"
+                    and requirement.value
+                    in {
+                        "dead",
+                        "unconscious",
+                    }
+                    or requirement.key == "injury"
+                    and requirement.value in {"major", "critical"}
+                )
+                if severe and request.proposal.check_proposal.mode == "none":
+                    self._reject("CHECK_REQUIRED_FOR_L3", "该结果必须先通过一次检定")
+                if requirement.key == "consciousness" and requirement.value == "dead":
+                    self._require_visible_npc(runtime, requirement.entity_id)
+            elif isinstance(requirement, ChangeItemConditionEffect):
+                item = runtime.game_state.item_instances.get(requirement.entity_id)
+                if (
+                    item is None
+                    or item.custody.kind != "actor_inventory"
+                    or item.custody.ref_id != request.actor_id
+                ):
+                    self._reject("ITEM_NOT_OWNED", "只能改变当前角色持有物品的状态")
+            elif isinstance(requirement, MoveEntityEffect):
+                item = runtime.game_state.item_instances.get(requirement.entity_id)
+                if item is None:
+                    continue
+                if requirement.location_id is not None:
+                    if (
+                        item.custody.kind != "actor_inventory"
+                        or item.custody.ref_id != request.actor_id
+                    ):
+                        self._reject("ITEM_NOT_OWNED", "只能丢下当前角色实际持有的物品")
+                    if requirement.location_id != runtime.game_state.scene_id:
+                        self._reject(
+                            "DROP_LOCATION_MISMATCH", "丢弃物品只能落在当前位置"
+                        )
+
+    @staticmethod
+    def _require_visible_npc(runtime: EngineRuntimeSnapshot, entity_id: str) -> None:
+        """致命 AI 裁决只允许作用于当前场景中玩家可见的 NPC。"""
+
+        if runtime.is_v3:
+            spec = next(
+                (item for item in runtime.v3.entities if item.id == entity_id), None
+            )
+            if spec is not None:
+                override = runtime.game_state.entities.get(entity_id, {})
+                location_id = override.get("location_id", spec.located_in)
+                if (
+                    spec.kind == "npc"
+                    and spec.visibility in {"public", "party", "actor"}
+                    and location_id == runtime.game_state.scene_id
+                ):
+                    return
+        runtime_entity = runtime.game_state.runtime_entities.get(entity_id)
+        if (
+            runtime_entity is not None
+            and runtime_entity.get("kind") == "npc"
+            and runtime_entity.get("location_id") == runtime.game_state.scene_id
+        ):
+            return
+        ProposalCompiler._reject(
+            "AUTHORITY_NOT_GRANTED", "只能裁决当前可见 NPC 的致命结果"
         )
 
     @staticmethod
@@ -229,7 +422,9 @@ class ProposalCompiler:
         compiled: list[ActionEffect] = []
         for effect in effects:
             if isinstance(effect, EnsureRuntimeLocationEffectProposal):
-                location_id = self._declare_runtime_ref(request, effect.runtime_ref, runtime_refs)
+                location_id = self._declare_runtime_ref(
+                    request, effect.runtime_ref, runtime_refs
+                )
                 compiled.append(
                     EnsureRuntimeLocationEffect(
                         location_id=location_id,
@@ -239,17 +434,23 @@ class ProposalCompiler:
                             if effect.parent_ref is not None
                             else None
                         ),
-                        connected_location_id=self._resolve_ref(effect.connected_ref, runtime_refs),
+                        connected_location_id=self._resolve_ref(
+                            effect.connected_ref, runtime_refs
+                        ),
                     )
                 )
             elif isinstance(effect, EnsureRuntimeEntityEffectProposal):
-                entity_id = self._declare_runtime_ref(request, effect.runtime_ref, runtime_refs)
+                entity_id = self._declare_runtime_ref(
+                    request, effect.runtime_ref, runtime_refs
+                )
                 compiled.append(
                     EnsureRuntimeEntityEffect(
                         entity_id=entity_id,
                         entity_kind=effect.entity_kind,
                         name=effect.name,
-                        location_id=self._resolve_ref(effect.location_ref, runtime_refs),
+                        location_id=self._resolve_ref(
+                            effect.location_ref, runtime_refs
+                        ),
                     )
                 )
             else:
@@ -304,7 +505,9 @@ class ProposalCompiler:
                 )
             return MoveEntityEffect(
                 entity_id=entity_id,
-                location_id=self._resolve_ref(effect.destination.location_ref, runtime_refs),
+                location_id=self._resolve_ref(
+                    effect.destination.location_ref, runtime_refs
+                ),
             )
         if isinstance(effect, ChangeEntityStateEffectProposal):
             return ChangeEntityStateEffect(
@@ -312,8 +515,15 @@ class ProposalCompiler:
                 key=effect.key,
                 value=effect.value,
             )
+        if isinstance(effect, ChangeItemConditionEffectProposal):
+            return ChangeItemConditionEffect(
+                entity_id=self._resolve_ref(effect.entity_ref, runtime_refs),
+                condition=effect.condition,
+            )
         if isinstance(effect, ConsumeEntityEffectProposal):
-            return ConsumeEntityEffect(entity_id=self._resolve_ref(effect.entity_ref, runtime_refs))
+            return ConsumeEntityEffect(
+                entity_id=self._resolve_ref(effect.entity_ref, runtime_refs)
+            )
         if isinstance(effect, AdvanceWorldTimeEffectProposal):
             return AdvanceWorldTimeEffect(to_point_id=effect.to_point_id)
         if isinstance(effect, NarrativeOnlyEffectProposal):
@@ -391,38 +601,9 @@ class ProposalCompiler:
         success: tuple[ActionEffect, ...],
         failure: tuple[ActionEffect, ...],
     ) -> PersistenceIntent:
-        """从开放方法族和已编译 Effect 派生旧内核兼容提示。"""
+        """只从实际 Effect 派生旧内核提示，开放方法文本不再承担授权职责。"""
 
-        method_intents: dict[str, PersistenceIntent] = {
-            "combat": "character_state",
-            "attack": "character_state",
-            "shoot": "character_state",
-            "fire": "character_state",
-            "firearm": "character_state",
-            "kill": "character_state",
-            "knock_out": "character_state",
-            "knock_down": "character_state",
-            "stand_up": "character_state",
-            "restrain": "character_state",
-            "release": "character_state",
-            "injure_minor": "character_state",
-            "injure_major": "character_state",
-            "injure_critical": "character_state",
-            "open": "object_state",
-            "close": "object_state",
-            "lock": "object_state",
-            "unlock": "object_state",
-            "break": "object_state",
-            "repair": "object_state",
-            "pick_up": "inventory",
-            "drop": "inventory",
-            "transfer": "inventory",
-            "consume": "inventory",
-            "travel": "location",
-        }
-        if method_family in method_intents:
-            return method_intents[method_family]
-
+        del method_family
         effects = (*success, *failure)
         if any(
             isinstance(effect, MoveEntityEffect) and effect.holder_actor_id is not None
@@ -431,8 +612,15 @@ class ProposalCompiler:
             return "inventory"
         if any(isinstance(effect, EnterLocationEffect) for effect in effects):
             return "location"
-        if any(isinstance(effect, ChangeEntityStateEffect) for effect in effects):
+        if any(isinstance(effect, ChangeItemConditionEffect) for effect in effects):
             return "object_state"
+        for effect in effects:
+            if isinstance(effect, ChangeEntityStateEffect):
+                return (
+                    "character_state"
+                    if effect.key in {"consciousness", "posture", "restraint", "injury"}
+                    else "object_state"
+                )
         return "none"
 
     @staticmethod

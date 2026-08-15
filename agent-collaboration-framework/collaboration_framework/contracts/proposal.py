@@ -109,6 +109,14 @@ class ChangeEntityStateEffectProposal(ContractModel):
     value: JsonValue
 
 
+class ChangeItemConditionEffectProposal(ContractModel):
+    """提议修改 ItemInstance 的公开 condition，例如将手枪标记为 empty。"""
+
+    type: Literal["change_item_condition"] = "change_item_condition"
+    entity_ref: ProposalRef
+    condition: str = Field(min_length=1, max_length=100)
+
+
 class ConsumeEntityEffectProposal(ContractModel):
     type: Literal["consume_entity"] = "consume_entity"
     entity_ref: ProposalRef
@@ -146,6 +154,7 @@ EffectProposal = Annotated[
     | EnsureRuntimeEntityEffectProposal
     | MoveEntityEffectProposal
     | ChangeEntityStateEffectProposal
+    | ChangeItemConditionEffectProposal
     | ConsumeEntityEffectProposal
     | MarkCoreResolvedEffectProposal
     | SetEndingAvailabilityEffectProposal
@@ -153,6 +162,39 @@ EffectProposal = Annotated[
     | AdvanceWorldTimeEffectProposal
     | NarrativeOnlyEffectProposal,
     Field(discriminator="type"),
+]
+
+
+class ProcessGoalCompletionProposal(ContractModel):
+    """描述不要求持久写入的过程目标，并声明目标是否必须能够回应。"""
+
+    kind: Literal["process"] = "process"
+    interaction: Literal["observe", "social", "physical", "other"]
+
+
+class EffectsGoalCompletionProposal(ContractModel):
+    """列出实现玩家目标所必需的后置条件，独立于实际提交 Effect。"""
+
+    kind: Literal["effects"] = "effects"
+    requirements: tuple[EffectProposal, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def reject_non_terminal_requirements(self) -> EffectsGoalCompletionProposal:
+        """完成条件只能描述最终事实，不能包含创建辅助步骤或纯叙事。"""
+
+        forbidden = (
+            EnsureRuntimeLocationEffectProposal,
+            EnsureRuntimeEntityEffectProposal,
+            NarrativeOnlyEffectProposal,
+        )
+        if any(isinstance(item, forbidden) for item in self.requirements):
+            raise ValueError("目标完成条件只能包含可验证的最终结果")
+        return self
+
+
+GoalCompletionProposal: TypeAlias = Annotated[  # noqa: UP040
+    ProcessGoalCompletionProposal | EffectsGoalCompletionProposal,
+    Field(discriminator="kind"),
 ]
 
 
@@ -169,7 +211,7 @@ class SingleActionProposal(ContractModel):
     """不可信的单动作语义；其中任何字段都不代表提交授权。"""
 
     kind: Literal["single_action"] = "single_action"
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     semantic_goal: str = Field(min_length=1, max_length=2000)
     semantic_focus: ProposalRef
     anchor_ref: ProposalRef | None = None
@@ -179,6 +221,17 @@ class SingleActionProposal(ContractModel):
     rule_ref: RuleDecisionRef | None = None
     success_effect_proposals: tuple[EffectProposal, ...] = ()
     failure_effect_proposals: tuple[EffectProposal, ...] = ()
+    completion: GoalCompletionProposal | None = None
+
+    @model_validator(mode="after")
+    def validate_versioned_completion(self) -> SingleActionProposal:
+        """v2 必须显式声明完成条件，v1 仅供历史记录读取。"""
+
+        if self.schema_version == 2 and self.completion is None:
+            raise ValueError("SingleActionProposal v2 必须包含 completion")
+        if self.schema_version == 1 and self.completion is not None:
+            raise ValueError("SingleActionProposal v1 不得包含 completion")
+        return self
 
 
 class SubmitProposalRequest(ContractModel):
@@ -190,6 +243,15 @@ class SubmitProposalRequest(ContractModel):
     actor_id: str = Field(min_length=1, max_length=200)
     source_revision: str = Field(min_length=1, max_length=200)
     proposal: SingleActionProposal
+    requested_goal: str | None = Field(default=None, min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def require_trusted_goal_for_v2(self) -> SubmitProposalRequest:
+        """新 writer 必须携带 Coordinator 冻结的目标，旧请求继续显式兼容。"""
+
+        if self.proposal.schema_version == 2 and self.requested_goal is None:
+            raise ValueError("Proposal v2 必须绑定 requested_goal")
+        return self
 
 
 class ActionPlanProposalStep(ContractModel):

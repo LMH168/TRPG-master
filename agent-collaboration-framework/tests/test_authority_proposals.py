@@ -53,6 +53,32 @@ def test_host_decision_union_accepts_ordered_dynamic_effects() -> None:
     assert "persistence_intent" not in proposal.model_dump(mode="json")
 
 
+def test_v2_requires_explicit_goal_completion() -> None:
+    """新生产 Proposal 不能省略目标完成条件后退回隐式 family 推断。"""
+
+    payload = _dynamic_pickup_payload()
+    payload["schema_version"] = 2
+
+    with pytest.raises(ValidationError, match="completion"):
+        SingleActionProposal.model_validate(payload)
+
+
+def test_v2_accepts_effect_completion_separate_from_execution_effects() -> None:
+    """目标后置条件与执行 Effect 分开保存，便于 Engine 在提交后对账。"""
+
+    payload = _dynamic_pickup_payload()
+    payload["schema_version"] = 2
+    payload["completion"] = {
+        "kind": "effects",
+        "requirements": [payload["success_effect_proposals"][1]],
+    }
+
+    proposal = SingleActionProposal.model_validate(payload)
+
+    assert proposal.completion is not None
+    assert proposal.completion.kind == "effects"
+
+
 @pytest.mark.parametrize(
     "trusted_field",
     [
