@@ -15,16 +15,24 @@ from collaboration_framework.contracts import (
     ActionMethod,
     ActionPlan,
     ActionPlanPolicy,
+    ActionPlanProposal,
+    ActionPlanProposalStep,
     ActionPlanStep,
     ActionTarget,
     AdjudicationExecution,
+    AdvanceWorldTimeEffect,
     CancelActionPlanRequest,
     CancelCheckChoice,
+    ChangeEntityStateEffect,
     CheckDecisionRequest,
+    ConsumeEntityEffect,
     ContractError,
+    EnsureRuntimeEntityEffect,
     EnsureRuntimeLocationEffect,
     EnterLocationEffect,
     GetAdjudicationStatusRequest,
+    HideInformationEffect,
+    HostDecisionProposal,
     HostTurnDecision,
     KeeperCapabilityView,
     MoveEntityEffect,
@@ -34,8 +42,11 @@ from collaboration_framework.contracts import (
     PlayerView,
     PostRollDecisionRequest,
     RequiredAdjudicationCheck,
+    RevealInformationEffect,
     RuleDecisionRef,
+    SetVisibilityEffect,
     SingleActionDecision,
+    SingleActionProposal,
     SkillCheckCandidate,
     WorldClockView,
 )
@@ -111,7 +122,9 @@ async def _log_step_adjudication_failure(failure: ActionPlanStepFailure) -> None
 
 
 class HostTurnDecisionModel(Protocol):
-    async def generate(self, context: HostAgentContext) -> HostTurnDecision: ...
+    async def generate(
+        self, context: HostAgentContext
+    ) -> HostTurnDecision | HostDecisionProposal: ...
 
 
 @dataclass(frozen=True)
@@ -134,10 +147,175 @@ class _TravelTarget:
     name: str
 
 
+def _proposal_ref(kind: str, object_id: str, runtime_ids: set[str]) -> dict[str, str]:
+    """把 legacy 逻辑对象转换为 Proposal 引用，不携带任何可信身份字段。"""
+
+    if object_id in runtime_ids:
+        return {
+            "kind": "runtime_location" if kind == "location" else "runtime_entity",
+            "id": object_id,
+        }
+    return {"kind": kind, "id": object_id}
+
+
+def _proposal_from_adjudication(adjudication: ActionAdjudication) -> SingleActionProposal:
+    """将现有确定性裁决降为无授权 Proposal，供 PR2 过渡路径复用。"""
+
+    effects = (*adjudication.success_effects, *adjudication.failure_effects)
+    runtime_locations = {
+        effect.location_id for effect in effects if isinstance(effect, EnsureRuntimeLocationEffect)
+    }
+    runtime_entities = {
+        effect.entity_id for effect in effects if isinstance(effect, EnsureRuntimeEntityEffect)
+    }
+
+    def convert(effect: object) -> dict[str, object]:
+        if isinstance(effect, EnsureRuntimeLocationEffect):
+            return {
+                "type": "ensure_runtime_location",
+                "runtime_ref": _proposal_ref("location", effect.location_id, runtime_locations),
+                "name": effect.name,
+                "parent_ref": (
+                    _proposal_ref("location", effect.parent_location_id, runtime_locations)
+                    if effect.parent_location_id is not None
+                    else None
+                ),
+                "connected_ref": _proposal_ref(
+                    "location", effect.connected_location_id, runtime_locations
+                ),
+            }
+        if isinstance(effect, EnsureRuntimeEntityEffect):
+            return {
+                "type": "ensure_runtime_entity",
+                "runtime_ref": _proposal_ref("entity", effect.entity_id, runtime_entities),
+                "entity_kind": effect.entity_kind,
+                "name": effect.name,
+                "location_ref": _proposal_ref("location", effect.location_id, runtime_locations),
+            }
+        if isinstance(effect, EnterLocationEffect):
+            return {
+                "type": "enter_location",
+                "location_ref": _proposal_ref("location", effect.location_id, runtime_locations),
+            }
+        if isinstance(effect, MoveEntityEffect):
+            destination: dict[str, object] = (
+                {"kind": "self_inventory"}
+                if effect.holder_actor_id == adjudication.actor_id
+                else {
+                    "kind": "location",
+                    "location_ref": _proposal_ref(
+                        "location", effect.location_id or "", runtime_locations
+                    ),
+                }
+            )
+            return {
+                "type": "move_entity",
+                "entity_ref": _proposal_ref("entity", effect.entity_id, runtime_entities),
+                "destination": destination,
+            }
+        if isinstance(effect, ChangeEntityStateEffect):
+            return {
+                "type": "change_entity_state",
+                "entity_ref": _proposal_ref("entity", effect.entity_id, runtime_entities),
+                "key": effect.key,
+                "value": effect.value,
+            }
+        if isinstance(effect, ConsumeEntityEffect):
+            return {
+                "type": "consume_entity",
+                "entity_ref": _proposal_ref("entity", effect.entity_id, runtime_entities),
+            }
+        if isinstance(effect, RevealInformationEffect):
+            return {
+                "type": "reveal_information",
+                "information_ref": {"kind": "information", "id": effect.information_id},
+                "scope": "self" if effect.scope == "actor" else "party",
+            }
+        if isinstance(effect, HideInformationEffect):
+            return {
+                "type": "hide_information",
+                "information_ref": {"kind": "information", "id": effect.information_id},
+                "scope": "self" if effect.scope == "actor" else "party",
+            }
+        if isinstance(effect, SetVisibilityEffect):
+            return {
+                "type": "set_visibility",
+                "target_ref": {"kind": effect.target_kind, "id": effect.target_id},
+                "visible": effect.visible,
+                "scope": "self" if effect.scope == "actor" else "party",
+            }
+        if isinstance(effect, AdvanceWorldTimeEffect):
+            return {"type": "advance_world_time", "to_point_id": effect.to_point_id}
+        if isinstance(effect, NarrativeOnlyEffect):
+            return {"type": "narrative_only"}
+        # 规则专属 L4/L5 Effect 不允许从 Host Proposal 兼容转换。
+        raise ValueError(f"不支持转换为 Host Proposal 的效果: {type(effect).__name__}")
+
+    target = adjudication.target
+    runtime_ids = runtime_locations | runtime_entities
+    semantic_focus = _proposal_ref(target.kind, target.id, runtime_ids)
+    anchor_ref: dict[str, str] | None = None
+    if target.id in runtime_entities:
+        created = next(
+            effect
+            for effect in effects
+            if isinstance(effect, EnsureRuntimeEntityEffect) and effect.entity_id == target.id
+        )
+        anchor_ref = _proposal_ref("location", created.location_id, runtime_locations)
+    elif target.id in runtime_locations:
+        created_location = next(
+            effect
+            for effect in effects
+            if isinstance(effect, EnsureRuntimeLocationEffect) and effect.location_id == target.id
+        )
+        anchor_ref = _proposal_ref(
+            "location", created_location.connected_location_id, runtime_locations
+        )
+    return SingleActionProposal.model_validate(
+        {
+            "schema_version": 1,
+            "semantic_goal": adjudication.summary,
+            "semantic_focus": semantic_focus,
+            "anchor_ref": anchor_ref,
+            "method_family": adjudication.method.family,
+            "method_description": adjudication.method.description,
+            "check_proposal": adjudication.check.model_dump(mode="json"),
+            "rule_ref": (
+                adjudication.rule_decision.model_dump(mode="json")
+                if adjudication.rule_decision is not None
+                else None
+            ),
+            "success_effect_proposals": [convert(item) for item in adjudication.success_effects],
+            "failure_effect_proposals": [convert(item) for item in adjudication.failure_effects],
+        }
+    )
+
+
 class DeterministicHostTurnDecisionModel:
     """Offline-safe model used only by fake/test composition."""
 
-    async def generate(self, context: HostAgentContext) -> HostTurnDecision:
+    def __init__(self, *, authority_pipeline_mode: str = "legacy") -> None:
+        self._authority_pipeline_mode = authority_pipeline_mode
+
+    def _for_mode(self, decision: HostTurnDecision) -> HostTurnDecision | HostDecisionProposal:
+        """Fake Host 在 v2 下也只交付 Proposal，避免测试绕过生产边界。"""
+
+        if self._authority_pipeline_mode != "v2":
+            return decision
+        if isinstance(decision, ActionPlan):
+            return ActionPlanProposal(
+                semantic_goal=decision.goal,
+                steps=tuple(
+                    ActionPlanProposalStep(
+                        semantic_goal=step.semantic_goal,
+                        public_progress_label=step.public_progress_label,
+                    )
+                    for step in decision.steps
+                ),
+            )
+        return _proposal_from_adjudication(decision.adjudication)
+
+    async def generate(self, context: HostAgentContext) -> HostTurnDecision | HostDecisionProposal:
         utterance = context.player_input.utterance
         separators = ("然后", "接着", "随后", "再去", "，再", ";", "；")
         pieces = [utterance]
@@ -147,40 +325,44 @@ class DeterministicHostTurnDecisionModel:
                 pieces = [part for part in pieces if part]
                 break
         if len(pieces) >= 2:
-            return ActionPlan(
-                goal=utterance,
-                steps=tuple(
-                    ActionPlanStep(
-                        kind=(
-                            "travel"
-                            if any(word in part for word in ("去", "前往", "进入"))
-                            else "action"
-                        ),
-                        semantic_goal=part,
-                    )
-                    for part in pieces
-                ),
+            return self._for_mode(
+                ActionPlan(
+                    goal=utterance,
+                    steps=tuple(
+                        ActionPlanStep(
+                            kind=(
+                                "travel"
+                                if any(word in part for word in ("去", "前往", "进入"))
+                                else "action"
+                            ),
+                            semantic_goal=part,
+                        )
+                        for part in pieces
+                    ),
+                )
             )
 
         compact = _compact_travel_plan(context.player_view, utterance)
         if compact is not None:
-            return compact
+            return self._for_mode(compact)
 
         destination = _match_travel_target(context.player_view, utterance)
         if destination is not None:
-            return SingleActionDecision(
-                adjudication=ActionAdjudication(
-                    request_id="application-owned",
-                    source_revision=context.player_view.revision,
-                    actor_id=context.player_input.actor_id,
-                    summary=utterance,
-                    target=ActionTarget(
-                        kind="location",
-                        id=destination.id,
-                    ),
-                    method=ActionMethod(family="travel", description=utterance),
-                    check=NoAdjudicationCheck(),
-                    success_effects=(EnterLocationEffect(location_id=destination.id),),
+            return self._for_mode(
+                SingleActionDecision(
+                    adjudication=ActionAdjudication(
+                        request_id="application-owned",
+                        source_revision=context.player_view.revision,
+                        actor_id=context.player_input.actor_id,
+                        summary=utterance,
+                        target=ActionTarget(
+                            kind="location",
+                            id=destination.id,
+                        ),
+                        method=ActionMethod(family="travel", description=utterance),
+                        check=NoAdjudicationCheck(),
+                        success_effects=(EnterLocationEffect(location_id=destination.id),),
+                    )
                 )
             )
 
@@ -208,18 +390,20 @@ class DeterministicHostTurnDecisionModel:
             )
         )
         if deterministic is not None:
-            return SingleActionDecision(adjudication=deterministic)
+            return self._for_mode(SingleActionDecision(adjudication=deterministic))
 
-        return SingleActionDecision(
-            adjudication=ActionAdjudication(
-                request_id="application-owned",
-                source_revision=context.player_view.revision,
-                actor_id=context.player_input.actor_id,
-                summary=utterance,
-                target=ActionTarget(kind="location", id=context.player_view.scene.id),
-                method=ActionMethod(family="action", description=utterance),
-                check=NoAdjudicationCheck(),
-                success_effects=(NarrativeOnlyEffect(),),
+        return self._for_mode(
+            SingleActionDecision(
+                adjudication=ActionAdjudication(
+                    request_id="application-owned",
+                    source_revision=context.player_view.revision,
+                    actor_id=context.player_input.actor_id,
+                    summary=utterance,
+                    target=ActionTarget(kind="location", id=context.player_view.scene.id),
+                    method=ActionMethod(family="action", description=utterance),
+                    check=NoAdjudicationCheck(),
+                    success_effects=(NarrativeOnlyEffect(),),
+                )
             )
         )
 
@@ -615,6 +799,7 @@ class ActionPlanTurnApplication:
         recent_history_source: RecentHistorySource,
         recent_history_budget: RecentHistoryBudget,
         recent_history_enabled: bool,
+        authority_pipeline_mode: str = "legacy",
     ) -> None:
         self._store = store
         self._engine = engine
@@ -632,6 +817,7 @@ class ActionPlanTurnApplication:
             player_view_projector=self._projector,
             repair_adjudicator=orchestrator.adjudicator,
             policy=orchestrator.policy,
+            authority_pipeline_mode=authority_pipeline_mode,
         )
 
     async def start(
@@ -735,12 +921,13 @@ class ActionPlanTurnApplication:
                 player_input=player_input,
                 player_view=view,
             )
-        decision = _normalize_single_travel_decision(
-            decision,
-            player_input=player_input,
-            view=view,
-            capabilities=keeper_capabilities,
-        )
+        if isinstance(decision, (SingleActionDecision, ActionPlan)):
+            decision = _normalize_single_travel_decision(
+                decision,
+                player_input=player_input,
+                view=view,
+                capabilities=keeper_capabilities,
+            )
         await _emit_phase(on_phase, "executing_action")
         result = await self._dispatcher.execute(
             player_input,
@@ -754,14 +941,20 @@ class ActionPlanTurnApplication:
                 result,
                 on_phase=on_phase,
             )
-        if not isinstance(decision, SingleActionDecision):
-            raise TypeError("single result 必须对应 SingleActionDecision")
+        if isinstance(decision, (ActionPlan, ActionPlanProposal)):
+            raise TypeError("single result 不得对应 ActionPlan")
         if isinstance(result, SingleActionClarificationResult):
             await _emit_phase(on_phase, "refreshing_player_view")
             await _emit_phase(on_phase, "generating_narration")
             return await self._from_single_clarification(
                 player_input,
-                decision.adjudication.summary,
+                (
+                    decision.adjudication.summary
+                    if isinstance(decision, SingleActionDecision)
+                    else decision.semantic_goal
+                    if isinstance(decision, SingleActionProposal)
+                    else result.player_safe_reason
+                ),
                 result,
             )
         if result.execution.status in {
@@ -774,7 +967,11 @@ class ActionPlanTurnApplication:
             await _emit_phase(on_phase, "generating_narration")
         return await self._from_single(
             player_input,
-            decision.adjudication.summary,
+            (
+                decision.adjudication.summary
+                if isinstance(decision, SingleActionDecision)
+                else decision.semantic_goal
+            ),
             result,
         )
 
@@ -1562,14 +1759,15 @@ def build_action_plan_turn_application(
     from app.core.config import get_settings, model_client_retry_policy, secret_value
 
     resolved = settings or get_settings()
+    authority_mode = resolved.authority_pipeline_mode
     policy = ActionPlanPolicy(
         max_plan_steps=resolved.action_plan_max_steps,
         max_steps_per_advance=resolved.action_plan_max_steps_per_advance,
         max_repair_attempts=resolved.action_plan_max_repair_attempts,
     )
     if resolved.host_model_provider == "fake":
-        planner = DeterministicHostTurnDecisionModel()
-        adjudicator = _DeterministicStepAdjudicator()
+        planner = DeterministicHostTurnDecisionModel(authority_pipeline_mode=authority_mode)
+        adjudicator = _DeterministicStepAdjudicator(authority_pipeline_mode=authority_mode)
         narration_model = DeterministicActionPlanNarrationModel()
     else:
         if client is None:
@@ -1600,8 +1798,15 @@ def build_action_plan_turn_application(
                 timeout_seconds=timeout,
                 retry_policy=model_client_retry_policy(resolved),
             )
-        planner = PromptHostTurnDecisionModel(client, policy=policy)
-        adjudicator = _RuleFirstStepAdjudicator(PromptActionPlanStepAdjudicator(client))
+        planner = PromptHostTurnDecisionModel(
+            client,
+            policy=policy,
+            authority_pipeline_mode=authority_mode,
+        )
+        adjudicator = _RuleFirstStepAdjudicator(
+            PromptActionPlanStepAdjudicator(client, authority_pipeline_mode=authority_mode),
+            authority_pipeline_mode=authority_mode,
+        )
         narration_model = PromptActionPlanNarrationModel(client)
 
     plan_store = plan_store or InMemoryActionPlanRunStore()
@@ -1620,6 +1825,7 @@ def build_action_plan_turn_application(
         on_step_failure=_log_step_adjudication_failure,
         recent_history_source=(history_source if resolved.recent_history_enabled else None),
         recent_history_budget=recent_history_budget,
+        authority_pipeline_mode=authority_mode,
     )
     return ActionPlanTurnApplication(
         store=store,
@@ -1631,6 +1837,7 @@ def build_action_plan_turn_application(
         recent_history_source=history_source,
         recent_history_budget=recent_history_budget,
         recent_history_enabled=resolved.recent_history_enabled,
+        authority_pipeline_mode=authority_mode,
     )
 
 
@@ -1638,10 +1845,15 @@ class _DeterministicStepAdjudicator:
     # Deliberately conservative: the offline composition only resolves steps
     # fully implied by the safe view, then falls back to narrative-only.
 
-    async def adjudicate(self, context: ActionPlanStepContext) -> ActionAdjudication:
+    def __init__(self, *, authority_pipeline_mode: str = "legacy") -> None:
+        self._authority_pipeline_mode = authority_pipeline_mode
+
+    async def adjudicate(
+        self, context: ActionPlanStepContext
+    ) -> ActionAdjudication | SingleActionProposal:
         adjudication = _deterministic_step_adjudication(context)
         if adjudication is not None:
-            return adjudication
+            return self._for_mode(adjudication)
 
         action_text = context.step.semantic_goal.replace(
             context.player_view.scene.name,
@@ -1650,32 +1862,53 @@ class _DeterministicStepAdjudicator:
         target = _match_visible_entity(context.player_view, action_text)
         target_kind = "entity" if target is not None else "location"
         target_id = target.id if target is not None else context.player_view.scene.id
-        return ActionAdjudication(
-            request_id=context.step_request_id,
-            source_revision=context.player_view.revision,
-            actor_id=context.player_input.actor_id,
-            summary=context.step.semantic_goal,
-            target=ActionTarget(kind=target_kind, id=target_id),
-            method=ActionMethod(
-                family=context.step.kind,
-                description=context.step.semantic_goal,
-            ),
-            check=NoAdjudicationCheck(),
-            success_effects=(NarrativeOnlyEffect(),),
+        return self._for_mode(
+            ActionAdjudication(
+                request_id=context.step_request_id,
+                source_revision=context.player_view.revision,
+                actor_id=context.player_input.actor_id,
+                summary=context.step.semantic_goal,
+                target=ActionTarget(kind=target_kind, id=target_id),
+                method=ActionMethod(
+                    family=context.step.kind,
+                    description=context.step.semantic_goal,
+                ),
+                check=NoAdjudicationCheck(),
+                success_effects=(NarrativeOnlyEffect(),),
+            )
+        )
+
+    def _for_mode(
+        self, adjudication: ActionAdjudication
+    ) -> ActionAdjudication | SingleActionProposal:
+        return (
+            _proposal_from_adjudication(adjudication)
+            if self._authority_pipeline_mode == "v2"
+            else adjudication
         )
 
 
 class _RuleFirstStepAdjudicator:
     """Resolve unambiguous Match View steps without a fallible model round-trip."""
 
-    def __init__(self, fallback: ActionPlanStepAdjudicator) -> None:
+    def __init__(
+        self,
+        fallback: ActionPlanStepAdjudicator,
+        *,
+        authority_pipeline_mode: str = "legacy",
+    ) -> None:
         self._fallback = fallback
+        self._authority_pipeline_mode = authority_pipeline_mode
 
-    async def adjudicate(self, context: ActionPlanStepContext) -> ActionAdjudication:
+    async def adjudicate(
+        self, context: ActionPlanStepContext
+    ) -> ActionAdjudication | SingleActionProposal:
         adjudication = _deterministic_step_adjudication(context)
         if adjudication is not None:
-            return adjudication
+            return self._for_mode(adjudication)
         adjudication = await self._fallback.adjudicate(context)
+        if isinstance(adjudication, SingleActionProposal):
+            return adjudication
         if (
             context.step.kind == "travel"
             and _explicit_travel_phrase(context.player_input.utterance) is not None
@@ -1716,6 +1949,15 @@ class _RuleFirstStepAdjudicator:
                 deep=True,
             )
         return adjudication
+
+    def _for_mode(
+        self, adjudication: ActionAdjudication
+    ) -> ActionAdjudication | SingleActionProposal:
+        return (
+            _proposal_from_adjudication(adjudication)
+            if self._authority_pipeline_mode == "v2"
+            else adjudication
+        )
 
 
 def _deterministic_step_adjudication(

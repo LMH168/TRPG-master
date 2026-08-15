@@ -11,9 +11,11 @@ from collaboration_framework.contracts import (
     ActionAdjudication,
     ActionPlanPolicy,
     ContractError,
+    HostDecisionProposal,
     HostTurnDecision,
     Intent,
     JsonObject,
+    SingleActionProposal,
 )
 from collaboration_framework.host.adapters.openai_agents import (
     current_step_adjudication_instructions,
@@ -51,6 +53,23 @@ from app.adapters.structured_http import (
 logger = structlog.get_logger()
 
 _HOST_TURN_DECISION_ADAPTER = TypeAdapter(HostTurnDecision)
+_HOST_DECISION_PROPOSAL_ADAPTER = TypeAdapter(HostDecisionProposal)
+
+_SAFE_PROPOSAL_INSTRUCTIONS = """
+你只能输出无授权的 HostDecisionProposal。不得输出 room_id、player_id、actor_id、request_id、
+source_revision、authority、骰点结果、提交状态、状态路径或 persistence_intent。所有对象通过
+ProposalRef 引用；当前视图对象使用其实际 kind/id，本次新建对象使用 runtime_location 或
+runtime_entity 的逻辑别名，并先 ensure 再引用。
+
+单动作必须保留玩家的 semantic_goal，并给出 semantic_focus、可选 anchor_ref、开放字符串
+method_family/method_description、check_proposal 及有序的成功/失败 Effect Proposal。纯叙事动作
+使用 narrative_only；任何声称已经产生持久结果的动作都必须提供匹配 Effect。命中模组规则时
+只填写 rule_ref，成功与失败 Effect 留空，规则后果只能由 Engine 决定。
+
+动态地点必须在同一分支按 ensure_runtime_location、enter_location 排序；动态普通物品必须按
+ensure_runtime_entity、move_entity(self_inventory) 排序。无法安全建立或引用目标时返回
+ClarificationProposal，不能捏造 Canon、隐藏信息或权威结果。
+"""
 
 _SAFE_ADJUDICATION_INSTRUCTIONS = """
 叙事、对话、确认和任何没有权威状态变化的动作只能使用 narrative_only。检定候选只能
@@ -593,11 +612,15 @@ class PromptHostTurnDecisionModel:
         client: StructuredJsonClient,
         *,
         policy: ActionPlanPolicy | None = None,
+        authority_pipeline_mode: str = "legacy",
     ) -> None:
         self._client = client
         self._policy = policy or ActionPlanPolicy()
+        self._authority_pipeline_mode = authority_pipeline_mode
 
-    async def generate(self, context: HostAgentContext) -> HostTurnDecision:
+    async def generate(self, context: HostAgentContext) -> HostTurnDecision | HostDecisionProposal:
+        if self._authority_pipeline_mode == "v2":
+            return await self._generate_proposal(context)
         instructions = (
             f"{host_turn_decision_instructions(self._policy)}\n\n{_SAFE_ADJUDICATION_INSTRUCTIONS}"
         )
@@ -642,6 +665,44 @@ class PromptHostTurnDecisionModel:
             retryable=True,
         ) from last_error
 
+    async def _generate_proposal(self, context: HostAgentContext) -> HostDecisionProposal:
+        """请求无可信字段的 Proposal；结构失败时沿用统一的玩家安全错误。"""
+
+        instructions = (
+            f"{host_turn_decision_instructions(self._policy)}\n\n{_SAFE_PROPOSAL_INSTRUCTIONS}"
+        )
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                raw = await self._client.generate(
+                    schema_name="trpg_host_decision_proposal_v1",
+                    schema=_HOST_DECISION_PROPOSAL_ADAPTER.json_schema(mode="serialization"),
+                    instructions=(
+                        instructions
+                        if attempt == 0
+                        else f"{instructions}\n\n上一份返回未通过 schema，请重新生成。"
+                    ),
+                    input_payload=context.to_json_dict(),
+                )
+                return _HOST_DECISION_PROPOSAL_ADAPTER.validate_python(raw)
+            except TurnExecutionError as exc:
+                if exc.code != "MODEL_OUTPUT_UNREADABLE":
+                    raise
+                last_error = exc
+            except (StructuredOutputError, ValidationError, TypeError, ValueError) as exc:
+                last_error = exc
+            logger.warning(
+                "host_proposal_rejected",
+                attempt=attempt + 1,
+                error_type=type(last_error).__name__,
+                issues=_validation_issue_paths(last_error),
+            )
+        raise TurnExecutionError(
+            "MODEL_OUTPUT_UNREADABLE",
+            "主持模型返回了无法解读的动作提议，本次动作未生效，请重试",
+            retryable=True,
+        ) from last_error
+
 
 def _validation_issue_paths(exc: Exception | None) -> tuple[str, ...]:
     """提取不含输入值的 Pydantic 字段路径，供模型输出故障定位。"""
@@ -665,17 +726,34 @@ def _validation_issue_paths(exc: Exception | None) -> tuple[str, ...]:
 class PromptActionPlanStepAdjudicator:
     """Generate exactly one current-step adjudication from the latest safe view."""
 
-    def __init__(self, client: StructuredJsonClient) -> None:
+    def __init__(
+        self, client: StructuredJsonClient, *, authority_pipeline_mode: str = "legacy"
+    ) -> None:
         self._client = client
+        self._authority_pipeline_mode = authority_pipeline_mode
 
-    async def adjudicate(self, context: ActionPlanStepContext) -> ActionAdjudication:
+    async def adjudicate(
+        self, context: ActionPlanStepContext
+    ) -> ActionAdjudication | SingleActionProposal:
+        authority_instructions = (
+            _SAFE_PROPOSAL_INSTRUCTIONS
+            if self._authority_pipeline_mode == "v2"
+            else _SAFE_ADJUDICATION_INSTRUCTIONS
+        )
         try:
             raw = await self._client.generate(
-                schema_name="trpg_action_plan_step_adjudication",
-                schema=ActionAdjudication.model_json_schema(mode="serialization"),
+                schema_name=(
+                    "trpg_action_plan_step_proposal_v1"
+                    if self._authority_pipeline_mode == "v2"
+                    else "trpg_action_plan_step_adjudication"
+                ),
+                schema=(
+                    SingleActionProposal.model_json_schema(mode="serialization")
+                    if self._authority_pipeline_mode == "v2"
+                    else ActionAdjudication.model_json_schema(mode="serialization")
+                ),
                 instructions=(
-                    f"{current_step_adjudication_instructions()}\n\n"
-                    f"{_SAFE_ADJUDICATION_INSTRUCTIONS}"
+                    f"{current_step_adjudication_instructions()}\n\n{authority_instructions}"
                 ),
                 input_payload=context.to_json_dict(),
             )
@@ -699,6 +777,8 @@ class PromptActionPlanStepAdjudicator:
             raise
 
         try:
+            if self._authority_pipeline_mode == "v2":
+                return SingleActionProposal.model_validate(raw)
             _require_explicit_persistence_intent(raw, direct=True)
             return ActionAdjudication.model_validate(raw)
         except ValidationError as exc:

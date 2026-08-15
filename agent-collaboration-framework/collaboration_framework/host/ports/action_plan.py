@@ -13,7 +13,9 @@ from collaboration_framework.contracts import (
     AdjudicationExecution,
     AdjudicationStatusView,
     GetAdjudicationStatusRequest,
+    SingleActionProposal,
     SubmitAdjudicationRequest,
+    SubmitProposalRequest,
 )
 from collaboration_framework.host.schemas import ActionPlanRun, ActionPlanStepContext
 from collaboration_framework.host.schemas.action_plan import (
@@ -75,7 +77,9 @@ class ActionPlanRunStore(Protocol):
 class ActionPlanStepAdjudicator(Protocol):
     """Generate one proposal from only the current step and latest PlayerView."""
 
-    async def adjudicate(self, context: ActionPlanStepContext) -> ActionAdjudication: ...
+    async def adjudicate(
+        self, context: ActionPlanStepContext
+    ) -> SingleActionProposal | ActionAdjudication: ...
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,8 @@ class ActionPlanStepFailure:
 
 class SingleAdjudicationExecutor(Protocol):
     async def submit(self, request: SubmitAdjudicationRequest) -> AdjudicationExecution: ...
+
+    async def submit_proposal(self, request: SubmitProposalRequest) -> AdjudicationExecution: ...
 
     async def get_status(
         self,
