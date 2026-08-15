@@ -105,7 +105,9 @@ def plan(length: int) -> ActionPlan:
     )
 
 
-def proposal_from_adjudication(adjudication: ActionAdjudication) -> SingleActionProposal:
+def proposal_from_adjudication(
+    adjudication: ActionAdjudication,
+) -> SingleActionProposal:
     """把旧测试夹具转换成无授权 Proposal，避免测试继续依赖生产 legacy writer。"""
 
     def effect_proposal(effect):
@@ -142,7 +144,10 @@ def proposal_from_adjudication(adjudication: ActionAdjudication) -> SingleAction
                 and adjudication.success_effects
                 and all(
                     isinstance(effect, NarrativeOnlyEffect)
-                    for effect in (*adjudication.success_effects, *adjudication.failure_effects)
+                    for effect in (
+                        *adjudication.success_effects,
+                        *adjudication.failure_effects,
+                    )
                 )
                 else adjudication.method.family
             ),
@@ -202,19 +207,21 @@ class RecordingAdjudicator:
                     ),
                 )
             )
-        return proposal_from_adjudication(ActionAdjudication(
-            request_id="model-cannot-control-this",
-            source_revision="model-cannot-control-this",
-            actor_id="model-cannot-control-this",
-            summary=context.step.semantic_goal,
-            target=ActionTarget(kind="world", id=self.world_ref),
-            method=ActionMethod(
-                family=context.step.kind, description=context.step.semantic_goal
-            ),
-            check=check,
-            success_effects=(NarrativeOnlyEffect(),),
-            failure_effects=(NarrativeOnlyEffect(),),
-        ))
+        return proposal_from_adjudication(
+            ActionAdjudication(
+                request_id="model-cannot-control-this",
+                source_revision="model-cannot-control-this",
+                actor_id="model-cannot-control-this",
+                summary=context.step.semantic_goal,
+                target=ActionTarget(kind="world", id=self.world_ref),
+                method=ActionMethod(
+                    family=context.step.kind, description=context.step.semantic_goal
+                ),
+                check=check,
+                success_effects=(NarrativeOnlyEffect(),),
+                failure_effects=(NarrativeOnlyEffect(),),
+            )
+        )
 
 
 class CanonTravelAdjudicator(RecordingAdjudicator):
@@ -471,6 +478,22 @@ class ContractRejectingExecutor:
         return await self.service.get_status(request)
 
 
+class GoalNotAchievedExecutor:
+    """模拟 Engine 已提交过程结果、但完整玩家目标未达成的权威响应。"""
+
+    def __init__(self, service: AdjudicationEngineService) -> None:
+        self.service = service
+        self.submit_calls = []
+
+    async def submit_proposal(self, request):
+        self.submit_calls.append(request)
+        execution = await self.service.submit_proposal(request)
+        return execution.model_copy(update={"goal_outcome": "not_achieved"})
+
+    async def get_status(self, request):
+        return await self.service.get_status(request)
+
+
 class AlwaysMissingTargetAdjudicator(RecordingAdjudicator):
     async def adjudicate(self, context):
         self.contexts.append(context)
@@ -481,7 +504,7 @@ class AlwaysMissingTargetAdjudicator(RecordingAdjudicator):
             summary=context.step.semantic_goal,
             target=ActionTarget(kind="world", id="missing-target"),
             method=ActionMethod(
-            family="observe", description=context.step.semantic_goal
+                family="observe", description=context.step.semantic_goal
             ),
             check=NoAdjudicationCheck(),
             success_effects=(NarrativeOnlyEffect(),),
@@ -689,6 +712,30 @@ async def test_five_steps_cross_soft_window_without_becoming_product_limit() -> 
         parent_action_id=original.client_action_id,
     )
     assert completed.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_unachieved_goal_stops_plan_without_running_later_steps() -> None:
+    """当前目标未达成时必须停止计划，不能静默执行后续步骤。"""
+
+    service, _, engine, _, _ = orchestrator()
+    executor = GoalNotAchievedExecutor(engine)
+    # 测试替换同一运行时的执行端口，确保 Engine 和 PlayerView 使用同一个状态源。
+    service._executor = executor
+    original = player_input("goal-not-achieved-plan")
+
+    stopped = await service.start_or_resume(original, plan=plan(2))
+
+    assert stopped.run.status == "stopped"
+    assert stopped.run.current_step_index == 0
+    assert [step.status for step in stopped.run.steps] == ["stopped", "pending"]
+    assert stopped.run.steps[0].safe_failure_code == "GOAL_NOT_ACHIEVED"
+    assert len(executor.submit_calls) == 1
+
+    # 重放停止态不能再次调用 Engine，也不能推进尚未执行的第二步。
+    replayed = await service.start_or_resume(original, plan=plan(2))
+    assert replayed.run == stopped.run
+    assert len(executor.submit_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -2245,19 +2292,21 @@ class SleepAfterTravelAdjudicator:
                 AdvanceWorldTimeEffect(to_point_id="hour_20"),
             )
         )
-        return proposal_from_adjudication(ActionAdjudication(
-            request_id="model-cannot-control-this",
-            source_revision="model-cannot-control-this",
-            actor_id="model-cannot-control-this",
-            summary=context.step.semantic_goal,
-            target=ActionTarget(kind="location", id=context.player_view.scene.id),
-            method=ActionMethod(
-                family=context.step.kind,
-                description=context.step.semantic_goal,
-            ),
-            check=NoAdjudicationCheck(),
-            success_effects=effects,
-        ))
+        return proposal_from_adjudication(
+            ActionAdjudication(
+                request_id="model-cannot-control-this",
+                source_revision="model-cannot-control-this",
+                actor_id="model-cannot-control-this",
+                summary=context.step.semantic_goal,
+                target=ActionTarget(kind="location", id=context.player_view.scene.id),
+                method=ActionMethod(
+                    family=context.step.kind,
+                    description=context.step.semantic_goal,
+                ),
+                check=NoAdjudicationCheck(),
+                success_effects=effects,
+            )
+        )
 
 
 def v3_orchestrator(adjudicator):

@@ -142,24 +142,38 @@ def test_application_injects_plan_repair_dependencies_into_single_action_path() 
 
 
 @pytest.mark.parametrize(
-    ("outcomes", "termination_status", "expected"),
+    ("outcomes", "goal_outcomes", "termination_status", "expected"),
     (
         (
             ("failure",),
+            ("legacy_unknown",),
             "resolved",
             "这次行动未能成功，局面没有产生当前可确认的新结果。",
         ),
         (
             ("success", "failure"),
+            ("legacy_unknown", "legacy_unknown"),
             "stopped",
             "当前步骤未能成功；此前已经完成的步骤仍然保留。",
         ),
-        (("cancelled",), "cancelled", "这次行动已经取消。"),
-        (("success",), "resolved", "这次行动已经按当前可确认的结果完成。"),
+        (("cancelled",), ("cancelled",), "cancelled", "这次行动已经取消。"),
+        (
+            ("success",),
+            ("legacy_unknown",),
+            "resolved",
+            "这次行动已经按当前可确认的结果完成。",
+        ),
+        (
+            ("success",),
+            ("not_achieved",),
+            "stopped",
+            "检定或过程已经结束，但玩家声明的完整目标没有形成可确认的权威结果。",
+        ),
     ),
 )
 def test_deterministic_narration_fallback_preserves_action_outcome(
     outcomes: tuple[str, ...],
+    goal_outcomes: tuple[str, ...],
     termination_status: str,
     expected: str,
 ) -> None:
@@ -169,7 +183,12 @@ def test_deterministic_narration_fallback_preserves_action_outcome(
         termination_status=termination_status,
         player_input=SimpleNamespace(client_action_id="action-fallback"),
         completed_steps=tuple(
-            SimpleNamespace(outcome=outcome, committed_results=()) for outcome in outcomes
+            SimpleNamespace(
+                outcome=outcome,
+                goal_outcome=goal_outcome,
+                committed_results=(),
+            )
+            for outcome, goal_outcome in zip(outcomes, goal_outcomes, strict=True)
         ),
         player_view=SimpleNamespace(
             scene=SimpleNamespace(visible_entities=()),
@@ -179,6 +198,58 @@ def test_deterministic_narration_fallback_preserves_action_outcome(
     output = ActionPlanTurnApplication._deterministic_narration_fallback(cast(Any, context))
 
     assert output.text == expected
+
+
+def test_stopped_plan_clarification_requires_a_new_action() -> None:
+    """计划停止后应明确后续未执行，并要求玩家重新提交新行动。"""
+
+    context = SimpleNamespace(
+        termination_status="needs_clarification",
+        player_input=SimpleNamespace(
+            client_action_id="stopped-plan",
+            utterance="射击守墓人然后丢下手枪",
+        ),
+        completed_steps=(),
+        blocked_step_goal="射击守墓人",
+        remaining_step_goals=("丢下手枪",),
+        player_safe_failure_reason="规则只确认了命中，未确认死亡",
+        player_view=SimpleNamespace(scene=SimpleNamespace(visible_entities=())),
+    )
+
+    output = ActionPlanTurnApplication._deterministic_narration_fallback(cast(Any, context))
+
+    assert output.kind == "clarification"
+    assert "后续步骤尚未执行：丢下手枪" in output.text
+    assert "重新提交新的行动" in output.text
+
+
+def test_stopped_plan_clarification_keeps_completed_steps_and_lists_pending() -> None:
+    """已有成功步骤时仍要报告阻塞点，不能把后续步骤含糊成一个整体。"""
+
+    context = SimpleNamespace(
+        termination_status="needs_clarification",
+        player_input=SimpleNamespace(
+            client_action_id="partially-stopped-plan",
+            utterance="观察墓碑然后射击守墓人再丢下手枪",
+        ),
+        completed_steps=(
+            SimpleNamespace(
+                outcome="success",
+                semantic_goal="观察墓碑",
+                committed_results=(),
+            ),
+        ),
+        blocked_step_goal="射击守墓人",
+        remaining_step_goals=("丢下手枪",),
+        player_safe_failure_reason=None,
+        player_view=SimpleNamespace(scene=SimpleNamespace(visible_entities=())),
+    )
+
+    output = ActionPlanTurnApplication._deterministic_narration_fallback(cast(Any, context))
+
+    assert output.text.startswith("此前已经完成的步骤仍然有效")
+    assert "射击守墓人" in output.text
+    assert "后续步骤尚未执行：丢下手枪" in output.text
 
 
 def test_clarification_fallback_points_to_visible_dead_body() -> None:
