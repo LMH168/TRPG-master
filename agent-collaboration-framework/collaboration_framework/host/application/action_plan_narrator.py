@@ -33,6 +33,33 @@ _CORPSE_SEARCH_QUESTION = re.compile(
 )
 
 
+def unsupported_focus_shift_claim(
+    text: str,
+    *,
+    focus_entity_ids: tuple[str, ...],
+    visible_entities: tuple[object, ...],
+    evidence_subject_ids: set[str],
+) -> str | None:
+    """返回无提交证据却被叙事切入的同场景实体 ID。"""
+
+    if not focus_entity_ids:
+        return None
+    focused = set(focus_entity_ids)
+    normalized_text = text.replace("的", "")
+    for entity in visible_entities:
+        entity_id = getattr(entity, "id", None)
+        if entity_id in focused or entity_id in evidence_subject_ids:
+            continue
+        labels = (getattr(entity, "name", ""), *getattr(entity, "aliases", ()))
+        if any(
+            len(normalized) >= 2 and normalized in normalized_text
+            for label in labels
+            if (normalized := label.replace("的", ""))
+        ):
+            return entity_id
+    return None
+
+
 class ActionPlanNarrator:
     def __init__(self, model: ActionPlanNarrationModelPort) -> None:
         self._model = model
@@ -71,7 +98,10 @@ class ActionPlanNarrator:
         # omitted a bookkeeping field.
         claimed = tuple(
             dict.fromkeys(
-                (*output.claimed_evidence_refs, *(item.ref for item in mentioned_required))
+                (
+                    *output.claimed_evidence_refs,
+                    *(item.ref for item in mentioned_required),
+                )
             )
         )
         if claimed != output.claimed_evidence_refs:
@@ -104,6 +134,18 @@ class ActionPlanNarrator:
         if inventory_rejection is not None:
             raise ActionPlanNarrationValidationError(
                 f"persistent_claim_without_evidence:{inventory_rejection}"
+            )
+        shifted_entity_id = unsupported_focus_shift_claim(
+            output.text,
+            focus_entity_ids=context.focus_entity_ids,
+            visible_entities=context.player_view.scene.visible_entities,
+            evidence_subject_ids={
+                item.subject_id for item in context.narration_evidence
+            },
+        )
+        if shifted_entity_id is not None:
+            raise ActionPlanNarrationValidationError(
+                f"focus_shift_without_evidence:{shifted_entity_id}"
             )
         visible_dead = tuple(
             entity

@@ -58,7 +58,11 @@ runtime_entity 的逻辑别名，并先 ensure 再引用。
 
 单动作固定输出 schema_version=2，必须逐字保留输入中冻结的 semantic_goal，并给出
 semantic_focus、可选 anchor_ref、开放字符串
-method_family/method_description、check_proposal 及有序的成功/失败 Effect Proposal。纯叙事动作
+method_family/method_description、execution_means、check_proposal 及有序的成功/失败
+Effect Proposal。
+每个动作都必须声明结构化实施手段：只依赖角色自身时使用 intrinsic；依赖装备或工具时使用 item
+并引用当前 PlayerView.inventory 中的具体 id；依赖现场对象时使用 environment。不能根据玩家声称
+“持有某物”虚构物品或引用远端物品。纯叙事动作
 使用 completion={"kind":"process","interaction":"observe|social|physical|other"} 和
 narrative_only。持久目标使用 completion.kind=effects，requirements 只列完成目标必需的最终事实，
 成功 Effect 必须包含完全匹配的结果。命中模组规则时只填写 rule_ref，成功与失败 Effect 留空，
@@ -71,6 +75,11 @@ move_entity(destination.location_ref=当前地点)，并将相同 Effect 放入 
 动态地点必须在同一分支按 ensure_runtime_location、enter_location 排序；动态普通物品必须按
 ensure_runtime_entity、move_entity(self_inventory) 排序。无法安全建立或引用目标时返回
 ClarificationProposal，不能捏造 Canon、隐藏信息或权威结果。
+
+recent_history 只用于玩家安全的指代和连续交互。若相邻回合与当前回合在同一 scene，且最近一轮
+participants 中只有一个当前可见的非玩家实体，玩家只说“继续问”“过个侦察”“观察一下”等
+没有明确新对象的行动时，semantic_focus 必须保持该实体；不得因为场景中另有墓碑、门或环境
+细节而自行跳转焦点。玩家明确点名新对象时才切换。
 """
 
 _ACTION_PLAN_NARRATION_INSTRUCTIONS = """
@@ -105,6 +114,14 @@ JSON/schema 字段和值重复写入正文。
   同行者。
 - 第一人称可以出现在明确归属于玩家或某个 NPC 的对白中，但对白的说话者必须清楚；
   引号外的守秘人叙述不得以“我”认领玩家的行为、身份或经历。
+
+【跨回合连续性】
+- recent_history 按时间顺序给出玩家已看到的近期回合。相邻同场景回合若包含同一个非玩家
+  participant，模糊的观察、侦察、追问或“他”必须继续围绕该交互主体，除非玩家明确换对象。
+- NPC 只能承接自己作为 participant 的回合中亲历、说出或被玩家告知的内容；不能获得其他
+  场景、其他 NPC 或玩家私有回合的知识。
+- 同一场景连续叙事不得逐字或近似复述 recent_history 中已经发布的固定环境段落；只描述本回合
+  新动作带来的变化、回应或即时细节。没有新事实时应简洁承接，不能跳转到另一个可见对象。
 
 completed_steps[].outcome 是消耗幸运、强推等检定后决定之后的最终权威结果（检定或分支结果），
 不等于玩家完整语义目标已经实现；goal_outcome 才表示完整目标是否实现。只有
@@ -416,8 +433,10 @@ class PromptHostTurnDecisionModel:
                     input_payload=context.to_json_dict(),
                 )
                 proposal = _HOST_DECISION_PROPOSAL_ADAPTER.validate_python(raw)
-                if isinstance(proposal, SingleActionProposal) and proposal.schema_version != 2:
-                    raise ValueError("生产单动作必须使用 Proposal v2")
+                if isinstance(proposal, SingleActionProposal) and (
+                    proposal.schema_version != 2 or proposal.execution_means is None
+                ):
+                    raise ValueError("生产单动作必须使用 Proposal v2 并声明实施手段")
                 return proposal
             except TurnExecutionError as exc:
                 if exc.code != "MODEL_OUTPUT_UNREADABLE":
@@ -494,8 +513,8 @@ class PromptActionPlanStepAdjudicator:
 
         try:
             proposal = SingleActionProposal.model_validate(raw)
-            if proposal.schema_version != 2:
-                raise ValueError("生产计划步骤必须使用 Proposal v2")
+            if proposal.schema_version != 2 or proposal.execution_means is None:
+                raise ValueError("生产计划步骤必须使用 Proposal v2 并声明实施手段")
             return proposal
         except (ValidationError, ValueError) as exc:
             # HTTP 与 JSON 都成功也不代表输出符合 Proposal 契约；这一类同样

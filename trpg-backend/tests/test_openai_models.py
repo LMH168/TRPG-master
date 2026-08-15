@@ -60,6 +60,7 @@ from app.adapters.qwen_models import QwenChatCompletionsJsonClient
 from app.adapters.structured_http import (
     ModelClientRetryPolicy,
     StructuredOutputError,
+    decode_structured_json,
     is_transient_model_error,
 )
 from app.core.action_plan_turn import build_action_plan_turn_application
@@ -512,6 +513,7 @@ class ScriptedTurnDecisionClient:
                 "semantic_focus": {"kind": "location", "id": "conversation"},
                 "method_family": "action",
                 "method_description": "观察",
+                "execution_means": {"kind": "intrinsic"},
                 "check_proposal": {"mode": "none", "candidates": []},
                 "success_effect_proposals": [{"type": "narrative_only"}],
                 "failure_effect_proposals": [],
@@ -582,6 +584,7 @@ def _valid_travel_decision() -> dict:
         "semantic_focus": {"kind": "location", "id": "cemetery"},
         "method_family": "travel",
         "method_description": "去墓地",
+        "execution_means": {"kind": "intrinsic"},
         "check_proposal": {"mode": "none", "candidates": []},
         "success_effect_proposals": [
             {"type": "enter_location", "location_ref": {"kind": "location", "id": "cemetery"}}
@@ -1013,6 +1016,7 @@ async def test_step_adjudicator_receives_published_narration_as_soft_context() -
             "semantic_focus": {"kind": "location", "id": context.player_view.scene.id},
             "method_family": "action",
             "method_description": context.step.semantic_goal,
+            "execution_means": {"kind": "intrinsic"},
             "check_proposal": {"mode": "none"},
             "success_effect_proposals": [{"type": "narrative_only"}],
             "failure_effect_proposals": [],
@@ -1392,6 +1396,25 @@ async def test_client_raises_structured_output_error_when_json_is_not_an_object(
 
     with pytest.raises(StructuredOutputError):
         await _generate(_deepseek_client(handler))
+
+
+def test_structured_decoder_normalizes_safe_python_style_object() -> None:
+    """JSON mode 偶发单引号时可安全收养，但结果必须重新规范化为 JSON 值。"""
+
+    assert decode_structured_json(
+        "{'kind': 'narration', 'claimed': (), 'enabled': True}",
+        provider_name="DeepSeek",
+    ) == {"kind": "narration", "claimed": [], "enabled": True}
+
+
+def test_structured_decoder_never_executes_python_expression() -> None:
+    """兼容解析只能接受字面量，不能扩大为模型代码执行入口。"""
+
+    with pytest.raises(StructuredOutputError):
+        decode_structured_json(
+            "{'text': __import__('os').getcwd()}",
+            provider_name="DeepSeek",
+        )
 
 
 class _RecordingLogger:
