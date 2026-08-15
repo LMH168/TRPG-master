@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import uuid4
 
+import structlog
 from collaboration_framework.engine import engine_turn_context
 
 from app.core.turn_events import TurnPhase
@@ -38,6 +39,7 @@ TurnPhaseObserver = Callable[[TurnPhase], Awaitable[None]]
 # Narrator 或模型持续失败时最多自动恢复三次；耗尽后结束当前 Turn，避免一个
 # 永远无法生成叙事的回合永久占用房间。Engine receipt 已存在时只恢复叙事，绝不重做提交。
 MAX_TURN_RECOVERY_ATTEMPTS = 3
+logger = structlog.get_logger()
 
 
 @dataclass(frozen=True)
@@ -382,6 +384,18 @@ class TurnCoordinator:
             attempt_count < MAX_TURN_RECOVERY_ATTEMPTS
         )
         stage, resume_point = self._error_location(current)
+        # 协调器会把异常转换成玩家安全快照；这里仅记录类型和稳定阶段，
+        # 不记录玩家原话、Prompt、模型输出或异常正文，便于定位泛化错误来源。
+        logger.error(
+            "turn_execution_failed",
+            turn_id=current.turn_id,
+            room_ref=current.room_id.split("-", 1)[0][:8],
+            stage=stage.value,
+            error_code=str(getattr(exc, "code", "TURN_INTERNAL_ERROR")),
+            error_type=type(exc).__name__,
+            attempt_count=attempt_count,
+            retryable=retryable,
+        )
         failure = TurnFailureSnapshot(
             code=str(getattr(exc, "code", "TURN_INTERNAL_ERROR")),
             stage=stage,
