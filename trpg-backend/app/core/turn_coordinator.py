@@ -131,6 +131,9 @@ class TurnCoordinator:
             now=now,
             lease_expires_at=now + timedelta(seconds=self._lease_seconds),
         )
+        # 阶段推进可能会清理上一轮的错误投影；恢复次数必须在执行前锁存，
+        # 否则每次 Narrator 重试都会被重新计为第一次失败。
+        previous_failure_attempts = current.last_error.attempt_count if current.last_error else 0
 
         async def move(
             status: TurnStatus,
@@ -275,7 +278,11 @@ class TurnCoordinator:
             )
             return current
         except Exception as exc:
-            return await self._record_failure(current, exc)
+            return await self._record_failure(
+                current,
+                exc,
+                previous_attempts=previous_failure_attempts,
+            )
 
     async def _publish(
         self,
@@ -357,14 +364,19 @@ class TurnCoordinator:
         )
         return saved
 
-    async def _record_failure(self, current: TurnRecord, exc: Exception) -> TurnRecord:
+    async def _record_failure(
+        self,
+        current: TurnRecord,
+        exc: Exception,
+        *,
+        previous_attempts: int = 0,
+    ) -> TurnRecord:
         """持久化脱敏错误；有限次恢复失败后终止回合并释放房间占用。"""
 
         receipts = await self._store.list_receipts(current.turn_id)
         commit_state = current.commit_state
         if receipts and commit_state == TurnCommitState.NOT_COMMITTED:
             commit_state = TurnCommitState.PARTIALLY_COMMITTED
-        previous_attempts = current.last_error.attempt_count if current.last_error else 0
         attempt_count = previous_attempts + 1
         retryable = bool(getattr(exc, "retryable", True)) and (
             attempt_count < MAX_TURN_RECOVERY_ATTEMPTS
