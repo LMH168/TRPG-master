@@ -741,7 +741,11 @@ class InMemoryTurnStore(TurnStore):
             for record in self._records.values()
             if not record.is_terminal
             and record.resume_point != TurnResumePoint.AWAITING_PLAYER
-            and (record.last_error is None or record.status == TurnStatus.DELIVERING)
+            and (
+                record.last_error is None
+                or record.last_error.retryable
+                or record.status == TurnStatus.DELIVERING
+            )
             and (
                 (record.lease_owner is None and record.updated_at <= now - timedelta(seconds=60))
                 or (record.lease_expires_at is not None and record.lease_expires_at <= now)

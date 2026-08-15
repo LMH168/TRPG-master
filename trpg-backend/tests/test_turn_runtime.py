@@ -12,6 +12,7 @@ from app.core.turn_runtime import (
     TurnCommitState,
     TurnInputSnapshot,
     TurnRecoveryAction,
+    TurnResumePoint,
     TurnStatus,
     TurnWaitingReason,
     new_turn_record,
@@ -185,6 +186,50 @@ async def test_narrator_failure_resumes_without_second_engine_receipt() -> None:
     completed = await coordinator.resume(failed.turn_id, executor=execute)
     assert completed.status == TurnStatus.COMPLETED
     assert len(await store.list_receipts(failed.turn_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_retryable_rule_failure_remains_recoverable_after_restart() -> None:
+    """规则引擎暂时失败后，恢复扫描不能把房间永久锁死。"""
+
+    store = InMemoryTurnStore()
+    coordinator = TurnCoordinator(store, worker_id="worker-1")
+    attempts = 0
+
+    async def execute(on_phase):  # noqa: ANN001
+        nonlocal attempts
+        attempts += 1
+        await on_phase("executing_action")
+        if attempts == 1:
+            raise RuntimeError("temporary rule engine failure")
+        return _outcome()
+
+    failed = await coordinator.start(_request(), executor=execute)
+    assert failed.status == TurnStatus.EXECUTING
+    assert failed.last_error is not None
+    assert failed.last_error.retryable is True
+    assert failed.resume_point == TurnResumePoint.EXECUTING
+    assert failed.lease_owner is None
+
+    recoverable = await store.list_recoverable_turns(
+        now=failed.updated_at + timedelta(minutes=2),
+        limit=10,
+    )
+    assert [item.turn_id for item in recoverable] == [failed.turn_id]
+
+    recovered = await coordinator.resume(failed.turn_id, executor=execute)
+    assert recovered.status == TurnStatus.COMPLETED
+    assert attempts == 2
+
+    # 终态转换必须删除 reservation，后续新输入不应继续得到 ACTION_IN_PROGRESS。
+    async def execute_replacement(_on_phase):  # noqa: ANN001
+        return _outcome()
+
+    replacement = await coordinator.start(
+        _request("action-2"),
+        executor=execute_replacement,
+    )
+    assert replacement.client_action_id == "action-2"
 
 
 @pytest.mark.asyncio
