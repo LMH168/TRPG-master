@@ -2,6 +2,8 @@
 
 # ruff: noqa: F401 -- this module intentionally re-exports the public engine API.
 
+from collaboration_framework.runtime_context import current_turn_id, engine_turn_context
+
 from .adapters import InMemoryEngineStore
 from .adjudication import AdjudicationEngineService
 from .capabilities import (
@@ -10,8 +12,27 @@ from .capabilities import (
     require_runtime_capabilities,
 )
 from .dice import DiceRoller, SequenceDiceSource, SystemDiceSource
-from collaboration_framework.runtime_context import current_turn_id, engine_turn_context
 from .initialization import create_initial_game_state
+from .models import (
+    ActorResources,
+    ActorState,
+    AgendaItem,
+    AgendaSource,
+    CheckRun,
+    CompletedAction,
+    CompletedAdjudicationCommand,
+    DomainEvent,
+    EngineExecutionResult,
+    EngineRuntimeSnapshot,
+    GameState,
+    LocationKnowledge,
+    PendingCheckDecision,
+    RuleAgenda,
+    StateModifiedEvent,
+    ValidatedActionCommand,
+    WorldTimePoint,
+    WorldTimeState,
+)
 from .navigation import effective_location_knowledge, resolve_location_target
 from .persistent_results import (
     CHARACTER_STATE_VALUES,
@@ -20,26 +41,8 @@ from .persistent_results import (
     committed_results_from_events,
     validate_persistent_effects,
 )
-from .models import (
-    AgendaItem,
-    AgendaSource,
-    ActorResources,
-    ActorState,
-    LocationKnowledge,
-    CheckRun,
-    WorldTimePoint,
-    WorldTimeState,
-    CompletedAction,
-    CompletedAdjudicationCommand,
-    DomainEvent,
-    EngineExecutionResult,
-    EngineRuntimeSnapshot,
-    GameState,
-    PendingCheckDecision,
-    RuleAgenda,
-    StateModifiedEvent,
-)
 from .ports import EngineStore, EngineTransaction, RevisionConflictError
+from .proposal_compiler import ProposalCompiler
 from .service import RuleEngineService
 
 __all__ = [
@@ -63,6 +66,7 @@ __all__ = [
     "GameState",
     "InMemoryEngineStore",
     "PendingCheckDecision",
+    "ProposalCompiler",
     "RuleAgenda",
     "RevisionConflictError",
     "RuntimeCapabilityIssue",
@@ -70,6 +74,7 @@ __all__ = [
     "SequenceDiceSource",
     "StateModifiedEvent",
     "SystemDiceSource",
+    "ValidatedActionCommand",
     "audit_runtime_capabilities",
     "create_initial_game_state",
     "effective_location_knowledge",
