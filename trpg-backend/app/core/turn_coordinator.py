@@ -196,13 +196,18 @@ class TurnCoordinator:
                         recovery_action=TurnRecoveryAction.WAIT,
                     )
                 receipts = await self._store.list_receipts(current.turn_id)
+                # 等待玩家时可能已有部分计划步骤提交。恢复后若玩家取消剩余步骤，
+                # 这里只能保留 partially_committed；提前提升为 committed 会在根据
+                # 最终取消结果对账时形成非法降级。尚未标记部分提交的普通回合则可
+                # 由 receipt 确认规则结果已经完整落库。
+                narration_commit_state = current.commit_state
+                if receipts and narration_commit_state == TurnCommitState.NOT_COMMITTED:
+                    narration_commit_state = TurnCommitState.COMMITTED
                 await move(
                     TurnStatus.AWAITING_NARRATION,
                     resume_point=TurnResumePoint.NARRATING,
                     recovery_action=TurnRecoveryAction.WAIT,
-                    commit_state=(
-                        TurnCommitState.COMMITTED if receipts else TurnCommitState.NOT_COMMITTED
-                    ),
+                    commit_state=narration_commit_state,
                 )
 
         if current.status == TurnStatus.RECEIVED:

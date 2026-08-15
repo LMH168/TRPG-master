@@ -88,6 +88,7 @@ from app.core.turn_observability import (
     log_player_input,
     log_turn_failed,
 )
+from app.core.turn_runtime import TurnConflictError
 from app.dto.ws import (
     ActionBroadcastPayload,
     ActionPlanCancelPayload,
@@ -529,6 +530,12 @@ async def _ensure_opening_narration(
 
 
 def _map_turn_error(exc: Exception) -> tuple[str, str, bool]:
+    if isinstance(exc, TurnConflictError):
+        # Store 内部使用统一 Turn 冲突码；WebSocket 对外继续保留既有
+        # ACTION_IN_PROGRESS，避免已发布客户端把正常房间占用误判成内部错误。
+        if exc.code == "TURN_IN_PROGRESS":
+            return "ACTION_IN_PROGRESS", "当前房间已有行动正在处理，请稍后重试", True
+        return exc.code, str(exc), False
     if isinstance(exc, AdjudicationValidationError):
         feedback = exc.result.to_feedback()
         return (
