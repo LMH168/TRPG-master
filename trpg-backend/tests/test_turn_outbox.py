@@ -125,6 +125,30 @@ async def test_player_scoped_outbox_never_reaches_other_player() -> None:
 
 
 @pytest.mark.asyncio
+async def test_public_narration_does_not_leak_player_view_to_other_player() -> None:
+    """公开叙事可广播，但 PlayerView 与完成快照必须始终限制为 owner。"""
+
+    store = InMemoryTurnStore()
+    await _completed_turn(store, visibility="public")
+    manager = ConnectionManager()
+    owner = _Socket()
+    other = _Socket()
+    manager.add("room-1", owner, "player-1")
+    manager.add("room-1", other, "player-2")
+    dispatcher = TurnOutboxDispatcher(store, manager, worker_id="outbox-worker")
+
+    await dispatcher.dispatch_due()
+
+    owner_types = [frame.get("type") or frame.get("message_type") for frame in owner.frames]
+    other_types = [frame.get("type") or frame.get("message_type") for frame in other.frames]
+    assert owner_types[-3:] == ["narration.push", "view.updated", "turn.completed"]
+    assert "narration.push" in other_types
+    assert "view.updated" not in other_types
+    assert "turn.completed" not in other_types
+    assert all("playerView" not in str(frame) for frame in other.frames)
+
+
+@pytest.mark.asyncio
 async def test_real_send_failure_enters_dead_letter_after_five_attempts() -> None:
     store = InMemoryTurnStore()
     turn = await _completed_turn(store)

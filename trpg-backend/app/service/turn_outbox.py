@@ -53,11 +53,11 @@ class TurnOutboxDispatcher:
             frames = self._frames(message)
             recipient_count: int | None = None
             failed = False
-            for frame in frames:
+            for frame, player_scoped in frames:
                 stats = await self._manager.deliver(
                     room_id=message.room_id,
                     player_id=message.player_id,
-                    player_scoped=message.visibility == "player_scoped",
+                    player_scoped=player_scoped,
                     message=frame,
                 )
                 recipient_count = stats.recipient_count
@@ -92,8 +92,8 @@ class TurnOutboxDispatcher:
             )
 
     @staticmethod
-    def _frames(message: NarrationOutboxMessage) -> tuple[dict, ...]:
-        """只从持久化 bundle 构造帧，不重新调用 Narrator 或读取隐藏状态。"""
+    def _frames(message: NarrationOutboxMessage) -> tuple[tuple[dict, bool], ...]:
+        """构造帧及作用域；玩家视图和完成结果永远只投递给 owner。"""
 
         narration = message.payload.get("narration")
         completion = message.payload.get("completion")
@@ -103,34 +103,47 @@ class TurnOutboxDispatcher:
         if not isinstance(text, str) or not text:
             raise ValueError("Outbox narration 缺少文本")
         chunks = split_narration_chunks(text)
-        frames: list[dict] = [
-            {
-                "type": "narration.chunk",
-                "payload": {
-                    "messageId": message.message_id,
-                    "sequence": index,
-                    "text": chunk,
+        narration_player_scoped = message.visibility == "player_scoped"
+        frames: list[tuple[dict, bool]] = [
+            (
+                {
+                    "type": "narration.chunk",
+                    "payload": {
+                        "messageId": message.message_id,
+                        "sequence": index,
+                        "text": chunk,
+                    },
                 },
-            }
+                narration_player_scoped,
+            )
             for index, chunk in enumerate(chunks)
         ]
         frames.extend(
             (
-                {"type": "narration.push", "payload": narration},
-                {
-                    "type": "view.updated",
-                    "payload": {
-                        "playerId": completion["playerId"],
-                        "playerView": completion["playerView"],
+                (
+                    {"type": "narration.push", "payload": narration},
+                    narration_player_scoped,
+                ),
+                (
+                    {
+                        "type": "view.updated",
+                        "payload": {
+                            "playerId": completion["playerId"],
+                            "playerView": completion["playerView"],
+                        },
                     },
-                },
-                {
-                    "protocol_version": "1",
-                    "message_type": "turn.completed",
-                    "correlation_id": completion["clientActionId"],
-                    "turn_id": completion["turnId"],
-                    "payload": completion,
-                },
+                    True,
+                ),
+                (
+                    {
+                        "protocol_version": "1",
+                        "message_type": "turn.completed",
+                        "correlation_id": completion["clientActionId"],
+                        "turn_id": completion["turnId"],
+                        "payload": completion,
+                    },
+                    True,
+                ),
             )
         )
         return tuple(frames)

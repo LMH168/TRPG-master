@@ -1,6 +1,7 @@
 """WebSocket protocol, authorization, persistence, and reconnect regression tests."""
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from collaboration_framework.contracts import (
@@ -1151,6 +1152,173 @@ def test_action_plan_submit_emits_safe_progress_and_one_parent_completion(
     ]
     assert len(persisted_actions) == 1
     assert persisted_actions[0]["payload"]["utterance"] == "先观察房间，然后询问眼前的人"
+
+
+def _configure_v2_runtime(monkeypatch: pytest.MonkeyPatch, turn_store_factory):
+    """把显式 v2 组合根完整切到当前用例的隔离数据库。"""
+
+    monkeypatch.setattr(
+        ws_controller,
+        "get_settings",
+        lambda: SimpleNamespace(turn_runtime_mode="v2"),
+    )
+    from app.core.turn_coordinator import TurnCoordinator
+    from app.service import reliable_turn_runtime
+    from app.service.turn_outbox import TurnOutboxDispatcher
+
+    reliable_store = turn_store_factory()
+    monkeypatch.setattr(reliable_turn_runtime, "turn_store", reliable_store)
+    monkeypatch.setattr(
+        reliable_turn_runtime,
+        "turn_coordinator",
+        TurnCoordinator(reliable_store, worker_id="ws-v2-test"),
+    )
+    monkeypatch.setattr(
+        reliable_turn_runtime,
+        "turn_outbox_dispatcher",
+        TurnOutboxDispatcher(reliable_store, ws_controller.manager, worker_id="ws-v2-outbox"),
+    )
+    monkeypatch.setattr(
+        reliable_turn_runtime,
+        "session_view_application",
+        ws_controller.session_view_application,
+    )
+    monkeypatch.setattr(
+        reliable_turn_runtime,
+        "action_plan_turn_application",
+        ws_controller.action_plan_turn_application,
+    )
+    return reliable_store
+
+
+def test_v2_action_persists_turn_and_sends_outbox_before_completion(
+    sync_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    turn_store_factory,
+) -> None:
+    """显式 v2 模式必须从 Outbox 发送，并可通过 REST 找回同一最终结果。"""
+
+    _configure_v2_runtime(monkeypatch, turn_store_factory)
+    token = register_and_login(sync_client, "reliable_turn_v2")
+    room = create_room(sync_client, token)
+    advance_to_building(sync_client, room)
+    complete_character(sync_client, room["roomId"], room["reconnectToken"])
+    start_game(sync_client, room, token)
+
+    with sync_client.websocket_connect(f"/ws/{room['roomId']}?token={token}") as ws:
+        ws.send_json(
+            {
+                "type": "room.join",
+                "playerId": room["playerId"],
+                "payload": {"reconnectToken": room["reconnectToken"]},
+            }
+        )
+        ws.receive_json()  # session.bound
+        ws.receive_json()  # current view.updated
+        receive_replayed_opening(ws)
+        ws.send_json(
+            {
+                "type": "action.plan.submit",
+                "playerId": room["playerId"],
+                "payload": {
+                    "clientActionId": "reliable-v2-action",
+                    "utterance": "观察眼前的房间",
+                },
+            }
+        )
+        completed, seen = receive_until(
+            ws,
+            lambda message: message.get("message_type") == "turn.completed",
+            limit=60,
+        )
+
+    narration_index = next(
+        index for index, message in enumerate(seen) if message.get("type") == "narration.push"
+    )
+    view_index = next(
+        index
+        for index, message in enumerate(seen[narration_index + 1 :], narration_index + 1)
+        if message.get("type") == "view.updated"
+    )
+    completed_index = seen.index(completed)
+    assert narration_index < view_index < completed_index
+    turn_id = completed["turn_id"]
+    assert completed["payload"]["turnId"] == turn_id
+
+    response = sync_client.get(
+        f"{ROOMS_BASE}/{room['roomId']}/turns",
+        params={"clientActionId": "reliable-v2-action"},
+        headers={"X-Reconnect-Token": room["reconnectToken"]},
+    )
+    assert response.status_code == 200
+    turns = response.json()["data"]
+    assert len(turns) == 1
+    assert turns[0]["turnId"] == turn_id
+    assert turns[0]["status"] == "completed"
+    assert turns[0]["messageId"] == turn_id
+
+
+def test_v2_pending_decision_is_recoverable_from_turn_api(
+    sync_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    turn_store_factory,
+) -> None:
+    """技能选择必须落进 Turn 快照，断开 WebSocket 后仍能由 REST 找回。"""
+
+    _configure_v2_runtime(monkeypatch, turn_store_factory)
+    monkeypatch.setattr(
+        ws_controller.action_plan_turn_application,
+        "_planner",
+        _WsSingleActionCheckPlanner(),
+    )
+    token = register_and_login(sync_client, "reliable_turn_v2_pending")
+    room = create_room(sync_client, token)
+    advance_to_building(sync_client, room)
+    complete_character(sync_client, room["roomId"], room["reconnectToken"])
+    start_game(sync_client, room, token)
+    action_id = "reliable-v2-pending"
+
+    with sync_client.websocket_connect(f"/ws/{room['roomId']}?token={token}") as ws:
+        ws.send_json(
+            {
+                "type": "room.join",
+                "playerId": room["playerId"],
+                "payload": {"reconnectToken": room["reconnectToken"]},
+            }
+        )
+        ws.receive_json()
+        ws.receive_json()
+        receive_replayed_opening(ws)
+        ws.send_json(
+            {
+                "type": "action.plan.submit",
+                "playerId": room["playerId"],
+                "payload": {
+                    "clientActionId": action_id,
+                    "utterance": "仔细检查书架上的文件",
+                },
+            }
+        )
+        pending, _ = receive_until(
+            ws,
+            lambda message: message.get("type") == "adjudication.pending",
+        )
+
+    response = sync_client.get(
+        f"{ROOMS_BASE}/{room['roomId']}/turns",
+        params={"clientActionId": action_id},
+        headers={"X-Reconnect-Token": room["reconnectToken"]},
+    )
+    assert response.status_code == 200
+    turn = response.json()["data"][0]
+    assert turn["status"] == "adjudicating"
+    assert turn["waitingReason"] == "skill_choice"
+    assert turn["recoveryAction"] == "choose_skill"
+    assert (
+        turn["pendingDecision"]["decision_id"]
+        == pending["payload"]["pendingDecision"]["decision_id"]
+    )
+    assert turn["pendingDecision"]["options"]
 
 
 def test_single_action_pending_resumes_without_plan_run(

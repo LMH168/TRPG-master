@@ -31,6 +31,7 @@ from app.service.portrait_generation import (
     PortraitGenerationService,
     build_portrait_generation_service,
 )
+from app.service.reliable_turn_runtime import turn_runtime_supervisor
 
 # 模块被导入时就把 structlog 配好（只需要配一次），后面直接用 structlog.get_logger()。
 configure_logging()
@@ -67,10 +68,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await ensure_seed_content(db)
     portrait_service: PortraitGenerationService = app.state.portrait_generation_service
     await portrait_service.recover_interrupted()
+    # 已持久化 Outbox 不依赖当前 feature flag；即使临时回滚到 legacy，仍必须
+    # 继续投递并保留查询能力，不能把已提交回合交回旧链重做。
+    await turn_runtime_supervisor.start()
     logger.info("app_started")
     try:
         yield
     finally:
+        await turn_runtime_supervisor.shutdown()
         await portrait_service.shutdown()
         logger.info("app_stopped")
 

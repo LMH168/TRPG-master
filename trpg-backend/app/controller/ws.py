@@ -73,6 +73,7 @@ from app.core.action_plan_turn import (
     ActionPlanTurnResult,
     action_plan_turn_application,
 )
+from app.core.config import get_settings
 from app.core.db import async_session_factory
 from app.core.engine import adjudication_engine_service
 from app.core.turn import (
@@ -126,6 +127,7 @@ from app.dto.ws import (
 )
 from app.service import auth as auth_service
 from app.service import chat as chat_service
+from app.service import reliable_turn_runtime
 from app.service import room as room_service
 from app.service.action_lock import action_lock_manager
 from app.service.ws_events import broadcast_room_state
@@ -278,6 +280,23 @@ async def _send_turn_failed(
             code=code,
             public_message=public_message,
             retryable=retryable,
+        ),
+    )
+
+
+async def _send_persisted_turn_failure(websocket: WebSocket, turn) -> None:  # noqa: ANN001
+    """把 Coordinator 已持久化的玩家安全错误投影到当前连接。"""
+
+    failure = turn.last_error
+    if failure is None:
+        return
+    await _send_turn_event(
+        websocket,
+        TurnFailed(
+            correlation_id=turn.client_action_id,
+            code=failure.code,
+            public_message=failure.public_message,
+            retryable=failure.retryable,
         ),
     )
 
@@ -908,6 +927,76 @@ async def _emit_check_result(
     )
 
 
+async def _decide_skill_for_reliable_turn(
+    *,
+    db: AsyncSession,
+    websocket: WebSocket,
+    room_id: str,
+    player_id: str,
+    choice: AdjudicationChoicePayload,
+    selected: CancelCheckChoice | SelectCheckChoice,
+) -> object:
+    """在 Coordinator 的 turn_id 上下文内提交技能选择并发送公开检定结果。"""
+
+    execution = await adjudication_engine_service.decide(
+        CheckDecisionRequest(
+            request_id=choice.request_id,
+            room_id=room_id,
+            player_id=player_id,
+            source_revision=choice.source_revision,
+            decision_id=choice.decision_id,
+            decision_version=choice.decision_version,
+            choice=selected,
+        )
+    )
+    await _emit_check_result(
+        db,
+        websocket,
+        room_id=room_id,
+        player_id=player_id,
+        client_action_id=choice.client_action_id,
+        execution=execution,
+    )
+    return execution
+
+
+async def _decide_post_roll_for_reliable_turn(
+    *,
+    db: AsyncSession,
+    websocket: WebSocket,
+    room_id: str,
+    player_id: str,
+    choice: AdjudicationPostRollPayload,
+) -> object:
+    """在同一可靠回合内提交掷骰后决定，并只投影玩家可见结果。"""
+
+    execution = await adjudication_engine_service.decide_post_roll(
+        PostRollDecisionRequest(
+            request_id=choice.request_id,
+            room_id=room_id,
+            player_id=player_id,
+            source_revision=choice.source_revision,
+            check_id=choice.check_id,
+            check_version=choice.check_version,
+            option_id=choice.option_id,
+            push_adjudication=(
+                PushAdjudication(method_description=choice.revised_method)
+                if choice.revised_method is not None
+                else None
+            ),
+        )
+    )
+    await _emit_check_result(
+        db,
+        websocket,
+        room_id=room_id,
+        player_id=player_id,
+        client_action_id=choice.client_action_id,
+        execution=execution,
+    )
+    return execution
+
+
 async def _broadcast_action_utterance(
     db: AsyncSession,
     player_input: PlayerInput,
@@ -1020,7 +1109,7 @@ async def _handle_room_join(
         await websocket.close(code=_NOT_FOUND_CLOSE_CODE)
         return False
     assert player_id is not None  # 上面能走到这里，player_id 必然非空（见 get_player 调用）
-    manager.add(room_id, websocket)
+    manager.add(room_id, websocket, player_id)
     await room_service.set_player_connected(db, player_id, True)
     payload = SessionBoundPayload(room_id=room_id, player_id=player_id)
     envelope = ServerEnvelope(type="session.bound", payload=payload.model_dump(by_alias=True))
@@ -1268,6 +1357,56 @@ async def room_socket(websocket: WebSocket, room_id: str, token: str | None = No
                                 correlation_id=submit_payload.client_action_id,
                             )
                             continue
+                        if get_settings().turn_runtime_mode == "v2":
+                            try:
+                                response = await reliable_turn_runtime.start_action(
+                                    room_id=room_id,
+                                    player_id=bound_player_id,
+                                    client_action_id=submit_payload.client_action_id,
+                                    utterance=submit_payload.utterance,
+                                    on_progress=lambda event: _send_plan_progress(
+                                        websocket,
+                                        event,
+                                    ),
+                                    on_phase=partial(
+                                        _send_turn_phase,
+                                        websocket,
+                                        submit_payload.client_action_id,
+                                    ),
+                                    on_input_accepted=partial(
+                                        _broadcast_action_utterance,
+                                        db,
+                                    ),
+                                )
+                                if (
+                                    response.action_result is not None
+                                    and response.action_result.waiting_for_player
+                                ):
+                                    await _send_action_plan_result(
+                                        db,
+                                        websocket,
+                                        room_id,
+                                        bound_player_id,
+                                        response.action_result,
+                                    )
+                                await _send_persisted_turn_failure(websocket, response.turn)
+                            except Exception as exc:
+                                code, _, _ = _map_turn_error(exc)
+                                log_turn_failed(
+                                    room_id=room_id,
+                                    stage="可靠回合",
+                                    code=code,
+                                    correlation_id=submit_payload.client_action_id,
+                                    error_type=type(exc).__name__,
+                                    error_reason=_turn_error_reason(exc),
+                                    exc=exc,
+                                )
+                                await _send_turn_failed(
+                                    websocket,
+                                    submit_payload.client_action_id,
+                                    exc,
+                                )
+                            continue
                         if await _recover_persisted_turn_narration(
                             db,
                             websocket,
@@ -1372,6 +1511,43 @@ async def room_socket(websocket: WebSocket, room_id: str, token: str | None = No
                             )
                             continue
                         try:
+                            if get_settings().turn_runtime_mode == "v2":
+                                response = await reliable_turn_runtime.continue_after_decision(
+                                    room_id=room_id,
+                                    player_id=bound_player_id,
+                                    client_action_id=choice.client_action_id,
+                                    decide=partial(
+                                        _decide_skill_for_reliable_turn,
+                                        db=db,
+                                        websocket=websocket,
+                                        room_id=room_id,
+                                        player_id=bound_player_id,
+                                        choice=choice,
+                                        selected=selected,
+                                    ),
+                                    on_progress=lambda event: _send_plan_progress(
+                                        websocket,
+                                        event,
+                                    ),
+                                    on_phase=partial(
+                                        _send_turn_phase,
+                                        websocket,
+                                        choice.client_action_id,
+                                    ),
+                                )
+                                if (
+                                    response.action_result is not None
+                                    and response.action_result.waiting_for_player
+                                ):
+                                    await _send_action_plan_result(
+                                        db,
+                                        websocket,
+                                        room_id,
+                                        bound_player_id,
+                                        response.action_result,
+                                    )
+                                await _send_persisted_turn_failure(websocket, response.turn)
+                                continue
                             execution = await adjudication_engine_service.decide(
                                 CheckDecisionRequest(
                                     request_id=choice.request_id,
@@ -1436,6 +1612,42 @@ async def room_socket(websocket: WebSocket, room_id: str, token: str | None = No
                     elif event_type == "adjudication.post_roll":
                         choice = AdjudicationPostRollPayload.model_validate(raw_payload)
                         try:
+                            if get_settings().turn_runtime_mode == "v2":
+                                response = await reliable_turn_runtime.continue_after_decision(
+                                    room_id=room_id,
+                                    player_id=bound_player_id,
+                                    client_action_id=choice.client_action_id,
+                                    decide=partial(
+                                        _decide_post_roll_for_reliable_turn,
+                                        db=db,
+                                        websocket=websocket,
+                                        room_id=room_id,
+                                        player_id=bound_player_id,
+                                        choice=choice,
+                                    ),
+                                    on_progress=lambda event: _send_plan_progress(
+                                        websocket,
+                                        event,
+                                    ),
+                                    on_phase=partial(
+                                        _send_turn_phase,
+                                        websocket,
+                                        choice.client_action_id,
+                                    ),
+                                )
+                                if (
+                                    response.action_result is not None
+                                    and response.action_result.waiting_for_player
+                                ):
+                                    await _send_action_plan_result(
+                                        db,
+                                        websocket,
+                                        room_id,
+                                        bound_player_id,
+                                        response.action_result,
+                                    )
+                                await _send_persisted_turn_failure(websocket, response.turn)
+                                continue
                             execution = await adjudication_engine_service.decide_post_roll(
                                 PostRollDecisionRequest(
                                     request_id=choice.request_id,
@@ -1505,6 +1717,15 @@ async def room_socket(websocket: WebSocket, room_id: str, token: str | None = No
                     elif event_type == "action.plan.cancel":
                         cancel = ActionPlanCancelPayload.model_validate(raw_payload)
                         try:
+                            if get_settings().turn_runtime_mode == "v2":
+                                response = await reliable_turn_runtime.cancel_action(
+                                    room_id=room_id,
+                                    player_id=bound_player_id,
+                                    client_action_id=cancel.client_action_id,
+                                    request_id=cancel.request_id,
+                                )
+                                await _send_persisted_turn_failure(websocket, response.turn)
+                                continue
                             result = await action_plan_turn_application.cancel_remaining(
                                 room_id=room_id,
                                 player_id=bound_player_id,
