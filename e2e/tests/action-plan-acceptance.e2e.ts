@@ -391,13 +391,17 @@ for (const canon of CANON_CASES) {
         ).length,
         1,
       )
-      assert.equal(
-        conversation.filter(
-          (event) =>
-            event.type === 'narration.push' && event.payload.messageId === actionId,
-        ).length,
-        1,
+      const persistedNarrations = conversation.filter(
+        (event) =>
+          event.type === 'narration.push' && event.payload.clientActionId === actionId,
       )
+      assert.equal(persistedNarrations.length, 1)
+      const persistedNarration = persistedNarrations[0]
+      assert.equal(persistedNarration?.type, 'narration.push')
+      if (persistedNarration?.type !== 'narration.push') {
+        assert.fail('缺少 narration.push')
+      }
+      assert.equal(persistedNarration.payload.messageId, persistedNarration.payload.turnId)
       assertPersistedPlan(room.roomId, actionId)
     } finally {
       off()
@@ -504,12 +508,17 @@ test('Issue #246 恢复：断线重连后用原 parent 恢复 pending，重复�
       room.roomId,
       room.reconnectToken,
     )
-    assert.equal(
-      conversation.filter(
-        (event) => event.type === 'narration.push' && event.payload.messageId === actionId,
-      ).length,
-      1,
+    const persistedNarrations = conversation.filter(
+      (event) =>
+        event.type === 'narration.push' && event.payload.clientActionId === actionId,
     )
+    assert.equal(persistedNarrations.length, 1)
+    const persistedNarration = persistedNarrations[0]
+    assert.equal(persistedNarration?.type, 'narration.push')
+    if (persistedNarration?.type !== 'narration.push') {
+      assert.fail('缺少 narration.push')
+    }
+    assert.equal(persistedNarration.payload.messageId, persistedNarration.payload.turnId)
     assertPersistedPlan(room.roomId, actionId)
     assert.equal(
       observed.some(

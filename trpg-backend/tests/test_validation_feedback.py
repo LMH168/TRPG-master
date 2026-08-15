@@ -7,6 +7,7 @@ from collaboration_framework.contracts import (
 from pydantic import BaseModel, ValidationError
 
 from app.controller.ws import _map_turn_error
+from app.core.turn_runtime import TurnConflictError
 
 
 def test_turn_error_uses_player_safe_validation_projection() -> None:
@@ -77,4 +78,14 @@ def test_actor_binding_error_keeps_stable_public_code() -> None:
         "ACTOR_NOT_CONTROLLED",
         "当前玩家不能控制该局内角色",
         False,
+    )
+
+
+def test_turn_room_reservation_keeps_websocket_compatibility_code() -> None:
+    """数据库 Turn 占用在公开 WebSocket 协议中保持既有错误码。"""
+
+    assert _map_turn_error(TurnConflictError("TURN_IN_PROGRESS", "当前房间已有未完成回合")) == (
+        "ACTION_IN_PROGRESS",
+        "当前房间已有行动正在处理，请稍后重试",
+        True,
     )

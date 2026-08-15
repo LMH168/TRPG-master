@@ -542,6 +542,12 @@ class TurnRuntimeStore(TurnStore, Protocol):
         replay_event: TurnReplayEvent,
     ) -> tuple[TurnRecord, NarrationOutboxMessage, bool]: ...
 
+    async def get_outbox(
+        self,
+        turn_id: str,
+        message_type: str = "narration.push",
+    ) -> NarrationOutboxMessage | None: ...
+
     async def claim_due_outbox(
         self,
         *,

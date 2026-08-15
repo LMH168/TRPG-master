@@ -130,9 +130,8 @@ class Player(Base):
     reconnect_token: Mapped[str] = mapped_column(
         Uuid(as_uuid=False), default=lambda: str(uuid.uuid4()), nullable=False
     )
-    # WS 连接是否处于活跃状态：room.join 时置 True，WS 断开时置 False——
-    # 断线重连（room.rejoin，issue 决策 6）读这个字段判断"这个玩家掉线了吗"，
-    # 本期只维护状态，不接断线重连的真实逻辑。
+    # WS 连接是否处于活跃状态：room.join 时置 True，WS 断开时置 False；房间连接
+    # 统一重新 room.join，动作恢复则使用独立的 REST Turn 查询。
     connected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     joined_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)

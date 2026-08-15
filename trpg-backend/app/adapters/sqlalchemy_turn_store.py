@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, or_, select, update
@@ -19,6 +20,7 @@ from app.core.turn_runtime import (
     TurnConflictError,
     TurnContractError,
     TurnFailureSnapshot,
+    TurnInputSnapshot,
     TurnNotFoundError,
     TurnOutboxStatus,
     TurnRecord,
@@ -26,8 +28,10 @@ from app.core.turn_runtime import (
     TurnResultSnapshot,
     TurnResumePoint,
     TurnStatus,
+    new_turn_record,
     validate_turn_cas_update,
 )
+from app.models.engine import ActionPlanRunRecord, CheckRunRecord, PendingCheckDecisionRecord
 from app.models.event import Event
 from app.models.turn import (
     NarrationOutboxRecord,
@@ -82,6 +86,160 @@ class SqlAlchemyTurnStore:
                 self._require_same_idempotent_request(existing, proposed)
                 return existing, False
             raise TurnConflictError("TURN_IN_PROGRESS", "当前房间已有未完成回合") from exc
+
+    async def adopt_legacy_inflight_turns(self, *, limit: int = 20) -> tuple[TurnRecord, ...]:
+        """把信息完整的旧非终态计划或检定原子绑定到新的 Turn。
+
+        已完成历史不会进入扫描；缺少原始计划输入或玩家安全检定摘要的记录也保持
+        原样，避免为不完整历史伪造回合身份。收养与 ``turn_id`` 回写位于同一事务，
+        进程退出后不会留下“有 Turn、旧计划却未归属”的半迁移状态。
+        """
+
+        if limit < 1:
+            raise TurnContractError("limit 必须大于 0")
+        adopted: list[TurnRecord] = []
+        async with self._session_factory() as session, session.begin():
+            plan_records = tuple(
+                await session.scalars(
+                    select(ActionPlanRunRecord)
+                    .where(
+                        ActionPlanRunRecord.turn_id.is_(None),
+                        ActionPlanRunRecord.status.in_(
+                            (
+                                "active",
+                                "checkpointed",
+                                "waiting_for_player",
+                                "needs_clarification",
+                                "retryable_failure",
+                                "awaiting_narration",
+                            )
+                        ),
+                    )
+                    .order_by(ActionPlanRunRecord.updated_at, ActionPlanRunRecord.plan_id)
+                    .limit(limit)
+                )
+            )
+            for record in plan_records:
+                payload = deepcopy(record.run_json)
+                utterance = payload.get("parent_utterance")
+                if not isinstance(utterance, str) or not utterance.strip():
+                    continue
+                turn = await self._adopt_snapshot(
+                    session,
+                    TurnInputSnapshot(
+                        room_id=record.room_id,
+                        player_id=record.player_id,
+                        actor_id=record.actor_id,
+                        client_action_id=record.parent_action_id,
+                        utterance=utterance,
+                    ),
+                    created_at=record.created_at,
+                )
+                if turn is None:
+                    continue
+                payload["turn_id"] = turn.turn_id
+                record.turn_id = turn.turn_id
+                record.run_json = payload
+                adopted.append(turn)
+
+            remaining = limit - len(adopted)
+            if remaining > 0:
+                # 旧单动作没有 ActionPlanRun；只有仍等待选择且保存了玩家安全摘要的
+                # 记录才具备完整恢复信息。已 resolved 的历史不会被回填。
+                decisions = tuple(
+                    await session.scalars(
+                        select(PendingCheckDecisionRecord)
+                        .where(PendingCheckDecisionRecord.status == "awaiting_skill_choice")
+                        .order_by(PendingCheckDecisionRecord.updated_at)
+                        .limit(remaining)
+                    )
+                )
+                checks = tuple(
+                    await session.scalars(
+                        select(CheckRunRecord)
+                        .where(CheckRunRecord.status == "awaiting_post_roll_decision")
+                        .order_by(CheckRunRecord.updated_at)
+                        .limit(remaining)
+                    )
+                )
+                standalone = [
+                    (
+                        item.room_id,
+                        item.player_id,
+                        item.actor_id,
+                        item.action_request_id,
+                        item.decision_json,
+                        item.created_at,
+                    )
+                    for item in decisions
+                ]
+                standalone.extend(
+                    (
+                        item.room_id,
+                        item.player_id,
+                        item.actor_id,
+                        item.action_request_id,
+                        item.check_json,
+                        item.created_at,
+                    )
+                    for item in checks
+                )
+                seen_actions: set[tuple[str, str]] = set()
+                for room_id, player_id, actor_id, action_id, payload, created_at in standalone:
+                    key = (room_id, action_id)
+                    if key in seen_actions or len(adopted) >= limit:
+                        continue
+                    seen_actions.add(key)
+                    summary = payload.get("summary")
+                    if not isinstance(summary, str) or not summary.strip():
+                        continue
+                    turn = await self._adopt_snapshot(
+                        session,
+                        TurnInputSnapshot(
+                            room_id=room_id,
+                            player_id=player_id,
+                            actor_id=actor_id,
+                            client_action_id=action_id,
+                            utterance=summary,
+                        ),
+                        created_at=created_at,
+                    )
+                    if turn is not None:
+                        adopted.append(turn)
+            await session.flush()
+        return tuple(adopted)
+
+    async def _adopt_snapshot(
+        self,
+        session: AsyncSession,
+        request: TurnInputSnapshot,
+        *,
+        created_at: datetime,
+    ) -> TurnRecord | None:
+        """在调用方事务内创建收养 Turn；已有 Turn 或房间占用时保持幂等跳过。"""
+
+        existing = await session.scalar(
+            select(TurnRecordModel).where(
+                TurnRecordModel.room_id == request.room_id,
+                TurnRecordModel.client_action_id == request.client_action_id,
+            )
+        )
+        if existing is not None:
+            return None
+        if await session.get(RoomTurnReservation, request.room_id) is not None:
+            return None
+        turn = new_turn_record(request, now=created_at)
+        session.add(self._record_from_turn(turn))
+        await session.flush()
+        session.add(
+            RoomTurnReservation(
+                room_id=turn.room_id,
+                turn_id=turn.turn_id,
+                created_at=turn.created_at,
+                updated_at=turn.updated_at,
+            )
+        )
+        return turn
 
     async def get(self, turn_id: str) -> TurnRecord | None:
         async with self._session_factory() as session:

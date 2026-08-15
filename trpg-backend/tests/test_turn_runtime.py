@@ -106,6 +106,50 @@ async def test_waiting_turn_keeps_room_reservation_and_recovery_action() -> None
 
 
 @pytest.mark.asyncio
+async def test_cancel_after_partial_commit_keeps_partial_state_during_narration() -> None:
+    """取消剩余计划时不能先把部分提交提升为完整提交再非法降级。"""
+
+    store = InMemoryTurnStore()
+    coordinator = TurnCoordinator(store, worker_id="worker-1")
+
+    async def wait_for_choice(on_phase):  # noqa: ANN001
+        await on_phase("executing_action")
+        turn_id = current_turn_id()
+        assert turn_id is not None
+        await store.append_receipt(
+            TurnCommitReceipt(
+                turn_id=turn_id,
+                room_id="room-1",
+                engine_request_id="travel-engine-1",
+                action_request_id="travel-step-1",
+                committed_state_version=1,
+                created_at=datetime.now(UTC),
+            )
+        )
+        return _outcome(waiting=TurnWaitingReason.SKILL_CHOICE)
+
+    waiting = await coordinator.start(_request(), executor=wait_for_choice)
+    assert waiting.commit_state == TurnCommitState.PARTIALLY_COMMITTED
+
+    async def cancel_remaining(on_phase):  # noqa: ANN001
+        await on_phase("executing_action")
+        await on_phase("generating_narration")
+        return TurnExecutionOutcome(
+            status="cancelled",
+            player_view={"scene": {"id": "study"}, "revision": "2"},
+            view_revision="2",
+            scene_id="study",
+            narration={"kind": "narration", "text": "后续行动已取消。"},
+        )
+
+    cancelled = await coordinator.resume(waiting.turn_id, executor=cancel_remaining)
+
+    assert cancelled.status == TurnStatus.COMPLETED
+    assert cancelled.commit_state == TurnCommitState.PARTIALLY_COMMITTED
+    assert cancelled.last_error is None
+
+
+@pytest.mark.asyncio
 async def test_narrator_failure_resumes_without_second_engine_receipt() -> None:
     store = InMemoryTurnStore()
     coordinator = TurnCoordinator(store, worker_id="worker-1")

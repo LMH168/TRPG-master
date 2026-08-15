@@ -13,7 +13,6 @@ import type {
   CheckRollPayload,
   PlayerReadyPayload,
   RoomJoinPayload,
-  RoomRejoinPayload,
   SanCheckRollPayload,
   ServerToClientEvent,
   TurnCompletedEvent,
@@ -33,6 +32,7 @@ export class TurnFailedError extends Error {
     readonly code: string,
     readonly retryable: boolean,
     readonly correlationId: string,
+    readonly turnId: string,
   ) {
     super(message);
     this.name = 'TurnFailedError';
@@ -230,21 +230,24 @@ function isValidPlayerView(value: unknown): value is AgentPlayerView {
 
 export function isValidTurnCompleted(value: unknown): value is TurnCompletedEvent {
   if (!isRecord(value)) return false;
-  const { protocol_version, message_type, correlation_id, payload } = value;
+  const { protocol_version, message_type, correlation_id, turn_id, payload } = value;
   if (
     protocol_version !== '1' ||
     message_type !== 'turn.completed' ||
     typeof correlation_id !== 'string' ||
     !correlation_id ||
+    typeof turn_id !== 'string' ||
+    !turn_id ||
     !isRecord(payload)
   ) {
     return false;
   }
-  const { room_id, player_id, actor_id, narration, player_view } = payload;
+  const { room_id, player_id, actor_id, client_action_id, narration, player_view } = payload;
   return (
     typeof room_id === 'string' &&
     typeof player_id === 'string' &&
     typeof actor_id === 'string' &&
+    client_action_id === correlation_id &&
     isRecord(narration) &&
     (narration.kind === 'narration' || narration.kind === 'clarification') &&
     typeof narration.text === 'string' &&
@@ -259,6 +262,7 @@ export function isValidTurnCompleted(value: unknown): value is TurnCompletedEven
 
 function isValidPlanProgress(p: Record<string, unknown>): boolean {
   return (
+    typeof p.turnId === 'string' &&
     typeof p.correlationId === 'string' &&
     typeof p.currentStep === 'number' &&
     Number.isInteger(p.currentStep) &&
@@ -310,8 +314,9 @@ const PAYLOAD_VALIDATORS: {
     typeof p.text === 'string',
   'opening.started': (p) =>
     typeof p.messageId === 'string' && p.messageId.length > 0,
-  'turn.started': (p) => typeof p.correlationId === 'string',
+  'turn.started': (p) => typeof p.turnId === 'string' && typeof p.correlationId === 'string',
   'turn.phase_changed': (p) =>
+    typeof p.turnId === 'string' &&
     typeof p.correlationId === 'string' &&
     (p.phase === 'reading_player_view' ||
       p.phase === 'understanding_action' ||
@@ -320,14 +325,17 @@ const PAYLOAD_VALIDATORS: {
       p.phase === 'refreshing_player_view' ||
       p.phase === 'generating_narration'),
   'tool.started': (p) =>
+    typeof p.turnId === 'string' &&
     typeof p.correlationId === 'string' &&
     typeof p.toolName === 'string' &&
     typeof p.publicProgressLabel === 'string',
   'tool.completed': (p) =>
+    typeof p.turnId === 'string' &&
     typeof p.correlationId === 'string' &&
     typeof p.toolName === 'string' &&
     (p.status === 'success' || p.status === 'error'),
   'turn.failed': (p) =>
+    typeof p.turnId === 'string' &&
     typeof p.correlationId === 'string' &&
     typeof p.code === 'string' &&
     typeof p.publicMessage === 'string' &&
@@ -337,6 +345,7 @@ const PAYLOAD_VALIDATORS: {
   'plan.stopped': isValidPlanProgress,
   'plan.completed': isValidPlanProgress,
   'adjudication.pending': (p) =>
+    typeof p.turnId === 'string' &&
     typeof p.correlationId === 'string' &&
     (p.status === 'awaiting_skill_choice' ||
       p.status === 'awaiting_post_roll_decision') &&
@@ -355,6 +364,7 @@ const PAYLOAD_VALIDATORS: {
   'game.ended': () => true, // reason 可空，没有必填字段
   'view.private': (p) => typeof p.playerId === 'string' && typeof p.text === 'string',
   'check.request': (p) =>
+    (p.turnId === undefined || typeof p.turnId === 'string') &&
     typeof p.playerId === 'string' &&
     typeof p.clientActionId === 'string' &&
     typeof p.summary === 'string' &&
@@ -369,6 +379,7 @@ const PAYLOAD_VALIDATORS: {
         typeof skill.targetValue === 'number',
     ),
   'check.result': (p) =>
+    typeof p.turnId === 'string' &&
     typeof p.playerId === 'string' &&
     typeof p.clientActionId === 'string' &&
     typeof p.skill === 'string' &&
@@ -390,6 +401,7 @@ const PAYLOAD_VALIDATORS: {
     typeof p.sentAt === 'string' &&
     typeof p.clientMessageId === 'string',
   'action.broadcast': (p) =>
+    typeof p.turnId === 'string' &&
     typeof p.playerId === 'string' &&
     typeof p.clientActionId === 'string' &&
     typeof p.nickname === 'string' &&
@@ -519,6 +531,7 @@ export class RoomSocket {
               parsed.payload.code,
               parsed.payload.retryable,
               parsed.payload.correlationId,
+              parsed.payload.turnId,
             )
           );
         }
@@ -658,11 +671,6 @@ export class RoomSocket {
   /** san.check.roll —— 理智检定摇骰（issue #77 新增，后端本期回 NOT_IMPLEMENTED）。 */
   rollSanCheck(playerId: string, payload: SanCheckRollPayload): void {
     this.send('san.check.roll', playerId, payload);
-  }
-
-  /** room.rejoin —— 断线重连（issue #77 仅铺协议，后端本期回 NOT_IMPLEMENTED）。 */
-  rejoin(playerId: string, payload: RoomRejoinPayload): void {
-    this.send('room.rejoin', playerId, payload);
   }
 
   disconnect(): void {

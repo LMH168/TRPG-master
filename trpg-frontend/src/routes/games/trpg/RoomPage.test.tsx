@@ -95,6 +95,10 @@ const {
   mockGetPlayerView,
   mockJoinRoom,
   mockListConversation,
+  mockGetTurn,
+  mockFindTurnByClientAction,
+  mockListTurns,
+  mockResumeTurn,
   mockGetHostSpeechSettings,
   mockGetHostSpeechManifest,
   mockGetHostSpeechSentence,
@@ -121,13 +125,36 @@ const {
     dice3dSupported: { value: false },
     dice3dBehavior: { value: 'unsupported' as 'unsupported' | 'manual' },
     dice3dRolls: [] as Array<{ token: string; settle: (value: number) => void }>,
-    emitWsMessage: (event: ServerToClientEvent) => {
-      for (const handler of handlers) handler(event)
+    emitWsMessage: (event: { type: string; payload: object }) => {
+      // 既有 UI 测试只关心展示语义；统一补入 v2 的稳定回合身份，避免每个
+      // fixture 各自伪造一遍与断言无关的 turnId。
+      const payload = event.payload as Record<string, unknown>
+      const withTurn = {
+        ...event,
+        payload: {
+          ...payload,
+          ...(
+            event.type.startsWith('turn.') ||
+            event.type.startsWith('plan.') ||
+            event.type.startsWith('tool.') ||
+            event.type === 'adjudication.pending' ||
+            event.type === 'check.result' ||
+            event.type === 'action.broadcast'
+              ? { turnId: payload.turnId ?? 'test-turn' }
+              : {}
+          ),
+        },
+      }
+      for (const handler of handlers) handler(withTurn as unknown as ServerToClientEvent)
     },
     mockGetOpeningMessageId: vi.fn(),
     mockGetPlayerView: vi.fn(),
     mockJoinRoom: vi.fn(),
     mockListConversation: vi.fn(),
+    mockGetTurn: vi.fn(),
+    mockFindTurnByClientAction: vi.fn(() => Promise.resolve(null)),
+    mockListTurns: vi.fn(() => Promise.resolve([])),
+    mockResumeTurn: vi.fn(),
     mockGetHostSpeechSettings: vi.fn(),
     mockGetHostSpeechManifest: vi.fn(),
     mockGetHostSpeechSentence: vi.fn(),
@@ -163,6 +190,12 @@ vi.mock('@/services/api-client', () => ({
       getHostSpeechManifest: mockGetHostSpeechManifest,
       getHostSpeechSentence: mockGetHostSpeechSentence,
       updateHostSpeechSettings: mockUpdateHostSpeechSettings,
+    },
+    turns: {
+      getTurn: mockGetTurn,
+      findTurnByClientAction: mockFindTurnByClientAction,
+      listTurns: mockListTurns,
+      resumeTurn: mockResumeTurn,
     },
     roomSocket: {
       getOpeningMessageId: mockGetOpeningMessageId,
@@ -434,6 +467,10 @@ describe('RoomPage conversation history', () => {
     mockGetPlayerView.mockReturnValue(null)
     mockGetOpeningMessageId.mockReturnValue(null)
     mockListConversation.mockResolvedValue([])
+    mockGetTurn.mockReset()
+    mockFindTurnByClientAction.mockReset().mockResolvedValue(null)
+    mockListTurns.mockReset().mockResolvedValue([])
+    mockResumeTurn.mockReset()
     mockGetHostSpeechSettings.mockResolvedValue({
       available: false,
       provider: 'disabled',
@@ -451,6 +488,82 @@ describe('RoomPage conversation history', () => {
     Reflect.deleteProperty(window, 'SpeechRecognition')
     Reflect.deleteProperty(window, 'webkitSpeechRecognition')
     Reflect.deleteProperty(window, 'isSecureContext')
+  })
+
+  it('restores a completed turn from sessionStorage and the REST authority source', async () => {
+    sessionStorage.setItem(
+      'trpg:pending-turn:room-1:player-1',
+      JSON.stringify({ clientActionId: 'action-restored', utterance: '检查书架', turnId: 'turn-1' }),
+    )
+    mockGetTurn.mockResolvedValue({
+      turnId: 'turn-1',
+      roomId: 'room-1',
+      clientActionId: 'action-restored',
+      status: 'completed',
+      commitState: 'committed',
+      resumePoint: 'none',
+      waitingReason: 'none',
+      recoveryAction: 'fetch_result',
+      phaseVersion: 4,
+      narration: { kind: 'narration', text: '你在书架后发现了暗格。' },
+      messageId: 'turn-1',
+      playerView: playerViewFixture(),
+      viewRevision: 'revision-1',
+      createdAt: '2026-08-15T00:00:00Z',
+      updatedAt: '2026-08-15T00:00:01Z',
+      completedAt: '2026-08-15T00:00:01Z',
+    })
+
+    renderRoomPage()
+
+    expect(await screen.findByText('你在书架后发现了暗格。')).toBeInTheDocument()
+    expect(mockGetTurn).toHaveBeenCalledWith('room-1', 'turn-1', 'reconnect-1')
+    expect(sessionStorage.getItem('trpg:pending-turn:room-1:player-1')).toBeNull()
+  })
+
+  it('restores a persisted skill decision without resubmitting the action', async () => {
+    sessionStorage.setItem(
+      'trpg:pending-turn:room-1:player-1',
+      JSON.stringify({ clientActionId: 'action-waiting', utterance: '检查书架', turnId: 'turn-2' }),
+    )
+    mockGetTurn.mockResolvedValue({
+      turnId: 'turn-2',
+      roomId: 'room-1',
+      clientActionId: 'action-waiting',
+      status: 'adjudicating',
+      commitState: 'not_committed',
+      resumePoint: 'awaiting_player',
+      waitingReason: 'skill_choice',
+      recoveryAction: 'choose_skill',
+      phaseVersion: 3,
+      pendingDecision: {
+        decision_id: 'decision-2',
+        action_request_id: 'action-waiting',
+        source_revision: 'revision-2',
+        decision_version: 1,
+        actor_id: 'actor-1',
+        summary: '检查书架',
+        options: [
+          {
+            candidate_id: 'library-use',
+            skill_id: 'library_use',
+            display_name: '图书馆使用',
+            target_value: 60,
+            difficulty: 'regular',
+            method_summary: '系统检索书架',
+            player_safe_reason: '可使用图书馆技能调查',
+          },
+        ],
+        allow_cancel: true,
+      },
+      createdAt: '2026-08-15T00:00:00Z',
+      updatedAt: '2026-08-15T00:00:01Z',
+    })
+
+    renderRoomPage()
+
+    expect(await screen.findByRole('dialog', { name: '待处理检定' })).toBeInTheDocument()
+    expect(mockSubmitPlannedAction).not.toHaveBeenCalled()
   })
 
   it('restores action history by default and discussion history after switching channel', async () => {
@@ -2217,6 +2330,7 @@ describe('RoomPage conversation history', () => {
     const pending: Extract<ServerToClientEvent, { type: 'adjudication.pending' }> = {
       type: 'adjudication.pending',
       payload: {
+        turnId: 'test-turn',
         correlationId: 'plan-input-1',
         planId: 'plan-input-1',
         sourceRevision: 'revision-1',

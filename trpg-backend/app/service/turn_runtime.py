@@ -16,10 +16,6 @@ class TurnReadAuthorizationError(PermissionError):
     """回合结果不属于当前玩家。"""
 
 
-class TurnResumeUnavailableError(RuntimeError):
-    """可靠回合 Coordinator 尚未启用，当前不能推进恢复。"""
-
-
 async def get_turn(
     db: AsyncSession,
     *,
@@ -71,13 +67,10 @@ async def resume_turn(
     room_id: str,
     turn_id: str,
     player_id: str,
-    runtime_mode: str,
 ) -> TurnRead:
-    """校验 owner 后，通过 v2 Coordinator 按唯一恢复点推进。"""
+    """校验 owner 后，通过唯一生产 Coordinator 按持久恢复点推进。"""
 
     await get_turn(db, room_id=room_id, turn_id=turn_id, player_id=player_id)
-    if runtime_mode != "v2":
-        raise TurnResumeUnavailableError(f"可靠回合恢复协调器尚未启用（当前模式：{runtime_mode}）")
     # 延迟导入避免 REST 查询服务与生产组合根在模块加载时形成循环依赖。
     from app.service.reliable_turn_runtime import resume_turn_by_id
 

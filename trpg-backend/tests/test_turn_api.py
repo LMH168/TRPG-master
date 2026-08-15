@@ -171,7 +171,7 @@ async def test_list_turns_filters_by_client_action_and_active_state(
 
 
 @pytest.mark.asyncio
-async def test_resume_endpoint_is_explicitly_unavailable_in_legacy_mode(
+async def test_resume_endpoint_uses_the_only_reliable_runtime(
     client: AsyncClient,
     db_session: AsyncSession,
     turn_store_factory,
@@ -185,8 +185,8 @@ async def test_resume_endpoint_is_explicitly_unavailable_in_legacy_mode(
         headers={"X-Reconnect-Token": owner.reconnect_token},
     )
 
-    assert response.status_code == 501
-    assert response.json()["error"]["code"] == "TURN_RESUME_UNAVAILABLE"
+    assert response.status_code == 200
+    assert response.json()["data"]["turnId"] == turn.turn_id
 
 
 @pytest.mark.asyncio

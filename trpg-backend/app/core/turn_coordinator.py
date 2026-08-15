@@ -196,13 +196,18 @@ class TurnCoordinator:
                         recovery_action=TurnRecoveryAction.WAIT,
                     )
                 receipts = await self._store.list_receipts(current.turn_id)
+                # 等待玩家时可能已有部分计划步骤提交。恢复后若玩家取消剩余步骤，
+                # 这里只能保留 partially_committed；提前提升为 committed 会在根据
+                # 最终取消结果对账时形成非法降级。尚未标记部分提交的普通回合则可
+                # 由 receipt 确认规则结果已经完整落库。
+                narration_commit_state = current.commit_state
+                if receipts and narration_commit_state == TurnCommitState.NOT_COMMITTED:
+                    narration_commit_state = TurnCommitState.COMMITTED
                 await move(
                     TurnStatus.AWAITING_NARRATION,
                     resume_point=TurnResumePoint.NARRATING,
                     recovery_action=TurnRecoveryAction.WAIT,
-                    commit_state=(
-                        TurnCommitState.COMMITTED if receipts else TurnCommitState.NOT_COMMITTED
-                    ),
+                    commit_state=narration_commit_state,
                 )
 
         if current.status == TurnStatus.RECEIVED:
@@ -216,7 +221,8 @@ class TurnCoordinator:
                 # 发布事务已经成功时，恢复只能收束同一份持久化结果，绝不再调用
                 # Narrator 或 Engine。Outbox worker 会独立完成至少一次投递。
                 if after_publish is not None:
-                    await after_publish()
+                    with engine_turn_context(current.turn_id):
+                        await after_publish()
                 await move(
                     TurnStatus.COMPLETED,
                     resume_point=TurnResumePoint.NONE,
@@ -254,7 +260,8 @@ class TurnCoordinator:
                 await on_phase("generating_narration")
             current = await self._publish(current, outcome, commit_state=commit_state)
             if after_publish is not None:
-                await after_publish()
+                with engine_turn_context(current.turn_id):
+                    await after_publish()
             await move(
                 TurnStatus.COMPLETED,
                 resume_point=TurnResumePoint.NONE,
@@ -281,7 +288,12 @@ class TurnCoordinator:
         text = narration.get("text")
         if not isinstance(text, str) or not text.strip():
             raise RuntimeError("最终 Narration 缺少文本")
-        push_payload = {"messageId": message_id, "text": text.strip()}
+        push_payload = {
+            "turnId": current.turn_id,
+            "clientActionId": current.client_action_id,
+            "messageId": message_id,
+            "text": text.strip(),
+        }
         result = TurnResultSnapshot(
             message_id=message_id,
             narration=narration,

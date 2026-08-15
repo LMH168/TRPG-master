@@ -87,7 +87,6 @@ export type {
   // WebSocket 新增 14 个事件（issue #77）
   CheckRollPayload,
   SanCheckRollPayload,
-  RoomRejoinPayload,
   RoomStatePayload,
   PlayerJoinedPayload,
   TurnBeginPayload,
@@ -221,27 +220,32 @@ export type AgentTurnPhase =
   | 'generating_narration';
 
 export interface TurnStartedPayload {
+  turnId: string;
   correlationId: string;
 }
 
 export interface TurnPhaseChangedPayload {
+  turnId: string;
   correlationId: string;
   phase: AgentTurnPhase;
 }
 
 export interface ToolStartedPayload {
+  turnId: string;
   correlationId: string;
   toolName: string;
   publicProgressLabel: string;
 }
 
 export interface ToolCompletedPayload {
+  turnId: string;
   correlationId: string;
   toolName: string;
   status: 'success' | 'error';
 }
 
 export interface TurnFailedPayload {
+  turnId: string;
   correlationId: string;
   code: string;
   publicMessage: string;
@@ -249,6 +253,7 @@ export interface TurnFailedPayload {
 }
 
 export interface ViewUpdatedPayload {
+  turnId?: string | null;
   playerId: string;
   playerView: AgentPlayerView;
 }
@@ -427,6 +432,7 @@ export interface AgentTurnPayload {
   room_id: string;
   player_id: string;
   actor_id: string;
+  client_action_id: string;
   narration: AgentNarration;
   player_view: AgentPlayerView;
 }
@@ -435,5 +441,6 @@ export interface TurnCompletedEvent {
   protocol_version: '1';
   message_type: 'turn.completed';
   correlation_id: string;
+  turn_id: string;
   payload: AgentTurnPayload;
 }

@@ -1,6 +1,6 @@
 # AI 主持运行时 v2 行为与故障基线
 
-本文档说明 Issue #4 建立的确定性回放、故障注入、指标门槛和真实模型评测入口。该基线用于比较架构升级前后的行为，不定义新的生产回合协议，也不替代后续的 TurnRecord、Outbox 或恢复设计。
+本文档说明 Issue #4 建立的确定性回放、故障注入、指标门槛和真实模型评测入口。该基线用于比较架构升级前后的行为；Issue #6 已将生产路径切换到 TurnRecord、receipt 与 Outbox，协议和恢复规则见 [`reliable-turn-protocol.md`](reliable-turn-protocol.md)。
 
 ## 快速运行
 
@@ -93,7 +93,7 @@ uv run python scripts/run_runtime_baseline.py --output /tmp/runtime-baseline.jso
 | `websocket.after` | 发送异常只重发同一个已生成结果 |
 | `process.after` | Engine 提交后重建 Application，再按原动作 ID 恢复 |
 
-`process.after` 场景验证应用依赖重建后复用同一权威 Store；SQL 文件数据库跨 Store/Service 重建由 `tests/test_action_plan_persistence.py` 的持久化恢复用例继续守护。WebSocket 代理验证投递边界，完整协议和持久 replay 由 `tests/test_ws.py` 守护。
+`process.after` 场景验证应用依赖重建后复用同一权威 Store；SQL 文件数据库跨 Store/Service 重建由 `tests/test_action_plan_persistence.py` 的持久化恢复用例继续守护。WebSocket 代理验证投递边界，完整 Turn 协议、Outbox 稳定重放和 REST 恢复由 `tests/test_turn_runtime.py`、`tests/test_turn_outbox.py`、`tests/test_turn_api.py` 与 `tests/test_ws.py` 共同守护。
 
 ## 指标与不可恶化门槛
 

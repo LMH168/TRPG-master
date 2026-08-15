@@ -1,4 +1,4 @@
-"""issue #107 的 WS/REST 行为测试：讨论区落库与回显、行动锁、历史分页、退房清理。
+"""issue #107 的 WS/REST 行为测试：讨论区落库与回显、历史分页和退房清理。
 
 复用 tests/test_ws.py 的装置模式（同步 TestClient + websocket_connect）。
 
@@ -9,9 +9,8 @@
 那两条连接在**不同房间**、从不互相广播）。「同房间双客户端都能收到广播」这类
 断言只有 SDK e2e（真 uvicorn、单事件循环）能做——见
 e2e/tests/discussion-chat.e2e.ts，那边有完整的双客户端覆盖；这里守住的是
-落库/幂等/锁语义/鉴权/清理这些单连接就能证明的行为。
-
-锁相关用例直接覆盖 `action_lock_manager`，不依赖任何叙事实现的时序。
+落库、幂等、鉴权和清理这些单连接就能证明的行为。房间活动回合并发控制已由
+数据库 `room_turn_reservations` 覆盖，相关验证位于可靠回合测试中。
 """
 
 from collections.abc import Iterator
@@ -21,7 +20,6 @@ import pytest
 from starlette.testclient import TestClient
 
 from app.main import app
-from app.service.action_lock import RoomActionLockManager
 from tests.test_ws import (
     ROOMS_BASE,
     advance_to_building,
@@ -171,12 +169,11 @@ def test_action_submit_broadcasts_utterance_then_narration(sync_client: TestClie
     assert narration["payload"]["text"]
 
 
-# ── 行动锁 ───────────────────────────────────────────
+# ── 可靠回合占用 ─────────────────────────────────────
 
 
-def test_lock_released_after_turn_failure(sync_client: TestClient) -> None:
-    """AI 调用失败后锁必须释放（finally 兜底），否则房间永久锁死——issue #107
-    验收标准。PlayerView 尚不存在时输入不会被接受或广播。"""
+def test_pre_turn_validation_failure_allows_explicit_retry(sync_client: TestClient) -> None:
+    """运行时不存在时尚未创建 Turn，但传输连接仍应允许后续显式重试。"""
     token = register_and_login(sync_client, "fail_host")
     room = create_room(sync_client, token)
 
@@ -184,40 +181,13 @@ def test_lock_released_after_turn_failure(sync_client: TestClient) -> None:
         _join_ws(ws, room)
 
         _submit_action(ws, room, "我尝试翻译古籍")
-        failure, _ = receive_until(ws, lambda message: message["type"] == "turn.failed")
+        failure, _ = receive_until(ws, lambda message: message["type"] == "error")
         assert failure["payload"]["code"] == "ROOM_RUNTIME_NOT_FOUND"
 
-        # 立刻重试——若锁没被释放，这里会收到 ACTION_IN_PROGRESS。
+        # 立刻重试，确保前置校验错误不会把连接或房间留在不可用状态。
         _submit_action(ws, room, "我再次尝试翻译")
-        failure, _ = receive_until(ws, lambda message: message["type"] == "turn.failed")
+        failure, _ = receive_until(ws, lambda message: message["type"] == "error")
         assert failure["payload"]["code"] == "ROOM_RUNTIME_NOT_FOUND"
-
-
-def test_action_lock_semantics() -> None:
-    """锁管理器本身的语义（不开 WS）：占用中拒绝、按房间隔离、释放后可得、
-    超时自动过期、旧持有者不能误释放新持有者的锁（stale release 修复）。
-    """
-    manager = RoomActionLockManager()
-
-    token1 = manager.try_acquire("room-1")
-    assert token1 is not None
-    assert manager.try_acquire("room-1") is None, "占用中必须拒绝"
-    assert manager.try_acquire("room-2") is not None, "锁按房间隔离"
-
-    manager.release("room-1", token1)
-    token2 = manager.try_acquire("room-1")
-    assert token2 is not None, "释放后必须可再次获取"
-
-    # stale release：旧 token 不能释放新持有者的锁
-    manager.release("room-1", token1)  # token1 已过期，不匹配 token2
-    assert manager.try_acquire("room-1") is None, "旧 token release 不能误删新锁"
-    manager.release("room-1", token2)  # 正确 token 才能释放
-
-    # 超时兜底：把到期时间人为拨到过去，模拟"拿了锁但 release 没被走到"。
-    manager._locks["room-1"] = (0.0, "stale-token")
-    assert manager.try_acquire("room-1") is not None, "过期的锁必须能被抢占（防永久锁死）"
-
-    manager.release("room-does-not-exist", "any-token")  # 释放不存在的锁是无害空操作
 
 
 # ── 历史消息 REST ────────────────────────────────────

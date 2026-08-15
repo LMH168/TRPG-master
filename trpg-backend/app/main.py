@@ -68,8 +68,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await ensure_seed_content(db)
     portrait_service: PortraitGenerationService = app.state.portrait_generation_service
     await portrait_service.recover_interrupted()
-    # 已持久化 Outbox 不依赖当前 feature flag；即使临时回滚到 legacy，仍必须
-    # 继续投递并保留查询能力，不能把已提交回合交回旧链重做。
+    # 可靠回合是唯一生产入口；启动时恢复租约过期的 Turn，并继续投递已持久化
+    # Outbox。已提交回合只能按原 payload 重投，绝不能退回执行链重做。
     await turn_runtime_supervisor.start()
     logger.info("app_started")
     try:
