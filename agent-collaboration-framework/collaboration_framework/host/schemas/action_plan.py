@@ -314,6 +314,13 @@ class CompletedPlanStepSummary(ContractModel):
     step_index: int = Field(ge=0)
     semantic_goal: str = Field(min_length=1, max_length=1000)
     outcome: Literal["success", "failure", "cancelled"]
+    goal_outcome: Literal[
+        "achieved",
+        "partially_achieved",
+        "not_achieved",
+        "cancelled",
+        "legacy_unknown",
+    ] = "legacy_unknown"
     view_revision: str = Field(min_length=1)
     world_time_after: WorldClockView | None = None
     event_refs: tuple[str, ...] = ()
@@ -420,6 +427,11 @@ class ActionPlanNarrationContext(ContractModel):
     opening_world_time: WorldClockView | None = None
     allowed_evidence_refs: tuple[str, ...] = ()
     narration_evidence: tuple[NarrationEvidence, ...] = ()
+    blocked_step_goal: str | None = Field(default=None, min_length=1, max_length=1000)
+    remaining_step_goals: tuple[str, ...] = ()
+    player_safe_failure_reason: str | None = Field(
+        default=None, min_length=1, max_length=512
+    )
     # Only populated for the bounded second narration attempt; contains no
     # hidden data, just the player-safe requirement the first output missed.
     narration_retry_hint: str | None = Field(default=None, max_length=500)

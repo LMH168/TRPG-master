@@ -808,6 +808,22 @@ class ActionPlanOrchestrator:
             opening_world_time=run.opening_world_time,
             allowed_evidence_refs=evidence,
             narration_evidence=narration_evidence,
+            blocked_step_goal=(
+                run.steps[run.current_step_index].step.semantic_goal
+                if run.current_step_index < len(run.steps)
+                and run.steps[run.current_step_index].status == "stopped"
+                else None
+            ),
+            remaining_step_goals=tuple(
+                item.step.semantic_goal
+                for item in run.steps[run.current_step_index + 1 :]
+                if item.status == "pending"
+            ),
+            player_safe_failure_reason=(
+                run.steps[run.current_step_index].last_validation_message
+                if run.current_step_index < len(run.steps)
+                else None
+            ),
         )
 
     async def _load_or_create(
@@ -1208,6 +1224,20 @@ class ActionPlanOrchestrator:
                 status="stopped",
                 consume_cancel_request=run.pending_cancel_request_id is not None,
             )
+        if execution.goal_outcome in {"partially_achieved", "not_achieved"}:
+            steps[index] = current.model_copy(
+                update={
+                    **common,
+                    "status": "stopped",
+                    "safe_failure_code": "GOAL_NOT_ACHIEVED",
+                },
+                deep=True,
+            )
+            return await self._replace_steps(
+                run,
+                tuple(steps),
+                status="stopped",
+            )
 
         steps[index] = current.model_copy(
             update={**common, "status": "completed"},
@@ -1398,6 +1428,7 @@ class ActionPlanOrchestrator:
                     step_index=index,
                     semantic_goal=step.step.semantic_goal,
                     outcome=execution.outcome,
+                    goal_outcome=execution.goal_outcome,
                     view_revision=execution.view_revision,
                     world_time_after=step.world_time_after,
                     event_refs=execution.public_event_refs,
@@ -1423,6 +1454,7 @@ class ActionPlanOrchestrator:
                         step_index=run.current_step_index,
                         semantic_goal=step.step.semantic_goal,
                         outcome=execution.outcome,
+                        goal_outcome=execution.goal_outcome,
                         view_revision=execution.view_revision,
                         world_time_after=step.world_time_after,
                         event_refs=execution.public_event_refs,

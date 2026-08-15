@@ -107,7 +107,8 @@ JSON/schema 字段和值重复写入正文。
   引号外的守秘人叙述不得以“我”认领玩家的行为、身份或经历。
 
 completed_steps[].outcome 是消耗幸运、强推等检定后决定之后的最终权威结果（检定或分支结果），
-不等于玩家完整语义目标已经实现。outcome=success 只能描述已由 committed_results、
+不等于玩家完整语义目标已经实现；goal_outcome 才表示完整目标是否实现。只有
+goal_outcome=achieved 才能把目标写成已经完成。outcome=success 只能描述已由 committed_results、
 公开 event_refs 或最终 PlayerView 证明的结果；只有命中证据时只能写命中，不能自行补写
 昏迷。昏迷、死亡、倒地、束缚、受伤、打开、锁住、损坏等持久声明必须逐项存在匹配的
 completed_steps[].committed_results，并在 claimed_evidence_refs 引用该结果的 event_ref。

@@ -714,6 +714,20 @@ def _deterministic_clarification_text(context: ActionPlanNarrationContext) -> st
         _explicit_travel_phrase(getattr(step, "semantic_goal", "")) is not None
         for step in successful_steps
     )
+    blocked_step_goal = getattr(context, "blocked_step_goal", None)
+    if blocked_step_goal is not None:
+        remaining_step_goals = getattr(context, "remaining_step_goals", ())
+        completed = "此前已经完成的步骤仍然有效；" if successful_steps else ""
+        remaining = (
+            "；后续步骤尚未执行：" + "、".join(remaining_step_goals) if remaining_step_goals else ""
+        )
+        reason = (
+            getattr(context, "player_safe_failure_reason", None) or "当前步骤无法形成可确认结果"
+        )
+        return (
+            f"{completed}{reason}：「{blocked_step_goal}」{remaining}。"
+            "如需继续，请重新提交新的行动。"
+        )
     if completed_travel:
         scene_name = getattr(context.player_view.scene, "name", "") or "当前地点"
         return f"你已经抵达{scene_name}，但后续行动尚未形成可确认的结果。"
@@ -1429,6 +1443,7 @@ class ActionPlanTurnApplication:
             step_index=0,
             semantic_goal=summary,
             outcome=completed_outcome,
+            goal_outcome=execution.goal_outcome,
             view_revision=execution.view_revision,
             world_time_after=WorldClockView.from_world(result.player_view.world),
             event_refs=execution.public_event_refs,
@@ -1443,6 +1458,8 @@ class ActionPlanTurnApplication:
             completed_steps=(completed_summary,),
             player_view=result.player_view,
             opening_world_time=result.opening_world_time,
+            blocked_step_goal=summary,
+            player_safe_failure_reason=result.player_safe_reason,
             allowed_evidence_refs=execution.public_event_refs,
             narration_evidence=execution.narration_evidence,
         )
@@ -1481,6 +1498,12 @@ class ActionPlanTurnApplication:
         self,
         context: ActionPlanNarrationContext,
     ) -> ActionPlanNarrationOutput:
+        if any(
+            step.goal_outcome in {"partially_achieved", "not_achieved"}
+            for step in context.completed_steps
+        ):
+            # 未完成持久目标时不让自由文本从检定成功外推伤势、死亡或物品变化。
+            return self._deterministic_narration_fallback(context)
         for attempt in range(2):
             try:
                 return await self._narrator.narrate(context)
@@ -1625,8 +1648,14 @@ class ActionPlanTurnApplication:
             if label is not None or result in inventory_results
         )
         outcomes = tuple(step.outcome for step in context.completed_steps)
+        # 历史上下文没有目标完成字段，必须按未知处理，不能倒推出目标已经达成。
+        goal_outcomes = tuple(
+            getattr(step, "goal_outcome", "legacy_unknown") for step in context.completed_steps
+        )
         if "cancelled" in outcomes or context.termination_status == "cancelled":
             status_text = "这次行动已经取消。"
+        elif any(item in {"partially_achieved", "not_achieved"} for item in goal_outcomes):
+            status_text = "检定或过程已经结束，但玩家声明的完整目标没有形成可确认的权威结果。"
         elif "failure" in outcomes:
             # ActionPlan 可能保留此前成功步骤，因此失败文案要区分全部失败和部分完成。
             status_text = (
