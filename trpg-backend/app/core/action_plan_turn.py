@@ -1458,8 +1458,6 @@ class ActionPlanTurnApplication:
             completed_steps=(completed_summary,),
             player_view=result.player_view,
             opening_world_time=result.opening_world_time,
-            blocked_step_goal=summary,
-            player_safe_failure_reason=result.player_safe_reason,
             allowed_evidence_refs=execution.public_event_refs,
             narration_evidence=execution.narration_evidence,
         )
@@ -1486,6 +1484,8 @@ class ActionPlanTurnApplication:
             termination_status="needs_clarification",
             player_view=result.player_view,
             opening_world_time=result.opening_world_time,
+            blocked_step_goal=summary,
+            player_safe_failure_reason=result.player_safe_reason,
         )
         return ActionPlanTurnResult(
             player_input=player_input,
@@ -1499,7 +1499,8 @@ class ActionPlanTurnApplication:
         context: ActionPlanNarrationContext,
     ) -> ActionPlanNarrationOutput:
         if any(
-            step.goal_outcome in {"partially_achieved", "not_achieved"}
+            getattr(step, "goal_outcome", "legacy_unknown")
+            in {"partially_achieved", "not_achieved"}
             for step in context.completed_steps
         ):
             # 未完成持久目标时不让自由文本从检定成功外推伤势、死亡或物品变化。
