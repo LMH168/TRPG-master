@@ -41,7 +41,7 @@ async def test_repeated_client_action_id_does_not_append_events_or_state_version
     assert result.turns[1].state_versions == ()
 
 
-async def test_known_dynamic_content_gaps_are_counted_without_hiding_other_failures() -> None:
+async def test_dynamic_content_scenarios_are_now_authoritative_successes() -> None:
     runner = BaselineRunner(InMemoryRuntimeAdapter)
     item = next(item for item in CORE_SCENARIOS if item.id == "dynamic.item-pickup")
     location = next(item for item in CORE_SCENARIOS if item.id == "dynamic.location-enter")
@@ -49,7 +49,7 @@ async def test_known_dynamic_content_gaps_are_counted_without_hiding_other_failu
     item_result = await runner.run(item)
     location_result = await runner.run(location)
 
-    assert item_result.known_gaps == ("dynamic_item_atomic_pickup_not_supported",)
-    assert location_result.known_gaps == ("dynamic_location_create_does_not_enter_target",)
+    assert item_result.known_gaps == ()
+    assert location_result.known_gaps == ()
     assert item_result.hard_failures == ()
     assert location_result.hard_failures == ()

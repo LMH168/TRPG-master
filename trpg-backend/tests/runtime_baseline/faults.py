@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from collaboration_framework.contracts import ActionTarget, SingleActionDecision
+from collaboration_framework.contracts import (
+    ActionTarget,
+    ProposalRef,
+    SingleActionDecision,
+    SingleActionProposal,
+)
 from collaboration_framework.host.application import ActionPlanNarrator
 
 from .application_adapter import InMemoryRuntimeAdapter
@@ -68,6 +73,13 @@ class _FaultingPlanner:
         decision = await self._delegate.generate(context)
         self._controller.hit("host", "after")
         if self._controller.consume("validator", "before"):
+            if isinstance(decision, SingleActionProposal):
+                return decision.model_copy(
+                    update={
+                        "semantic_focus": ProposalRef(kind="entity", id="missing-runtime-target")
+                    },
+                    deep=True,
+                )
             assert isinstance(decision, SingleActionDecision)
             adjudication = decision.adjudication.model_copy(
                 update={"target": ActionTarget(kind="entity", id="missing-runtime-target")},
@@ -101,6 +113,15 @@ class _FaultingEngine:
     async def submit(self, request):
         self._controller.hit("engine", "before")
         result = await self._delegate.submit(request)
+        self._controller.hit("engine", "after")
+        self._controller.hit("process", "after")
+        return result
+
+    async def submit_proposal(self, request):
+        """代理 v2 Proposal 提交边界，故障点必须覆盖唯一生产入口。"""
+
+        self._controller.hit("engine", "before")
+        result = await self._delegate.submit_proposal(request)
         self._controller.hit("engine", "after")
         self._controller.hit("process", "after")
         return result

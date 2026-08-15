@@ -110,12 +110,9 @@ uv run python scripts/run_runtime_baseline.py --output /tmp/runtime-baseline.jso
 
 阈值不得为了让失败变绿而随意提高。确需提高时，PR 必须说明：新增了什么场景、为什么现有架构无法满足、对应后续 Issue，以及为什么没有削弱权威性、安全性或隐私门禁。
 
-当前冻结的已知缺口：
-
-1. `dynamic_item_atomic_pickup_not_supported`：动态物品原子创建并拾取会进入澄清，未产生部分状态；
-2. `dynamic_location_create_does_not_enter_target`：动态地点能够创建，但当前单动作目标绑定会阻止同一裁决进入新地点。
-
-这些缺口是后续架构升级的待降低指标，不是正确行为。除明确列入 `known_gap_assertions` 的断言外，同场景中的其他失败仍是硬失败。
+当前冻结的已知缺口数量为 `0`。PR2 已将普通动态物品创建并拾取、动态地点创建并进入接入
+Proposal 权威流水线；后续改动不得让这两类场景退回澄清或部分提交。除明确列入
+`known_gap_assertions` 的断言外，同场景中的其他失败仍是硬失败。
 
 ## 真实模型评测
 

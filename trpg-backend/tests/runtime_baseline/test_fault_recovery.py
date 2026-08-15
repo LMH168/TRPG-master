@@ -36,7 +36,7 @@ async def test_frozen_thresholds_reject_regressions_but_allow_improvements() -> 
     thresholds = load_thresholds()
 
     assert metric_regressions(metrics, thresholds) == ()
-    assert metrics.known_gaps == 2
+    assert metrics.known_gaps == 0
     assert metrics.scenarios_total == 15
     degraded = metrics.model_copy(update={"unknown_commit_state": 1})
     assert metric_regressions(degraded, thresholds) == ("unknown_commit_state=1 超过冻结上限 0",)

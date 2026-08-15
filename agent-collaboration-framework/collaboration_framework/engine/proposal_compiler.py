@@ -62,6 +62,16 @@ _HOST_FORBIDDEN_EFFECTS = (
 )
 
 
+def derive_runtime_object_id(*, room_id: str, request_id: str, ref: ProposalRef) -> str:
+    """由可信回合身份和逻辑引用派生稳定 ID，供恢复与规范化代码复用。"""
+
+    digest = hashlib.sha256(f"{room_id}\0{request_id}\0{ref.kind}\0{ref.id}".encode()).hexdigest()[
+        :20
+    ]
+    prefix = "location" if ref.kind == "runtime_location" else "entity"
+    return f"runtime-{prefix}-{digest}"
+
+
 @dataclass(frozen=True)
 class ProposalShadowComparison:
     """纯比较结果；只含机器结论，不保存玩家原话、Prompt 或隐藏上下文。"""
@@ -97,9 +107,7 @@ class ProposalShadowCompiler:
             "failure_effects",
         )
         differing = tuple(
-            field
-            for field in fields
-            if getattr(candidate, field) != getattr(legacy, field)
+            field for field in fields if getattr(candidate, field) != getattr(legacy, field)
         )
         return ProposalShadowComparison(
             matches=not differing,
@@ -132,12 +140,8 @@ class ProposalCompiler:
         )
 
         runtime_refs: dict[tuple[str, str], str] = {}
-        success = self._compile_effects(
-            request, proposal.success_effect_proposals, runtime_refs
-        )
-        failure = self._compile_effects(
-            request, proposal.failure_effect_proposals, runtime_refs
-        )
+        success = self._compile_effects(request, proposal.success_effect_proposals, runtime_refs)
+        failure = self._compile_effects(request, proposal.failure_effect_proposals, runtime_refs)
         focus = self._resolve_focus(runtime, proposal, runtime_refs)
         adjudication = ActionAdjudication(
             request_id=request.request_id,
@@ -149,7 +153,9 @@ class ProposalCompiler:
                 family=proposal.method_family,
                 description=proposal.method_description,
             ),
-            persistence_intent=self._derive_persistence_intent(success, failure),
+            persistence_intent=self._derive_persistence_intent(
+                proposal.method_family, success, failure
+            ),
             check=proposal.check_proposal,
             rule_decision=proposal.rule_ref,
             success_effects=success,
@@ -215,9 +221,7 @@ class ProposalCompiler:
         compiled: list[ActionEffect] = []
         for effect in effects:
             if isinstance(effect, EnsureRuntimeLocationEffectProposal):
-                location_id = self._declare_runtime_ref(
-                    request, effect.runtime_ref, runtime_refs
-                )
+                location_id = self._declare_runtime_ref(request, effect.runtime_ref, runtime_refs)
                 compiled.append(
                     EnsureRuntimeLocationEffect(
                         location_id=location_id,
@@ -227,23 +231,17 @@ class ProposalCompiler:
                             if effect.parent_ref is not None
                             else None
                         ),
-                        connected_location_id=self._resolve_ref(
-                            effect.connected_ref, runtime_refs
-                        ),
+                        connected_location_id=self._resolve_ref(effect.connected_ref, runtime_refs),
                     )
                 )
             elif isinstance(effect, EnsureRuntimeEntityEffectProposal):
-                entity_id = self._declare_runtime_ref(
-                    request, effect.runtime_ref, runtime_refs
-                )
+                entity_id = self._declare_runtime_ref(request, effect.runtime_ref, runtime_refs)
                 compiled.append(
                     EnsureRuntimeEntityEffect(
                         entity_id=entity_id,
                         entity_kind=effect.entity_kind,
                         name=effect.name,
-                        location_id=self._resolve_ref(
-                            effect.location_ref, runtime_refs
-                        ),
+                        location_id=self._resolve_ref(effect.location_ref, runtime_refs),
                     )
                 )
             else:
@@ -298,9 +296,7 @@ class ProposalCompiler:
                 )
             return MoveEntityEffect(
                 entity_id=entity_id,
-                location_id=self._resolve_ref(
-                    effect.destination.location_ref, runtime_refs
-                ),
+                location_id=self._resolve_ref(effect.destination.location_ref, runtime_refs),
             )
         if isinstance(effect, ChangeEntityStateEffectProposal):
             return ChangeEntityStateEffect(
@@ -309,9 +305,7 @@ class ProposalCompiler:
                 value=effect.value,
             )
         if isinstance(effect, ConsumeEntityEffectProposal):
-            return ConsumeEntityEffect(
-                entity_id=self._resolve_ref(effect.entity_ref, runtime_refs)
-            )
+            return ConsumeEntityEffect(entity_id=self._resolve_ref(effect.entity_ref, runtime_refs))
         if isinstance(effect, AdvanceWorldTimeEffectProposal):
             return AdvanceWorldTimeEffect(to_point_id=effect.to_point_id)
         if isinstance(effect, NarrativeOnlyEffectProposal):
@@ -333,11 +327,11 @@ class ProposalCompiler:
         key = (ref.kind, ref.id)
         if key in runtime_refs:
             ProposalCompiler._reject("RUNTIME_REF_DUPLICATED", "动态对象被重复声明")
-        digest = hashlib.sha256(
-            f"{request.room_id}\0{request.request_id}\0{ref.kind}\0{ref.id}".encode()
-        ).hexdigest()[:20]
-        prefix = "location" if ref.kind == "runtime_location" else "entity"
-        resolved = f"runtime-{prefix}-{digest}"
+        resolved = derive_runtime_object_id(
+            room_id=request.room_id,
+            request_id=request.request_id,
+            ref=ref,
+        )
         runtime_refs[key] = resolved
         return resolved
 
@@ -385,10 +379,36 @@ class ProposalCompiler:
 
     @staticmethod
     def _derive_persistence_intent(
+        method_family: str,
         success: tuple[ActionEffect, ...],
         failure: tuple[ActionEffect, ...],
     ) -> PersistenceIntent:
-        """仅为旧执行内核派生兼容提示；权限判断不得依赖该返回值。"""
+        """从开放方法族和已编译 Effect 派生旧内核兼容提示。"""
+
+        method_intents: dict[str, PersistenceIntent] = {
+            "kill": "character_state",
+            "knock_out": "character_state",
+            "knock_down": "character_state",
+            "stand_up": "character_state",
+            "restrain": "character_state",
+            "release": "character_state",
+            "injure_minor": "character_state",
+            "injure_major": "character_state",
+            "injure_critical": "character_state",
+            "open": "object_state",
+            "close": "object_state",
+            "lock": "object_state",
+            "unlock": "object_state",
+            "break": "object_state",
+            "repair": "object_state",
+            "pick_up": "inventory",
+            "drop": "inventory",
+            "transfer": "inventory",
+            "consume": "inventory",
+            "travel": "location",
+        }
+        if method_family in method_intents:
+            return method_intents[method_family]
 
         effects = (*success, *failure)
         if any(
