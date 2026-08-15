@@ -46,6 +46,7 @@ from .proposal_compiler import (
     ProposalCompiler,
     ProposalShadowComparison,
     ProposalShadowCompiler,
+    derive_runtime_object_id,
 )
 from .service import RuleEngineService
 
@@ -73,6 +74,7 @@ __all__ = [
     "ProposalCompiler",
     "ProposalShadowComparison",
     "ProposalShadowCompiler",
+    "derive_runtime_object_id",
     "RuleAgenda",
     "RevisionConflictError",
     "RuntimeCapabilityIssue",
