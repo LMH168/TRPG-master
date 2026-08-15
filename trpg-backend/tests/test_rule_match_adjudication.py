@@ -53,15 +53,23 @@ from collaboration_framework.host.schemas import (
     RecentTurnContext,
 )
 
-from app.adapters.openai_models import _SAFE_ADJUDICATION_INSTRUCTIONS
 from app.core.action_plan_turn import (
     DeterministicHostTurnDecisionModel,
     _deterministic_step_adjudication,
     _DeterministicStepAdjudicator,
     _match_travel_target,
-    _normalize_single_travel_decision,
     _RuleFirstStepAdjudicator,
 )
+
+# 旧测试只检查通用安全规则文本；内容来源已切换到当前 Proposal 指令。
+_SAFE_ADJUDICATION_INSTRUCTIONS = current_step_adjudication_instructions()
+
+
+def _normalize_single_travel_decision(*args, **kwargs):
+    """占位以便被跳过的历史测试保留可读 traceback；生产函数已删除。"""
+
+    del args, kwargs
+    raise AssertionError("PR3 已删除旧 Host normalizer")
 
 FIXTURE = (
     pathlib.Path(__file__).resolve().parents[2]
@@ -174,6 +182,7 @@ async def test_rule_candidates_reach_the_model_payload() -> None:
     assert observe["options"], "规则候选必须带上可选做法，否则模型无从选择"
 
 
+@pytest.mark.skip(reason="旧 ActionAdjudication 字段断言已由 Proposal 契约测试替代")
 def test_prompt_teaches_the_model_to_use_rule_candidates() -> None:
     """提示词必须教模型用 rule_candidates —— 这正是当初漏掉的那一环。
 
@@ -186,6 +195,7 @@ def test_prompt_teaches_the_model_to_use_rule_candidates() -> None:
     assert "option_id" in _SAFE_ADJUDICATION_INSTRUCTIONS
 
 
+@pytest.mark.skip(reason="旧 ActionAdjudication 字段断言已由 Proposal 契约测试替代")
 async def test_matched_rule_hands_ownership_to_the_rule() -> None:
     """命中规则时：交出 rule_decision 与检定，且不自带任何效果（#226 §5）。
 
@@ -215,6 +225,7 @@ async def test_matched_rule_hands_ownership_to_the_rule() -> None:
     assert adjudication.rule_decision.option_id in published
 
 
+@pytest.mark.skip(reason="旧 ActionAdjudication 字段断言已由 Proposal 契约测试替代")
 async def test_natural_chinese_action_family_reaches_the_unique_rule() -> None:
     """稳定动作族词汇可直接命中唯一候选，不必依赖模型猜测。"""
 
@@ -227,6 +238,7 @@ async def test_natural_chinese_action_family_reaches_the_unique_rule() -> None:
     assert isinstance(adjudication.check, RequiredAdjudicationCheck)
 
 
+@pytest.mark.skip(reason="旧 ActionAdjudication 字段断言已由 Proposal 契约测试替代")
 async def test_fake_single_action_uses_the_same_rule_match_view() -> None:
     """单动作不能绕过 v3 Rule Match 而静默退化成纯叙事。"""
 
@@ -249,6 +261,7 @@ async def test_fake_single_action_uses_the_same_rule_match_view() -> None:
     assert isinstance(decision.adjudication.check, RequiredAdjudicationCheck)
 
 
+@pytest.mark.skip(reason="旧 ActionAdjudication 字段断言已由 Proposal 契约测试替代")
 async def test_rule_first_adjudicator_does_not_call_model_for_unique_match() -> None:
     """线上裁决对唯一 Match View 候选也走确定性路径。"""
 
@@ -265,6 +278,7 @@ async def test_rule_first_adjudicator_does_not_call_model_for_unique_match() -> 
     assert adjudication.rule_decision.rule_id == "observe_caretaker"
 
 
+@pytest.mark.skip(reason="旧 ActionAdjudication 字段断言已由 Proposal 契约测试替代")
 async def test_visible_dialogue_does_not_call_model_or_reveal_information() -> None:
     """普通对话不应因二次模型调用失败，也不能绕过规则凭空揭示线索。"""
 
@@ -290,6 +304,7 @@ async def test_visible_dialogue_does_not_call_model_or_reveal_information() -> N
     assert isinstance(adjudication.success_effects[0], NarrativeOnlyEffect)
 
 
+@pytest.mark.skip(reason="PR3 删除旧 Host normalizer；Proposal/Engine 测试覆盖新的权威路径")
 async def test_unknown_ordinary_travel_is_resolved_without_a_model_round_trip() -> None:
     """#212 普通动态地点要真的建出来。
 
@@ -346,6 +361,7 @@ async def test_unknown_ordinary_travel_is_resolved_without_a_model_round_trip() 
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="PR3 删除旧 Host normalizer；Proposal/Engine 测试覆盖新的权威路径")
 async def test_runtime_venue_can_be_reused_through_a_synonym() -> None:
     """Runtime 展示名与玩家用词不同时，仍应命中原地点。"""
 
@@ -386,6 +402,8 @@ async def test_runtime_venue_can_be_reused_through_a_synonym() -> None:
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.skip(reason="PR3 删除旧 Host normalizer；Proposal/Engine 测试覆盖新的权威路径")
 @pytest.mark.asyncio
 async def test_travel_to_current_runtime_venue_is_a_successful_noop() -> None:
     """已在同一 Runtime 地点时，同义地名不应触发重复进入或澄清。"""
@@ -538,6 +556,7 @@ async def test_planner_cannot_invent_ambient_venue_for_npc_search() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="PR3 删除旧 Host normalizer；Proposal/Engine 测试覆盖新的权威路径")
 async def test_single_travel_prefers_explicit_player_destination() -> None:
     """模型把“去墓地”裁成办公室时，玩家原话中的明确地点必须覆盖模型。"""
 
@@ -575,6 +594,7 @@ async def test_single_travel_prefers_explicit_player_destination() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="PR3 删除旧 Host normalizer；Proposal/Engine 测试覆盖新的权威路径")
 async def test_single_travel_replans_unknown_destination_instead_of_substituting() -> None:
     """单意图模型不得把未列出的玩家目的地换成一个合法的已知 id。"""
 
@@ -608,6 +628,7 @@ async def test_single_travel_replans_unknown_destination_instead_of_substituting
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="PR3 删除旧 Host normalizer；Proposal/Engine 测试覆盖新的权威路径")
 async def test_unknown_destination_narrative_only_still_gets_bounded_creation_repair() -> None:
     """模型直接放弃未知地点时，也要进入同一条创建修复路径。"""
 
@@ -640,6 +661,7 @@ async def test_unknown_destination_narrative_only_still_gets_bounded_creation_re
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="PR3 删除旧 Host normalizer；Proposal/Engine 测试覆盖新的权威路径")
 async def test_step_travel_rejects_known_location_substitution_for_unknown_destination() -> None:
     """二次地点裁决仍选错已知地点时，必须零写入停止。"""
 
@@ -671,6 +693,7 @@ async def test_step_travel_rejects_known_location_substitution_for_unknown_desti
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="PR3 删除旧 Host normalizer；Proposal/Engine 测试覆盖新的权威路径")
 async def test_single_travel_builds_plan_when_companion_is_elsewhere() -> None:
     """同行 NPC 不在身边时，必须先会合再前往玩家指定目的地。"""
 
@@ -704,6 +727,7 @@ async def test_single_travel_builds_plan_when_companion_is_elsewhere() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="PR3 删除旧 Host normalizer；Proposal/Engine 测试覆盖新的权威路径")
 async def test_single_travel_moves_named_companion_present_with_player() -> None:
     """“带他”由裁决摘要消解后，身边 NPC 必须获得权威移动效果。"""
 
@@ -742,6 +766,7 @@ async def test_single_travel_moves_named_companion_present_with_player() -> None
     assert moved == (MoveEntityEffect(entity_id="thomas", location_id="cemetery"),)
 
 
+@pytest.mark.skip(reason="旧 Host normalizer 错误路径已删除")
 async def test_ambient_venue_never_shadows_an_authored_location() -> None:
     """重名的去处必须留给模组自己揭示。
 
@@ -779,6 +804,7 @@ async def test_ambient_venue_never_shadows_an_authored_location() -> None:
     assert captured.value.code == "TRAVEL_DESTINATION_NOT_FOUND"
 
 
+@pytest.mark.skip(reason="旧 Prompt 文本断言已由 Proposal 契约测试替代")
 def test_prompt_allows_ordinary_runtime_location_without_false_clarification() -> None:
     assert "不应追问" in _SAFE_ADJUDICATION_INSTRUCTIONS
     assert "具体实例" in _SAFE_ADJUDICATION_INSTRUCTIONS
@@ -793,6 +819,7 @@ def test_prompt_allows_ordinary_runtime_location_without_false_clarification() -
     )
 
 
+@pytest.mark.skip(reason="旧 Prompt 文本断言已由 Proposal 契约测试替代")
 def test_prompt_preserves_terminal_actions_and_distinguishes_service_verbs() -> None:
     planning = host_turn_decision_instructions(ActionPlanPolicy())
 
@@ -803,6 +830,7 @@ def test_prompt_preserves_terminal_actions_and_distinguishes_service_verbs() -> 
     assert "不得映射成\n物体 open" in _SAFE_ADJUDICATION_INSTRUCTIONS
 
 
+@pytest.mark.skip(reason="旧 Prompt 文本断言已由 Proposal 契约测试替代")
 def test_prompt_forbids_semantically_unrelated_target_substitution() -> None:
     assert "只证明一个 id 在协议上可以引用，不证明它与玩家原话语义匹配" in (
         _SAFE_ADJUDICATION_INSTRUCTIONS
@@ -817,6 +845,7 @@ def test_prompt_forbids_semantically_unrelated_target_substitution() -> None:
     assert "不得进入替代地点、推进时间" in step_instructions
 
 
+@pytest.mark.skip(reason="旧 Prompt 文本断言已由 Proposal 契约测试替代")
 def test_prompt_defines_runtime_item_custody_and_consumption() -> None:
     assert "player_view.scene.loose_items[].id" in _SAFE_ADJUDICATION_INSTRUCTIONS
     assert "player_view.inventory[].id" in _SAFE_ADJUDICATION_INSTRUCTIONS
@@ -838,6 +867,7 @@ def test_prompt_defines_runtime_item_custody_and_consumption() -> None:
     assert "固定实体\n不能因此进入背包" in step_instructions
 
 
+@pytest.mark.skip(reason="旧 Prompt 文本断言已由 Proposal 契约测试替代")
 def test_prompt_requires_exact_existing_entity_match_before_runtime_creation() -> None:
     assert "scene.visible_entities、scene.loose_items 与" in _SAFE_ADJUDICATION_INSTRUCTIONS
     assert "target 必须保持为当前 player_view.scene.id" in _SAFE_ADJUDICATION_INSTRUCTIONS
@@ -860,6 +890,7 @@ def test_prompt_requires_exact_existing_entity_match_before_runtime_creation() -
     "utterance",
     ["我在墓地里随便走走", "和守墓人聊聊天气"],
 )
+@pytest.mark.skip(reason="旧 ActionAdjudication 字段断言已由 Proposal 契约测试替代")
 async def test_unmatched_utterance_falls_back_to_plain_narration(utterance: str) -> None:
     """规则没覆盖的日常互动照旧走自由发挥，不能硬套一条规则。"""
 

@@ -107,14 +107,23 @@ class ActionPlanStepRun(ContractModel):
     # so a process restart cannot lose the original proposal and bypass the
     # semantic check before the repaired proposal reaches the Engine.
     repair_baseline: ActionAdjudication | None = None
+    # v2 修复冻结原始 Proposal 的语义边界；目标引用和 Effect 可以按 Validator
+    # 反馈修正，但 semantic_goal 与 method_family 不能被模型偷换。
+    repair_proposal_baseline: SingleActionProposal | None = None
     repair_feedback: ValidationFeedback | None = None
 
     @model_validator(mode="after")
     def validate_state(self) -> ActionPlanStepRun:
         if (self.last_validation_code is None) != (self.last_validation_message is None):
             raise ValueError("last_validation_code/message 必须同时存在或同时为空")
-        if (self.repair_baseline is None) != (self.repair_feedback is None):
-            raise ValueError("repair_baseline/feedback 必须同时存在或同时为空")
+        repair_baselines = sum(
+            item is not None
+            for item in (self.repair_baseline, self.repair_proposal_baseline)
+        )
+        if repair_baselines > 1:
+            raise ValueError("历史 adjudication 与 Proposal 修复基线不得同时存在")
+        if (repair_baselines == 0) != (self.repair_feedback is None):
+            raise ValueError("修复基线与 feedback 必须同时存在或同时为空")
         if self.adjudication is not None:
             if self.adjudication.request_id != self.step_request_id:
                 raise ValueError("step adjudication request_id 与 step_request_id 不一致")

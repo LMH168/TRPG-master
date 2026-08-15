@@ -4,14 +4,11 @@ from dataclasses import replace
 
 import pytest
 from collaboration_framework.contracts import (
-    ActionAdjudication,
-    ActionMethod,
-    ActionTarget,
     ContractError,
     JsonObject,
-    NarrativeOnlyEffect,
+    ProposalRef,
     RequiredAdjudicationCheck,
-    SingleActionDecision,
+    SingleActionProposal,
     SkillCheckCandidate,
 )
 from collaboration_framework.engine import DiceRoller, SequenceDiceSource
@@ -90,35 +87,30 @@ class _WsSingleActionCheckPlanner:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def generate(self, context) -> SingleActionDecision:
+    async def generate(self, context) -> SingleActionProposal:
         self.calls += 1
-        return SingleActionDecision(
-            adjudication=ActionAdjudication(
-                request_id="application-owned",
-                source_revision=context.player_view.revision,
-                actor_id=context.player_input.actor_id,
-                summary=context.player_input.utterance,
-                target=ActionTarget(
-                    kind="location",
-                    id=context.player_view.scene.id,
-                ),
-                method=ActionMethod(
-                    family="investigate",
-                    description=context.player_input.utterance,
-                ),
-                check=RequiredAdjudicationCheck(
-                    candidates=(
-                        SkillCheckCandidate(
-                            candidate_id="library-use",
-                            skill_id="library-use",
-                            difficulty="regular",
-                            method_summary="查阅现场资料",
-                            player_safe_reason="需要理解现场留下的文字线索",
-                        ),
-                    )
-                ),
-                success_effects=(NarrativeOnlyEffect(),),
-            )
+        return SingleActionProposal(
+            semantic_goal=context.player_input.utterance,
+            semantic_focus=ProposalRef(
+                kind="location",
+                id=context.player_view.scene.id,
+            ),
+            method_family="investigate",
+            method_description=context.player_input.utterance,
+            check_proposal=RequiredAdjudicationCheck(
+                candidates=(
+                    SkillCheckCandidate(
+                        candidate_id="library-use",
+                        skill_id="library-use",
+                        difficulty="regular",
+                        method_summary="查阅现场资料",
+                        player_safe_reason="需要理解现场留下的文字线索",
+                    ),
+                )
+            ),
+            success_effect_proposals=(
+                {"type": "narrative_only"},
+            ),
         )
 
 

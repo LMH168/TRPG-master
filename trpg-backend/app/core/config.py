@@ -109,9 +109,6 @@ class Settings(BaseSettings):
     action_plan_max_steps: int = Field(default=32, ge=2, le=256)
     action_plan_max_steps_per_advance: int = Field(default=3, ge=1, le=32)
     action_plan_max_repair_attempts: int = Field(default=1, ge=0, le=8)
-    # Issue #10 三个串行 PR 使用的短期切换开关。PR 2 默认 v2；shadow 只允许
-    # 执行纯编译比较，不能触发第二次 Engine、骰点、Narration 或 Outbox 写入。
-    authority_pipeline_mode: Literal["legacy", "shadow", "v2"] = "v2"
     # Deterministic cross-process E2E hook. Production and development always
     # use the Engine's cryptographic dice source; this value is honored only
     # when APP_ENV=test.

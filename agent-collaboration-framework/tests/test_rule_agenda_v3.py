@@ -142,7 +142,7 @@ class RuleAgendaRuntimeTests(unittest.IsolatedAsyncioTestCase):
         store.register_room(module_content=content, initial_state=game_state())
         engine = AdjudicationEngineService(store)
 
-        await engine.submit(
+        await engine._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id=ROOM,
                 player_id=PLAYER,

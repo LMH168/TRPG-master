@@ -256,8 +256,8 @@ class ValidatedActionCommand(ContractModel):
     adjudication: ActionAdjudication
     validation: ValidationResult
 
-    def to_legacy_request(self) -> SubmitAdjudicationRequest:
-        """在 PR 1 兼容执行内核时生成内部旧请求，生产 Host 无法调用此转换。"""
+    def to_internal_request(self) -> SubmitAdjudicationRequest:
+        """生成 Engine 内部执行载荷；该结构不会越过权威边界。"""
 
         return SubmitAdjudicationRequest(
             room_id=self.request.room_id,

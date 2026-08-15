@@ -116,7 +116,7 @@ class AdjudicationEngineTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def submit(self, service, action: ActionAdjudication):
-        return await service.submit(
+        return await service._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id="room_01",
                 player_id="player_01",
@@ -136,8 +136,8 @@ class AdjudicationEngineTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        first = await service.submit(request)
-        replay = await service.submit(request)
+        first = await service._submit_internal_adjudication(request)
+        replay = await service._submit_internal_adjudication(request)
 
         self.assertEqual(first.status, "resolved")
         self.assertEqual(replay.event_refs, first.event_refs)
@@ -289,7 +289,7 @@ class AdjudicationEngineTests(unittest.IsolatedAsyncioTestCase):
         )
         service = AdjudicationEngineService(store)
 
-        await service.submit(
+        await service._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id="room_01",
                 player_id="player_01",
@@ -615,7 +615,7 @@ class AdjudicationEngineTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        execution = await self.service().submit(request)
+        execution = await self.service()._submit_internal_adjudication(request)
         async with self.store.transaction("room_01") as transaction:
             completed = await transaction.find_adjudication_command(
                 request.adjudication.request_id
@@ -733,7 +733,7 @@ class AdjudicationEngineTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaises(AdjudicationValidationError) as error:
-            await self.service().submit(
+            await self.service()._submit_internal_adjudication(
                 SubmitAdjudicationRequest(
                     room_id="room_ambiguous",
                     player_id="player_01",

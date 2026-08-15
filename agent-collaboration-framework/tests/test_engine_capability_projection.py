@@ -64,7 +64,7 @@ class EngineCapabilityProjectionTests(unittest.IsolatedAsyncioTestCase):
         """Submit one check-free adjudication carrying `effects`."""
 
         snapshot = await self.engine.read(SCOPE)
-        await self.adjudication_engine.submit(
+        await self.adjudication_engine._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id=SCOPE.room_id,
                 player_id=SCOPE.player_id,
@@ -262,7 +262,7 @@ class EngineCapabilityProjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(capabilities.world_id, self.module.world_ref)
         # 发布出来的这个值必须真的能当目标用，而不只是多了一个字段。
         snapshot = await self.engine.read(SCOPE)
-        await self.adjudication_engine.submit(
+        await self.adjudication_engine._submit_internal_adjudication(
             SubmitAdjudicationRequest(
                 room_id=SCOPE.room_id,
                 player_id=SCOPE.player_id,

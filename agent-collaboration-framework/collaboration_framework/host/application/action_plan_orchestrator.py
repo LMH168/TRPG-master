@@ -11,7 +11,6 @@ from typing import Literal
 from uuid import uuid4
 
 from collaboration_framework.contracts import (
-    ActionAdjudication,
     ActionPlan,
     ActionPlanPolicy,
     ActionPlanPolicyError,
@@ -25,13 +24,10 @@ from collaboration_framework.contracts import (
     ContractError,
     GetAdjudicationStatusRequest,
     HostDecisionProposal,
-    HostTurnDecision,
     KeeperCapabilityView,
     PlayerInput,
     PlayerView,
-    SingleActionDecision,
     SingleActionProposal,
-    SubmitAdjudicationRequest,
     SubmitProposalRequest,
     ValidationFeedback,
     WorldClockView,
@@ -63,7 +59,6 @@ from collaboration_framework.runtime_context import current_turn_id
 
 from .host_agent_intent_resolver import TurnExecutionError
 from .player_view_projector import PlayerViewProjector
-from .semantic_preservation import compare_repair_semantics
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +116,6 @@ class ActionPlanOrchestrator:
         on_step_failure: ActionPlanStepFailureObserver | None = None,
         recent_history_source: RecentHistorySource | None = None,
         recent_history_budget: RecentHistoryBudget | None = None,
-        authority_pipeline_mode: Literal["legacy", "shadow", "v2"] = "legacy",
     ) -> None:
         if lease_seconds < 1:
             raise ValueError("lease_seconds 必须大于 0")
@@ -134,7 +128,6 @@ class ActionPlanOrchestrator:
         self._on_step_failure = on_step_failure
         self._recent_history_source = recent_history_source
         self._recent_history_budget = recent_history_budget or RecentHistoryBudget()
-        self._authority_pipeline_mode = authority_pipeline_mode
 
     @property
     def policy(self) -> ActionPlanPolicy:
@@ -332,7 +325,30 @@ class ActionPlanOrchestrator:
             while True:
                 rejection = None
                 try:
-                    if step_run.proposal is not None:
+                    if step_run.proposal is None:
+                        # 历史步骤只能按已有 execution/receipt 对账；未提交的旧
+                        # ActionAdjudication 不能在 Proposal-only 入口中继续充当授权。
+                        status = await self._executor.get_status(
+                            GetAdjudicationStatusRequest(
+                                room_id=run.room_id,
+                                player_id=run.player_id,
+                                action_request_id=step_run.step_request_id,
+                            )
+                        )
+                        if status.status == "not_submitted" or status.execution is None:
+                            run = await self._mark_step_failure(
+                                run,
+                                plan_status="needs_clarification",
+                                step_status="stopped",
+                                code="LEGACY_STEP_REQUIRES_CLARIFICATION",
+                            )
+                            run = await self._release_lease(run)
+                            return ActionPlanAdvanceResult(
+                                run=run,
+                                player_view=await self._player_view_projector.project(player_input),
+                            )
+                        latest = status.execution
+                    else:
                         latest = await self._executor.submit_proposal(
                             SubmitProposalRequest(
                                 request_id=step_run.step_request_id,
@@ -341,15 +357,6 @@ class ActionPlanOrchestrator:
                                 actor_id=run.actor_id,
                                 source_revision=step_run.source_revision or "",
                                 proposal=step_run.proposal,
-                            )
-                        )
-                    else:
-                        assert step_run.adjudication is not None
-                        latest = await self._executor.submit(
-                            SubmitAdjudicationRequest(
-                                room_id=run.room_id,
-                                player_id=run.player_id,
-                                adjudication=step_run.adjudication,
                             )
                         )
                     break
@@ -728,38 +735,6 @@ class ActionPlanOrchestrator:
     ) -> ActionPlanRun | None:
         return await self._store.load(room_id, parent_action_id)
 
-    async def adjudicate_single_repair(
-        self,
-        player_input: PlayerInput,
-        *,
-        semantic_goal: str,
-        previous_rejection: str,
-    ) -> ActionAdjudication:
-        """复用步骤裁决器修复单动作，始终基于拒绝后的最新 PlayerView。"""
-
-        view = await self._player_view_projector.project(player_input)
-        context = ActionPlanStepContext(
-            player_input=player_input,
-            plan_id=f"single-{player_input.client_action_id}",
-            plan_goal=semantic_goal,
-            step_index=0,
-            step_request_id=player_input.client_action_id,
-            step=ActionPlanStep(kind="action", semantic_goal=semantic_goal),
-            player_view=view,
-            recent_history=await self._recent_history(player_input, view),
-            previous_rejection=previous_rejection,
-            keeper_capabilities=await self._keeper_capabilities(player_input, view),
-        )
-        proposal = await self._adjudicator.adjudicate(context)
-        return proposal.model_copy(
-            update={
-                "request_id": player_input.client_action_id,
-                "source_revision": view.revision,
-                "actor_id": player_input.actor_id,
-            },
-            deep=True,
-        )
-
     async def build_narration_context(
         self,
         player_input: PlayerInput,
@@ -861,7 +836,7 @@ class ActionPlanOrchestrator:
             actor_id=player_input.actor_id,
             created_revision=view.revision,
             opening_world_time=WorldClockView.from_world(view.world),
-            plan_schema_version=(2 if self._authority_pipeline_mode == "v2" else 1),
+            plan_schema_version=2,
             policy_snapshot=self._policy,
             plan=plan,
             steps=steps,
@@ -979,67 +954,45 @@ class ActionPlanOrchestrator:
                 code="STEP_ADJUDICATOR_FAILED",
             )
 
-        proposal: SingleActionProposal | None = None
-        adjudication: ActionAdjudication | None = None
-        if isinstance(candidate, SingleActionProposal):
-            if candidate.semantic_goal != current.step.semantic_goal:
-                return await self._mark_step_failure(
-                    run,
-                    plan_status="needs_clarification",
-                    step_status="stopped",
-                    code="PROPOSAL_SEMANTIC_GOAL_CHANGED",
-                )
-            proposal = candidate
-        else:
-            adjudication = candidate.model_copy(
-                update={
-                    "request_id": current.step_request_id,
-                    "source_revision": view.revision,
-                    "actor_id": run.actor_id,
-                },
-                deep=True,
+        if not isinstance(candidate, SingleActionProposal):
+            return await self._mark_step_failure(
+                run,
+                plan_status="needs_clarification",
+                step_status="stopped",
+                code="HOST_PROPOSAL_REQUIRED",
+            )
+        if candidate.semantic_goal != current.step.semantic_goal:
+            return await self._mark_step_failure(
+                run,
+                plan_status="needs_clarification",
+                step_status="stopped",
+                code="PROPOSAL_SEMANTIC_GOAL_CHANGED",
             )
         if (
-            adjudication is not None
-            and current.repair_baseline is not None
-            and current.repair_feedback is not None
-        ):
-            preservation = compare_repair_semantics(
-                player_input=player_input,
-                plan_goal=run.plan.goal,
-                step=current.step,
-                original=current.repair_baseline,
-                repaired=adjudication,
-                validation_feedback=current.repair_feedback,
-                player_view=view,
+            current.repair_proposal_baseline is not None
+            and (
+                candidate.semantic_goal
+                != current.repair_proposal_baseline.semantic_goal
+                or candidate.method_family
+                != current.repair_proposal_baseline.method_family
             )
-            if preservation.status == "requires_clarification":
-                steps = list(run.steps)
-                steps[index] = current.model_copy(
-                    update={
-                        "status": "stopped",
-                        "source_revision": None,
-                        "adjudication": None,
-                        "safe_failure_code": "SEMANTIC_REPAIR_REQUIRES_CLARIFICATION",
-                        "repair_baseline": None,
-                        "repair_feedback": None,
-                    },
-                    deep=True,
-                )
-                return await self._replace_steps(
-                    run,
-                    tuple(steps),
-                    status="needs_clarification",
-                )
+        ):
+            return await self._mark_step_failure(
+                run,
+                plan_status="needs_clarification",
+                step_status="stopped",
+                code="SEMANTIC_REPAIR_REQUIRES_CLARIFICATION",
+            )
         steps = list(run.steps)
         steps[index] = current.model_copy(
             update={
                 "status": "ready",
                 "source_revision": view.revision,
-                "proposal": proposal,
-                "adjudication": adjudication,
+                "proposal": candidate,
+                "adjudication": None,
                 "safe_failure_code": None,
                 "repair_baseline": None,
+                "repair_proposal_baseline": None,
                 "repair_feedback": None,
             },
             deep=True,
@@ -1067,7 +1020,8 @@ class ActionPlanOrchestrator:
                 "repair_attempts": current.repair_attempts + 1,
                 "last_validation_code": feedback.code,
                 "last_validation_message": feedback.player_safe_reason,
-                "repair_baseline": current.adjudication,
+                "repair_baseline": None,
+                "repair_proposal_baseline": current.proposal,
                 "repair_feedback": feedback,
             },
             deep=True,
@@ -1097,6 +1051,7 @@ class ActionPlanOrchestrator:
                 "last_validation_code": feedback.code,
                 "last_validation_message": feedback.player_safe_reason,
                 "repair_baseline": None,
+                "repair_proposal_baseline": None,
                 "repair_feedback": None,
             },
             deep=True,
@@ -1526,19 +1481,17 @@ class HostTurnDecisionExecutor:
         player_view_projector: PlayerViewProjector,
         repair_adjudicator: ActionPlanStepAdjudicator | None = None,
         policy: ActionPlanPolicy | None = None,
-        authority_pipeline_mode: Literal["legacy", "shadow", "v2"] = "legacy",
     ) -> None:
         self._plan_orchestrator = plan_orchestrator
         self._executor = executor
         self._player_view_projector = player_view_projector
         self._repair_adjudicator = repair_adjudicator
         self._policy = policy or ActionPlanPolicy()
-        self._authority_pipeline_mode = authority_pipeline_mode
 
     async def execute(
         self,
         player_input: PlayerInput,
-        decision: HostTurnDecision | HostDecisionProposal,
+        decision: HostDecisionProposal,
         *,
         on_progress: ActionPlanProgressObserver | None = None,
         recent_history: RecentTurnContext | None = None,
@@ -1549,11 +1502,9 @@ class HostTurnDecisionExecutor:
                 player_safe_reason=decision.question,
             )
         if isinstance(decision, ActionPlanProposal):
-            decision = self._action_plan_from_proposal(decision)
-        if isinstance(decision, ActionPlan):
             return await self._plan_orchestrator.start_or_resume(
                 player_input,
-                plan=decision,
+                plan=self._action_plan_from_proposal(decision),
                 on_progress=on_progress,
             )
         if isinstance(decision, SingleActionProposal):
@@ -1562,131 +1513,7 @@ class HostTurnDecisionExecutor:
                 decision,
                 recent_history=recent_history,
             )
-        if not isinstance(decision, SingleActionDecision):
-            raise TypeError("不支持的 HostTurnDecision")
-        active = await self._plan_orchestrator.active_for_room(player_input.room_id)
-        if active is not None:
-            raise ActionPlanPolicyError(
-                "ACTION_IN_PROGRESS",
-                "当前房间已有未完成行动计划",
-            )
-        opening_view = await self._player_view_projector.project(player_input)
-        view = opening_view
-        adjudication = self._bind_single_adjudication(
-            decision.adjudication,
-            player_input=player_input,
-            view=view,
-        )
-        repair_attempts = 0
-        while True:
-            try:
-                execution = await self._executor.submit(
-                    SubmitAdjudicationRequest(
-                        room_id=player_input.room_id,
-                        player_id=player_input.player_id,
-                        adjudication=adjudication,
-                    )
-                )
-                break
-            except Exception as exc:
-                status = await self._executor.get_status(
-                    GetAdjudicationStatusRequest(
-                        room_id=player_input.room_id,
-                        player_id=player_input.player_id,
-                        action_request_id=player_input.client_action_id,
-                    )
-                )
-                if status.status != "not_submitted" and status.execution is not None:
-                    execution = status.execution
-                    break
-                if not isinstance(exc, AdjudicationValidationError):
-                    raise
-                feedback = exc.result.to_feedback()
-                if feedback.repairability not in {
-                    "auto_repairable",
-                    "retry_with_latest_revision",
-                }:
-                    # 单动作尚未产生权威写入时，以玩家安全理由进入主持人澄清，
-                    # 不把规则/Agent 内部校验错误直接暴露给玩家。
-                    return SingleActionClarificationResult(
-                        player_view=view,
-                        player_safe_reason=feedback.player_safe_reason,
-                        opening_world_time=WorldClockView.from_world(opening_view.world),
-                    )
-                if self._repair_adjudicator is None:
-                    return SingleActionClarificationResult(
-                        player_view=view,
-                        player_safe_reason=feedback.player_safe_reason,
-                        opening_world_time=WorldClockView.from_world(opening_view.world),
-                    )
-                if repair_attempts >= self._policy.max_repair_attempts:
-                    return SingleActionClarificationResult(
-                        player_view=view,
-                        player_safe_reason=("本次行动仍无法安全执行，请确认具体目标或换一种做法"),
-                        opening_world_time=WorldClockView.from_world(opening_view.world),
-                    )
-                repair_attempts += 1
-                view = await self._player_view_projector.project(player_input)
-                context = ActionPlanStepContext(
-                    player_input=player_input,
-                    plan_id="single-action",
-                    plan_goal=decision.adjudication.summary,
-                    step_index=0,
-                    step_request_id=player_input.client_action_id,
-                    step=ActionPlanStep(
-                        kind=self._single_action_step_kind(decision.adjudication),
-                        semantic_goal=decision.adjudication.summary,
-                    ),
-                    player_view=view,
-                    recent_history=(
-                        recent_history
-                        if recent_history is not None
-                        and recent_history.as_of_revision == view.revision
-                        else None
-                    ),
-                    previous_rejection=_with_repair_hint(
-                        feedback.code,
-                        feedback.player_safe_reason,
-                    ),
-                    keeper_capabilities=await self._single_keeper_capabilities(
-                        player_input,
-                        view,
-                    ),
-                )
-                proposal = await self._repair_adjudicator.adjudicate(context)
-                repaired = self._bind_single_adjudication(
-                    proposal,
-                    player_input=player_input,
-                    view=view,
-                )
-                preservation = compare_repair_semantics(
-                    player_input=player_input,
-                    plan_goal=decision.adjudication.summary,
-                    step=context.step,
-                    original=adjudication,
-                    repaired=repaired,
-                    validation_feedback=feedback,
-                    player_view=view,
-                )
-                if preservation.status == "requires_clarification":
-                    # 语义保护器拒绝的是自动替玩家换动作，不是玩家输入本身。
-                    # 此时尚未掷骰或提交效果，应交给主持人自然澄清，不能抛协议错误终止回合。
-                    return SingleActionClarificationResult(
-                        player_view=view,
-                        player_safe_reason=preservation.safe_reason,
-                        opening_world_time=WorldClockView.from_world(opening_view.world),
-                    )
-                adjudication = repaired
-        return SingleActionTurnResult(
-            execution=execution,
-            player_view=await self._player_view_projector.refresh_adjudication(
-                player_input,
-                execution,
-            ),
-            # `view` was projected before the submit above, so this is the clock
-            # the action started on — a single "睡到晚上" moves it too.
-            opening_world_time=WorldClockView.from_world(opening_view.world),
-        )
+        raise TypeError("Host 只能提交 Clarification、SingleAction 或 ActionPlan Proposal")
 
     async def _execute_single_proposal(
         self,
@@ -1734,11 +1561,16 @@ class HostTurnDecisionExecutor:
                 if (
                     feedback.repairability not in {"auto_repairable", "retry_with_latest_revision"}
                     or self._repair_adjudicator is None
-                    or repair_attempts >= self._policy.max_repair_attempts
                 ):
                     return SingleActionClarificationResult(
                         player_view=view,
                         player_safe_reason=feedback.player_safe_reason,
+                        opening_world_time=WorldClockView.from_world(opening_view.world),
+                    )
+                if repair_attempts >= self._policy.max_repair_attempts:
+                    return SingleActionClarificationResult(
+                        player_view=view,
+                        player_safe_reason="本次行动仍无法安全执行，请确认具体目标或换一种做法",
                         opening_world_time=WorldClockView.from_world(opening_view.world),
                     )
                 repair_attempts += 1
@@ -1769,6 +1601,7 @@ class HostTurnDecisionExecutor:
                 if (
                     not isinstance(repaired, SingleActionProposal)
                     or repaired.semantic_goal != proposal.semantic_goal
+                    or repaired.method_family != proposal.method_family
                 ):
                     return SingleActionClarificationResult(
                         player_view=view,
@@ -1820,37 +1653,6 @@ class HostTurnDecisionExecutor:
     ) -> Literal["travel", "wait", "rest", "action", "dialogue"]:
         return HostTurnDecisionExecutor._semantic_step_kind(
             f"{proposal.method_family} {proposal.semantic_goal}"
-        )
-
-    @staticmethod
-    def _single_action_step_kind(
-        adjudication: ActionAdjudication,
-    ) -> Literal["travel", "wait", "rest", "action", "dialogue"]:
-        family = adjudication.method.family
-        if family == "travel":
-            return "travel"
-        if family == "wait":
-            return "wait"
-        if family == "rest":
-            return "rest"
-        if family == "dialogue":
-            return "dialogue"
-        return "action"
-
-    @staticmethod
-    def _bind_single_adjudication(
-        adjudication: ActionAdjudication,
-        *,
-        player_input: PlayerInput,
-        view: PlayerView,
-    ) -> ActionAdjudication:
-        return adjudication.model_copy(
-            update={
-                "request_id": player_input.client_action_id,
-                "source_revision": view.revision,
-                "actor_id": player_input.actor_id,
-            },
-            deep=True,
         )
 
     async def _single_keeper_capabilities(

@@ -67,7 +67,7 @@ async def test_pending_check_and_authoritative_roll_survive_service_rebuild(
             ),
         ),
     )
-    pending = await AdjudicationEngineService(store).submit(request)
+    pending = await AdjudicationEngineService(store)._submit_internal_adjudication(request)
     assert pending.pending_decision is not None
     decision_request = CheckDecisionRequest(
         request_id="sql-choice-212",
@@ -270,7 +270,7 @@ async def test_checks_persisted_before_the_skill_name_field_still_load(
         if actor.player_id == players[0].id
     )
     information_id = sorted(runtime.canon_information_ids)[0]
-    submitted = await AdjudicationEngineService(store).submit(
+    submitted = await AdjudicationEngineService(store)._submit_internal_adjudication(
         SubmitAdjudicationRequest(
             room_id=room.id,
             player_id=players[0].id,

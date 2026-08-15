@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Protocol
+from typing import Protocol
 
 import httpx
 import structlog
 from collaboration_framework.contracts import (
-    ActionAdjudication,
     ActionPlanPolicy,
-    ContractError,
     HostDecisionProposal,
-    HostTurnDecision,
     Intent,
     JsonObject,
     SingleActionProposal,
@@ -22,7 +19,6 @@ from collaboration_framework.host.adapters.openai_agents import (
     host_turn_decision_instructions,
 )
 from collaboration_framework.host.application import (
-    HostTurnDecisionParser,
     IntentParser,
     TurnExecutionError,
 )
@@ -52,7 +48,6 @@ from app.adapters.structured_http import (
 
 logger = structlog.get_logger()
 
-_HOST_TURN_DECISION_ADAPTER = TypeAdapter(HostTurnDecision)
 _HOST_DECISION_PROPOSAL_ADAPTER = TypeAdapter(HostDecisionProposal)
 
 _SAFE_PROPOSAL_INSTRUCTIONS = """
@@ -70,229 +65,6 @@ method_family/method_description、check_proposal 及有序的成功/失败 Effe
 ensure_runtime_entity、move_entity(self_inventory) 排序。无法安全建立或引用目标时返回
 ClarificationProposal，不能捏造 Canon、隐藏信息或权威结果。
 """
-
-_SAFE_ADJUDICATION_INSTRUCTIONS = """
-叙事、对话、确认和任何没有权威状态变化的动作只能使用 narrative_only。检定候选只能
-引用 self_actor.skills 中实际存在的技能。无法形成安全裁决时不得编造目标或效果。
-
-每个新 ActionAdjudication 都必须显式输出 persistence_intent。它是稳定的机器标识，
-不随玩家语言变化：普通对话、观察及纯叙事为 none；角色状态为 character_state；物体
-状态为 object_state；背包变化为 inventory；移动到地点为 location。需要持久结果时，
-method.family 也使用下列稳定值并生成精确匹配的成功效果：击晕=knock_out
-（consciousness=unconscious）、击倒=knock_down（posture=prone）、束缚=restrain
-（restraint=restrained）、打伤=injure_minor/injure_major/injure_critical、杀死=kill；
-打开=open、关闭=close、上锁=lock、解锁=unlock、破坏=break、修复=repair；
-拾取=pick_up、转交=transfer、丢下=drop、消耗=consume、前往=travel。不得把这些动作
-标成 none，也不得只给 narrative_only。命中模组 rule_decision 时仍显式填写最贴近的
-persistence_intent，但 success_effects/failure_effects 按规则所有权要求留空。
-上述 open/close/lock 等物体动作族只适用于一个已存在的物理实体确实改变
-对应状态的情况。自然语言中同一动词的服务请求、惯用语或抽象含义，不得映射成
-物体 open；若没有单独建模的权威状态，使用 method.family=action、
-persistence_intent=none 和 narrative_only，不要伪造 object_state 效果。
-
-**明确旅行地点决策表（高优先级）**：当玩家直接指定了目的地类型时，只能选择：
-
-1. 语义匹配已有地点：enter_location。
-2. PlayerView 和 keeper_capabilities.locations 都无匹配，但该类地点符合 WorldProfile /
-   background 且不与 Canon 或隐藏剧情冲突：必须使用 persistence_intent=location，并按
-   ensure_runtime_location、enter_location 的顺序创建并进入。
-3. 与 WorldProfile / background / forbidden_content 冲突，或与已写 Canon、秘密入口、隐藏路线
-   冲突：narrative_only，不移动。
-
-没有“因为列表里没有就无法确认”的第四个分支。列表缺失是进入分支 2 做背景判定的
-触发条件，不是拒绝理由。新地点尚未创建时，target 使用已有公开连接锚点，新 id 只出现在
-上述两个 effects 中。
-
-**明确取得物品决策表（同样优先于后文“目标不存在”处理）**：玩家要捡起、拿走、收好或
-放入背包时，只能选择：
-
-1. scene.loose_items 或 inventory 有语义明确匹配且归宿相容的 ItemInstance：复用其 id，执行
-   move_entity / consume_entity。
-2. 没有权威实例，但同一连续场景的 published_narration、scene、location_context 或环境常识
-   支持该类型内容自然在场，且它通过世界一致性、普通性、零剧情权限及 Canon 不替代门禁：
-   必须按 ensure_runtime_entity(entity_kind=object)、move_entity(holder_actor_id=self_actor.id)
-   的顺序创建并取得。叙事没有预先建立某个具体实体 id 正是此分支要解决的问题，不是拒绝理由。
-3. 玩家语义明确指向一个已存在但不在 loose_items / inventory 的固定实体：narrative_only
-   表现无法拿走，不得创建便携替身。
-4. 软场景依据不足，或候选未通过安全门禁：narrative_only，不得声称进入背包。
-
-不存在“叙事提过这种普通物品，但没有具体实体所以只能留在原处”的第五个分支；分支 2 条件
-全部满足时必须创建。新 id 仍只出现在 effects 中，target 使用当前 scene location。
-
-target.kind 决定 target.id 只能来自 PlayerView 的哪一个列表，两者必须配套，绝不能
-把某个列表里的 id 换一个 kind 使用：
-
-- kind=location：只能是 player_view.scene.id、known_locations[].id，或某个
-  available_exits[].destination.scene_id；
-- kind=entity：只能是 player_view.scene.visible_entities[].id、
-  player_view.scene.loose_items[].id 或 player_view.inventory[].id；
-- kind=actor：只能是 player_view.scene.visible_actors[].id 或 self_actor.id；
-- kind=information：只能是 player_view.known_information[].id。
-
-上述列表只证明一个 id 在协议上可以引用，不证明它与玩家原话语义匹配。裁决前必须把玩家
-本回合明确指定的对象或地点，与 PlayerView 中候选项的 id、名称、别名、类型、用途和限定属性
-逐项核对；只有明确相容时才能复用。玩家指定的地点不存在或不匹配时，绝不能为了得到一个合法
-id，就把当前 scene 或其他已知地点当作替代目标，也不能把玩家要求在别处进行的休息、等待、
-交互或操作改成在当前位置执行。
-
-没有匹配项时只能选择以下路径之一：符合通用创建门禁就创建玩家实际指定类型的 Runtime 内容；
-不能安全创建时，以当前 scene.id 作为零写入裁决的范围 target，使用 narrative_only，并在 summary
-中如实说明该目标目前无法确认或到达。此时不得 enter_location、advance_world_time，或提交任何
-暗示玩家已在替代地点完成行动的效果。当前 scene.id 在这种失败裁决中只是叙事范围锚点，不代表
-玩家指定的地点已经匹配成功。
-
-recent_history 主要帮助解析本回合省略的指代和对话承接。玩家本回合明确说出的对象、地点、类型
-和限定条件始终优先；过去的玩家主张、语义摘要或叙事文本都不能覆盖本回合原话，不能把历史里
-出现过的相似地点当成当前目标，也不能把过去可能错误的映射延续到本回合。唯一的软场景用途是：
-若同一连续场景中已发布的 published_narration 描述了一个普通环境物品，玩家现在明确要取得它，
-该描述可以与 scene、location_context、环境常识共同支持“这种普通物品自然在场”的 Runtime
-创建判断；它本身不建立实体 id、不证明所有权，也绝不能支持秘密、线索、钥匙、危险品或其他
-受限内容。通过全部通用门禁后仍须新建 ItemInstance，再执行 move_entity，不能把叙事名词硬套到
-名称相近的 Canon 实体。
-
-玩家查看自己的角色卡、技能或状态时，用 `target.kind=actor` +
-`target.id=self_actor.id`。查看或使用背包中的具体物品时，必须使用
-`player_view.inventory[].id` 作为 entity target；`self_actor.equipment` 只是兼容旧房间的
-名称列表，不能在已经有 inventory 项时取代 ItemInstance id。翻包本身不改变世界状态，
-也不需要检定。
-
-## 可用的高层效果
-
-输入里带 keeper_capabilities 时，除 narrative_only 外还可以使用下面这些效果。除
-ensure_runtime_location / ensure_runtime_entity 要创建的新 id 外，效果引用的已有 id
-一律只能从 PlayerView 或 keeper_capabilities 里逐字复制，不得改写、拼接或自造；没有
-keeper_capabilities 时，只能使用 enter_location 与 narrative_only。
-
-- reveal_information / hide_information：information_id 取自
-  keeper_capabilities.information[].id。只有当玩家这次行动**确实**足以获知该条信息
-  （检定成功、有人告诉他、亲眼看到）时才 reveal，并优先选内容最贴合的那一条；
-  已经 known_by_party（或本角色 known_by_actor）的不必重复 reveal。
-  keeper_capabilities.information[].content 是守秘人内容，只能用来判断该不该发放，
-  不得抄进 summary，也不得当作已经发生的事实。
-- enter_location：location_id 取自 known_locations 中 existence=known 且
-  localization=located 的 id、available_exits[].destination.scene_id，或同一次裁决里
-  刚刚用 ensure_runtime_location 建出来的地点。Engine 会对公开路线寻路，并在第一个
-  锁门或交互边界处中断，不能因为目标不是当前的一跳邻居就要求玩家分段输入。
-- ensure_runtime_location：先检查 PlayerView 和 keeper_capabilities.locations。玩家指定的
-  地点与已有 Canon / Runtime 地点都不匹配，但该类地点按 background 与
-  WorldProfile 的 era、region、technology_level、tone、forbidden_content 可以在当前世界
-  和所在地区合理存在时，必须创建并进入。模组和当前 scene 没有穷举该地区的
-  设施不是反证，地点的功能类别、规模或专业性本身也不构成拒绝理由；不应追问
-  具体实例。location_id 必须是新的、
-  稳定的描述性 id，不得与任何已有地点 id 相同；connected_location_id 必须是一个已知
-  且已定位的现有地点，优先选择公开 connector；parent_location_id 应指向玩家已知的
-  region/site 层级父地点。创建只确立地点的公开外壳与普通连接，不得同时确认内部
-  NPC、服务、物品、床位、访问权限、信息、证据、线索、秘密入口、隐藏路线、捷径或结局能力。
-  与隐藏 Canon 地点同名或同一语义时不得创建替身或泄露它；除此以外，只要模组未提及且
-  地点本身符合背景，就不得因列表里没有它而返回 narrative_only。
-  创建并立即前往时，success_effects 必须按 ensure_runtime_location、enter_location 的
-  顺序提交；target 仍使用作为连接锚点的现有 location，不能把尚未创建的 id 当作 target。
-- ensure_runtime_entity：需要一个模组没写、但情境上应该在场的普通人或普通物件
-  （当前环境自然出现的普通工作人员，或无剧情意义的日常可携带物件）时才用。entity_id 必须是新的；
-  location_id 必须已存在。使用前必须先核对 scene.visible_entities、scene.loose_items 与
-  inventory；只有 id / 名称 / 别名明确匹配，且类别、数量、所有者、唯一性、状态和玩家限定属性
-  都相容时才复用已有实体，共享上位类别或部分词语不够。
-
-  这次核对只决定“复用已有实体”还是“评估 Runtime 创建候选”。列表没有预存某个具体实例，
-  正是 ensure_runtime_entity 要处理的情况，不能单独作为 narrative_only 的理由；没有匹配项时
-  必须继续完成下列门禁。
-
-  不存在时逐项执行通用创建门禁：
-  1. 对照 keeper_capabilities.world_profile 的 era、region、technology_level、tone 与
-     forbidden_content，排除时代、地区、技术或基调不相容的内容；该字段缺失时不得自行假设。
-  2. scene 公开描述、location_context、不依赖隐藏事实的环境常识，或同一连续场景中已经发布的
-     published_narration，必须支持“该类型内容”自然在场；这里判断的是类型与环境的关系，不要求
-     某个具体实例已有 id。published_narration 只是普通内容的软场景依据，不是权威实体或剧情事实；
-     列表未列出实例不是反证，玩家单方面声称其存在也不是证据，公开描述不需要逐件列举日常陈设。
-  3. 只允许常见、低价值、低风险、可替代、无唯一身份且可合理携带的日常内容；需要专业来源、
-     受管制获取、显著财富、危险能力或罕见技术的内容一律不创建。
-  4. 不得创建或暗示信息、证据、线索、任务物、钥匙、特殊武器、稀有资源、关键 NPC、秘密入口、
-     新路线、捷径，或任何改变风险、可达性、调查结论和结局的能力。
-  5. 不得冒充、复制、改写或提前显现 Canon 实体，也不能拿类别相近的 Canon 实体代替普通物件。
-
-  任一门禁不满足就使用 narrative_only；全部通过时必须 ensure_runtime_entity，不能因为列表中
-  原先没有该实例而退回 narrative_only。
-  `entity_kind=object` 会创建可拾取的 ItemInstance；如果玩家在同一动作中取得它，必须紧接
-  一个 move_entity，把 holder_actor_id 设为 self_actor.id。这样物品才会进入背包。新实体在
-  提交前尚不存在，因此 target 必须保持为当前 player_view.scene.id 的 location，绝不能把新
-  entity_id 当作 target。
-- move_entity：让 NPC/实体换地点，或改变物品 custody。拾取、保留或转交物品时使用
-  holder_actor_id；把投掷、放置、丢弃后的物品留在当前场景时使用 location_id。
-  玩家拾取、转交、丢下或消费物品时，entity_id 只能取自 player_view.scene.loose_items[].id、
-  player_view.inventory[].id，或同一 effects 序列刚 ensure_runtime_entity 创建的新 id；不能
-  仅因某物出现在 scene.visible_entities 或 keeper_capabilities.entities 就把它移入背包。
-  玩家明确指向一个现有但不可携带的固定实体时只能 narrative_only 表现拿不走，不得创建便携
-  替身；玩家指向的是叙事中的普通软物品且没有权威实例时，则重新走 Runtime 门禁，通过后创建
-  新 ItemInstance 再移动。NPC 移动也必须是玩家当前可见且本次行动明确涉及的对象。
-- change_entity_state：记录实体上一个具体、可观察的变化（门被撬开、灯被点亮）。
-  key 只能用字母数字下划线短横。
-- consume_entity：物品被吃掉、喝掉、烧毁、耗尽或彻底失效时使用，之后它会从背包和
-  场景中消失。
-- advance_world_time：只有玩家明确要等待、休息、过夜或指定「到某个时间再做某事」时才用。
-  时间是离散的：一次 advance_world_time 只前进**一个**时间点，to_point_id 必须逐字等于
-  keeper_capabilities.time.next_point_id。要跳到更晚的时间点，就按
-  keeper_capabilities.time.ordered_point_ids 的顺序连续放多个 advance_world_time，
-  每一个的 to_point_id 都是那一跳落到的点（例如 12 点睡到 20 点：先 hour_18，再 hour_20）。
-  不要为了凑时间跳过中间的点，也不要用它表示「过了一会儿」——普通行动不推进时间。
-  keeper_capabilities.time.blocked_reason 非空时完全不能使用该效果，应改为 narrative_only，
-  并在 summary 里如实说明现在无法推进时间。
-- mark_core_resolved：主线目标真的被达成时使用一次。
-- set_ending_availability：主线已经收束、可以开始走结局流程时置 true。
-- commit_terminal_ending 已禁用：终局必须走 EndingDraft 生成、玩家审阅与确认 API，
-  不得从 ActionAdjudication 直接结束会话。
-
-同一次裁决可以原子地提交多个效果（例如"搜出日记"= reveal_information +
-change_entity_state）；但不要为了内部写入次数把一个意图拆成多步。需要检定的动作把
-效果分别放进 success_effects 与 failure_effects，失败时不要发放成功才配得到的信息。
-
-## 物品取得与使用后的归宿
-
-物品的归宿由本次语义和常识裁决，不要一律删除，也不要一律留在背包：
-
-- 玩家捡起/收好普通物品：move_entity(holder_actor_id=self_actor.id)。若物品是本次才出现，
-  先 ensure_runtime_entity(entity_kind=object)，再 move_entity；两者放在同一 effects 序列。
-- 玩家投掷、放下或把可重复使用物品留在现场：move_entity(location_id=当前 scene.id)。
-- 玩家吃掉、喝掉、烧掉，或一次性物品已经耗尽：consume_entity。
-- 使用后仍合理随身携带的可重复使用工具：不要移动或消费它，可使用 narrative_only 或只提交
-  这次确实发生的其他效果。
-
-不得凭空把关键道具塞进背包；不能携带的固定设施也不得 move 到 holder_actor_id。若行动需要
-检定，只有成功分支才能执行取得、放置或消费效果，失败分支必须保持正确的物品 custody。
-
-## 模组规则优先（keeper_capabilities.rule_candidates）
-
-`rule_candidates` 是引擎按玩家当前所在位置筛出来的、**本次有可能适用的模组规则**。
-它比上面那套通用效果更权威：只要玩家这次行动落在某条候选规则的范围内，就必须走规则，
-不要自己拼效果。判断依据是候选上的这几个字段：
-
-- `semantic_hints`：这条规则想捕捉的说法（例如"观察""用侦查"）；
-- `action_families`：动作大类（observe / search / talk …）；
-- `target_kinds` 与 `target_ids`：这条规则针对的对象，`target_ids` 里的 id 通常就是
-  玩家话里指的那个实体；
-- `options[]`：这条规则给出的**候选做法**，每项有一个不透明的 `id`、它的
-  `semantic_hints`，以及 `requires_check`——这条分支要不要掷骰。
-
-命中时这样返回：
-
-1. `rule_decision = {"rule_id": <候选的 rule_id>, "option_id": <options[] 里最贴合玩家
-   说法的那个 id>}`。两个 id 都必须从 `rule_candidates` 里逐字复制，不得改写或自造。
-2. `target` 用该候选的 `target_ids[0]`（`kind` 取对应的 `target_kinds`）。
-3. `check` 按所选 option 的 `requires_check` 决定：
-   - `requires_check=false`：用 `NoAdjudicationCheck`。这类选项（例如 `proceed`）
-     表示"就这么做"，本来就不掷骰，**不要**为了凑格式编一个技能出来。
-   - `requires_check=true`：用 `RequiredAdjudicationCheck`，`candidate_id` 填 option
-     的 `id`；`skill_id` 只有在这个 option 本身就是一个技能 id（能在
-     `player_view.self_actor.skills[]` 里逐字找到）时才填它，否则填该角色实际会用到
-     的那个技能 id。option id 不是技能名，`STR`、`proceed` 这类值不能当技能提交。
-4. `success_effects` 与 `failure_effects` **一律留空**。点名一条规则就等于把后果的
-   所有权交给了它：规则自己拥有检定结果与状态变更，你另外写的效果会被忽略。
-
-`options[]` 里的 id 是不透明的——你不知道也不需要知道每个选项会导致什么。你的职责只
-是判断"玩家这句话在语义上对应哪一个选项"，后果由已发布的规则决定。这正是规则与自由
-发挥的分界：模组作者预写好的剧情走规则，规则没覆盖的日常互动才走上面那套通用效果。
-
-只有在没有任何候选规则匹配时，才回到通用效果或 narrative_only。
-""".strip()
 
 _ACTION_PLAN_NARRATION_INSTRUCTIONS = """
 你是 TRPG 守秘人，只返回所要求的 JSON。只叙述 completed_steps 中已经提交的结果和
@@ -605,67 +377,18 @@ class PromptOpeningNarrationModel:
 
 
 class PromptHostTurnDecisionModel:
-    """Provider-neutral structured planner for one single action or finite plan."""
+    """只生成无授权 Proposal 的结构化主持模型适配器。"""
 
     def __init__(
         self,
         client: StructuredJsonClient,
         *,
         policy: ActionPlanPolicy | None = None,
-        authority_pipeline_mode: str = "legacy",
     ) -> None:
         self._client = client
         self._policy = policy or ActionPlanPolicy()
-        self._authority_pipeline_mode = authority_pipeline_mode
 
-    async def generate(self, context: HostAgentContext) -> HostTurnDecision | HostDecisionProposal:
-        if self._authority_pipeline_mode == "v2":
-            return await self._generate_proposal(context)
-        instructions = (
-            f"{host_turn_decision_instructions(self._policy)}\n\n{_SAFE_ADJUDICATION_INSTRUCTIONS}"
-        )
-        last_error: Exception | None = None
-        for attempt in range(2):
-            try:
-                raw = await self._client.generate(
-                    schema_name="trpg_host_turn_decision",
-                    schema=_HOST_TURN_DECISION_ADAPTER.json_schema(mode="serialization"),
-                    instructions=(
-                        instructions
-                        if attempt == 0
-                        else (
-                            f"{instructions}\n\n"
-                            "上一份返回未通过结构校验，请严格按 schema 重新生成。"
-                        )
-                    ),
-                    input_payload=context.to_json_dict(),
-                )
-                # 单动作与 ActionPlan 步骤共享同一持久结果字段约束；普通
-                # narrative_only 输出按兼容规则放行，持久动作必须显式声明。
-                _require_explicit_persistence_intent(raw)
-                return HostTurnDecisionParser.parse(raw, policy=self._policy)
-            except TurnExecutionError as exc:
-                if exc.code != "MODEL_OUTPUT_UNREADABLE":
-                    raise
-                last_error = exc
-            except (StructuredOutputError, ContractError, ValidationError) as exc:
-                last_error = exc
-
-            # 只记录安全的异常类型和字段路径；禁止记录模型正文、Prompt 或 GM-only 数据。
-            logger.warning(
-                "host_turn_decision_rejected",
-                attempt=attempt + 1,
-                error_type=type(last_error).__name__,
-                issues=_validation_issue_paths(last_error),
-            )
-
-        raise TurnExecutionError(
-            "MODEL_OUTPUT_UNREADABLE",
-            "主持模型返回了无法解读的结果，本次动作未生效，请重试",
-            retryable=True,
-        ) from last_error
-
-    async def _generate_proposal(self, context: HostAgentContext) -> HostDecisionProposal:
+    async def generate(self, context: HostAgentContext) -> HostDecisionProposal:
         """请求无可信字段的 Proposal；结构失败时沿用统一的玩家安全错误。"""
 
         instructions = (
@@ -724,34 +447,19 @@ def _validation_issue_paths(exc: Exception | None) -> tuple[str, ...]:
 
 
 class PromptActionPlanStepAdjudicator:
-    """Generate exactly one current-step adjudication from the latest safe view."""
+    """基于最新安全视图为当前步骤生成一份无授权 Proposal。"""
 
-    def __init__(
-        self, client: StructuredJsonClient, *, authority_pipeline_mode: str = "legacy"
-    ) -> None:
+    def __init__(self, client: StructuredJsonClient) -> None:
         self._client = client
-        self._authority_pipeline_mode = authority_pipeline_mode
 
-    async def adjudicate(self, context: ActionPlanStepContext) -> Any:
-        authority_instructions = (
-            _SAFE_PROPOSAL_INSTRUCTIONS
-            if self._authority_pipeline_mode == "v2"
-            else _SAFE_ADJUDICATION_INSTRUCTIONS
-        )
+    async def adjudicate(self, context: ActionPlanStepContext) -> SingleActionProposal:
         try:
             raw = await self._client.generate(
-                schema_name=(
-                    "trpg_action_plan_step_proposal_v1"
-                    if self._authority_pipeline_mode == "v2"
-                    else "trpg_action_plan_step_adjudication"
-                ),
-                schema=(
-                    SingleActionProposal.model_json_schema(mode="serialization")
-                    if self._authority_pipeline_mode == "v2"
-                    else ActionAdjudication.model_json_schema(mode="serialization")
-                ),
+                schema_name="trpg_action_plan_step_proposal_v1",
+                schema=SingleActionProposal.model_json_schema(mode="serialization"),
                 instructions=(
-                    f"{current_step_adjudication_instructions()}\n\n{authority_instructions}"
+                    f"{current_step_adjudication_instructions()}\n\n"
+                    f"{_SAFE_PROPOSAL_INSTRUCTIONS}"
                 ),
                 input_payload=context.to_json_dict(),
             )
@@ -775,81 +483,15 @@ class PromptActionPlanStepAdjudicator:
             raise
 
         try:
-            if self._authority_pipeline_mode == "v2":
-                return SingleActionProposal.model_validate(raw)
-            _require_explicit_persistence_intent(raw, direct=True)
-            return ActionAdjudication.model_validate(raw)
+            return SingleActionProposal.model_validate(raw)
         except ValidationError as exc:
-            # HTTP 与 JSON 都成功也不代表输出符合 ActionAdjudication 契约；这一类同样
+            # HTTP 与 JSON 都成功也不代表输出符合 Proposal 契约；这一类同样
             # 属于“模型结果不可读”，并保留异常链供步骤级诊断记录字段路径和错误类型。
             raise TurnExecutionError(
                 "MODEL_OUTPUT_UNREADABLE",
                 "主持模型返回了无法解读的结果，当前步骤未生效，请重试",
                 retryable=True,
             ) from exc
-
-
-def _require_explicit_persistence_intent(raw: object, *, direct: bool = False) -> None:
-    """拒绝新模型省略持久意图；旧持久化 JSON 仍由契约默认值兼容读取。"""
-
-    candidate = raw
-    if not direct and isinstance(raw, dict):
-        candidate = raw.get("adjudication")
-        if candidate is None:
-            single = raw.get("single_action")
-            candidate = single.get("adjudication") if isinstance(single, dict) else None
-    if isinstance(candidate, dict) and "persistence_intent" not in candidate:
-        method = candidate.get("method")
-        family = method.get("family") if isinstance(method, dict) else None
-        success_effects = candidate.get("success_effects", ())
-        failure_effects = candidate.get("failure_effects", ())
-        effects = (
-            *(success_effects if isinstance(success_effects, list) else ()),
-            *(failure_effects if isinstance(failure_effects, list) else ()),
-        )
-        persistent_families = {
-            "knock_out",
-            "wake",
-            "kill",
-            "knock_down",
-            "stand_up",
-            "restrain",
-            "release",
-            "injure_minor",
-            "injure_major",
-            "injure_critical",
-            "heal",
-            "open",
-            "close",
-            "lock",
-            "unlock",
-            "break",
-            "repair",
-            "pick_up",
-            "transfer",
-            "drop",
-            "consume",
-            "travel",
-        }
-        persistent_effects = {
-            item.get("type")
-            for item in effects
-            if isinstance(item, dict)
-            and item.get("type")
-            in {
-                "change_entity_state",
-                "move_entity",
-                "consume_entity",
-                "enter_location",
-            }
-        }
-        if family not in persistent_families and not persistent_effects:
-            return
-        raise TurnExecutionError(
-            "MODEL_OUTPUT_UNREADABLE",
-            "主持模型返回了无法解读的结果，当前步骤未生效，请重试",
-            retryable=True,
-        )
 
 
 class PromptActionPlanNarrationModel:

@@ -568,8 +568,11 @@ class AdjudicationEngineService:
                 execution=command.execution,
             )
 
-    async def submit(self, request: SubmitAdjudicationRequest) -> AdjudicationExecution:
-        """保留 PR 1 的 legacy writer；PR 2 切换生产调用方后再删除该入口。"""
+    async def _submit_internal_adjudication(
+        self,
+        request: SubmitAdjudicationRequest,
+    ) -> AdjudicationExecution:
+        """仅供 Engine 内部契约测试读取旧载荷，生产调用方不得依赖。"""
 
         return await self._submit_request(request)
 
@@ -585,7 +588,7 @@ class AdjudicationEngineService:
         self,
         request: SubmitAdjudicationRequest | SubmitProposalRequest,
     ) -> AdjudicationExecution:
-        """共享 legacy 与 v2 提交内核；只有该函数能够跨越权威事务边界。"""
+        """编译并提交动作；公开生产入口只允许传入 Proposal。"""
 
         async with self._store.transaction(
             request.room_id, turn_id=current_turn_id()
@@ -601,7 +604,7 @@ class AdjudicationEngineService:
                     return self._replay(request, replay, runtime.revision)
                 # 编译必须发生在 runtime 被事务锁定之后；返回的命令不会跨事务缓存。
                 validated_command = self._proposal_compiler.compile(runtime, request)
-                request = validated_command.to_legacy_request()
+                request = validated_command.to_internal_request()
             self._validate_identity(
                 runtime,
                 player_id=request.player_id,
