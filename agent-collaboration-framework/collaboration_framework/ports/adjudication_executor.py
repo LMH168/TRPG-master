@@ -7,6 +7,7 @@ from collaboration_framework.contracts import (
     CheckDecisionRequest,
     PostRollDecisionRequest,
     SubmitAdjudicationRequest,
+    SubmitProposalRequest,
 )
 
 
@@ -26,11 +27,22 @@ class AdjudicationExecutor(Protocol):
     (#226 §5), so a caller can never choose consequences directly.
     """
 
-    async def submit(self, request: SubmitAdjudicationRequest) -> AdjudicationExecution: ...
+    async def submit(
+        self, request: SubmitAdjudicationRequest
+    ) -> AdjudicationExecution: ...
 
     async def decide(self, request: CheckDecisionRequest) -> AdjudicationExecution: ...
 
     async def decide_post_roll(
         self,
         request: PostRollDecisionRequest,
+    ) -> AdjudicationExecution: ...
+
+
+class ProposalSubmissionExecutor(Protocol):
+    """Host 可见的 Proposal 提交端口，具体实现必须在 Engine 事务内重新校验。"""
+
+    async def submit_proposal(
+        self,
+        request: SubmitProposalRequest,
     ) -> AdjudicationExecution: ...

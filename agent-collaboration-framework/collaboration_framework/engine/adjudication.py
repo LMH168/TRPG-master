@@ -52,6 +52,7 @@ from collaboration_framework.contracts import (
     SetVisibilityEffect,
     SpendResourceOption,
     SubmitAdjudicationRequest,
+    SubmitProposalRequest,
     TravelInterrupted,
     TravelResolved,
 )
@@ -64,9 +65,9 @@ from collaboration_framework.contracts.validation import (
     Repairability,
     ValidationResult,
 )
+from collaboration_framework.runtime_context import current_turn_id
 
 from .dice import DiceRoller, coc7_success_level, passes_difficulty
-from collaboration_framework.runtime_context import current_turn_id
 from .models import (
     AgendaSource,
     CheckRun,
@@ -85,15 +86,16 @@ from .persistent_results import (
 )
 from .ports import EngineStore
 from .projection_v3 import project_v3
+from .proposal_compiler import ProposalCompiler
 from .rules_v3 import (
     agenda_item_for_event,
     agenda_status_for_walk,
     agent_match_scope_admits,
     create_rule_agenda,
     effects_after_degree,
+    entity_state,
     matching_event_rules,
     pending_check_for,
-    entity_state,
     resolve_rule_option,
     walk_rule,
 )
@@ -186,9 +188,16 @@ def _visibility_knowledge(
 class AdjudicationEngineService:
     """B-owned executor for one ActionAdjudication per call."""
 
-    def __init__(self, store: EngineStore, *, dice: DiceRoller | None = None) -> None:
+    def __init__(
+        self,
+        store: EngineStore,
+        *,
+        dice: DiceRoller | None = None,
+        proposal_compiler: ProposalCompiler | None = None,
+    ) -> None:
         self._store = store
         self._dice = dice or DiceRoller()
+        self._proposal_compiler = proposal_compiler or ProposalCompiler()
 
     @staticmethod
     def _reject_validation(
@@ -524,15 +533,23 @@ class AdjudicationEngineService:
             if command.request.player_id != request.player_id:
                 raise ContractError("裁决恢复状态不属于当前玩家")
 
-            adjudication = None
+            adjudication = (
+                command.validated_command.adjudication
+                if command.validated_command is not None
+                else None
+            )
             if isinstance(command.request, SubmitAdjudicationRequest):
                 adjudication = command.request.adjudication
-            else:
+            elif adjudication is None:
                 pending = await transaction.find_pending_check_by_action(
                     request.action_request_id
                 )
                 if pending is not None:
-                    adjudication = pending.adjudication
+                    adjudication = (
+                        pending.validated_command.adjudication
+                        if pending.validated_command is not None
+                        else pending.adjudication
+                    )
             if adjudication is None:
                 raise ContractError("裁决恢复缺少原始 ActionAdjudication")
             if adjudication.request_id != request.action_request_id:
@@ -552,10 +569,39 @@ class AdjudicationEngineService:
             )
 
     async def submit(self, request: SubmitAdjudicationRequest) -> AdjudicationExecution:
+        """保留 PR 1 的 legacy writer；PR 2 切换生产调用方后再删除该入口。"""
+
+        return await self._submit_request(request)
+
+    async def submit_proposal(
+        self,
+        request: SubmitProposalRequest,
+    ) -> AdjudicationExecution:
+        """在同一 Engine 事务内编译 Proposal 并立即执行，避免 revision 竞态。"""
+
+        return await self._submit_request(request)
+
+    async def _submit_request(
+        self,
+        request: SubmitAdjudicationRequest | SubmitProposalRequest,
+    ) -> AdjudicationExecution:
+        """共享 legacy 与 v2 提交内核；只有该函数能够跨越权威事务边界。"""
+
         async with self._store.transaction(
             request.room_id, turn_id=current_turn_id()
         ) as transaction:
             runtime = await transaction.load_runtime()
+            completed_request = request
+            validated_command = None
+            if isinstance(request, SubmitProposalRequest):
+                # 已提交重试必须先按持久化原请求对账；首次提交已经推进 revision，若先
+                # 重新编译会把完全相同的幂等重试误判成 SOURCE_REVISION_STALE。
+                replay = await transaction.find_adjudication_command(request.request_id)
+                if replay is not None:
+                    return self._replay(request, replay, runtime.revision)
+                # 编译必须发生在 runtime 被事务锁定之后；返回的命令不会跨事务缓存。
+                validated_command = self._proposal_compiler.compile(runtime, request)
+                request = validated_command.to_legacy_request()
             self._validate_identity(
                 runtime,
                 player_id=request.player_id,
@@ -576,11 +622,14 @@ class AdjudicationEngineService:
                     )
                 }
             )
+            if isinstance(completed_request, SubmitAdjudicationRequest):
+                # legacy 幂等契约继续保存归一后的请求；v2 则保存原始 Proposal 信封。
+                completed_request = request
             replay = await transaction.find_adjudication_command(
                 request.adjudication.request_id
             )
             if replay is not None:
-                return self._replay(request, replay, runtime.revision)
+                return self._replay(completed_request, replay, runtime.revision)
             self._require_revision(
                 request.adjudication.source_revision,
                 runtime.revision,
@@ -626,11 +675,12 @@ class AdjudicationEngineService:
                     check_run=None,
                     completed_command=CompletedAdjudicationCommand(
                         request_id=request.adjudication.request_id,
-                        request=request,
+                        request=completed_request,
                         execution=execution,
                         validation=proposal_validation,
                         committed_authority_level=proposal_committed_level,
                         classification_coverage=proposal_validation.classification_coverage,
+                        validated_command=validated_command,
                     ),
                 )
                 return execution
@@ -656,6 +706,7 @@ class AdjudicationEngineService:
                 status="awaiting_skill_choice",
                 adjudication=request.adjudication,
                 options=options,
+                validated_command=validated_command,
             )
             event = self._event(
                 runtime,
@@ -691,11 +742,12 @@ class AdjudicationEngineService:
                 check_run=None,
                 completed_command=CompletedAdjudicationCommand(
                     request_id=request.adjudication.request_id,
-                    request=request,
+                    request=completed_request,
                     execution=execution,
                     validation=proposal_validation,
                     committed_authority_level=None,
                     classification_coverage=proposal_validation.classification_coverage,
+                    validated_command=validated_command,
                 ),
             )
             return execution
@@ -821,6 +873,7 @@ class AdjudicationEngineService:
                 post_roll_options=post_options,
                 final_result=None if post_options else roll,
                 adjudication=decision.adjudication,
+                validated_command=decision.validated_command,
             )
             rolled_event = self._event(
                 runtime,
@@ -1342,8 +1395,7 @@ class AdjudicationEngineService:
                     fault="agent",
                     player_safe_reason="当前行动不能使用该规则选项",
                     internal_reason=(
-                        "RuleDecision 超出当前可用范围: "
-                        f"{adjudication.rule_decision.rule_id}"
+                        f"RuleDecision 超出当前可用范围: {adjudication.rule_decision.rule_id}"
                     ),
                 )
         else:
