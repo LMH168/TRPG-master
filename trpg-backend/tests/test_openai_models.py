@@ -500,13 +500,14 @@ async def test_narration_receives_authoritative_default_check_result() -> None:
 
 class ScriptedTurnDecisionClient:
     async def generate(self, *, schema_name, schema, instructions, input_payload):
-        assert schema_name == "trpg_host_decision_proposal_v1"
+        assert schema_name == "trpg_host_decision_proposal_v2"
         assert schema and "32 步" in instructions
         utterance = input_payload["player_input"]["utterance"]
         requested = int(utterance.split(":", 1)[1])
         if requested == 1:
             return {
                 "kind": "single_action",
+                "schema_version": 2,
                 "semantic_goal": "观察当前场景",
                 "semantic_focus": {"kind": "location", "id": "conversation"},
                 "method_family": "action",
@@ -514,6 +515,7 @@ class ScriptedTurnDecisionClient:
                 "check_proposal": {"mode": "none", "candidates": []},
                 "success_effect_proposals": [{"type": "narrative_only"}],
                 "failure_effect_proposals": [],
+                "completion": {"kind": "process", "interaction": "observe"},
             }
         return {
             "kind": "action_plan",
@@ -575,6 +577,7 @@ def _valid_travel_decision() -> dict:
 
     return {
         "kind": "single_action",
+        "schema_version": 2,
         "semantic_goal": "去墓地",
         "semantic_focus": {"kind": "location", "id": "cemetery"},
         "method_family": "travel",
@@ -584,6 +587,15 @@ def _valid_travel_decision() -> dict:
             {"type": "enter_location", "location_ref": {"kind": "location", "id": "cemetery"}}
         ],
         "failure_effect_proposals": [],
+        "completion": {
+            "kind": "effects",
+            "requirements": [
+                {
+                    "type": "enter_location",
+                    "location_ref": {"kind": "location", "id": "cemetery"},
+                }
+            ],
+        },
     }
 
 
@@ -869,7 +881,7 @@ class _ScriptedStepClient:
         instructions: str,
         input_payload: dict,
     ) -> dict:
-        assert schema_name == "trpg_action_plan_step_proposal_v1"
+        assert schema_name == "trpg_action_plan_step_proposal_v2"
         assert schema
         assert instructions
         assert input_payload["plan_id"] == "plan-step-error"
@@ -996,6 +1008,7 @@ async def test_step_adjudicator_receives_published_narration_as_soft_context() -
     client = _ScriptedStepClient(
         {
             "kind": "single_action",
+            "schema_version": 2,
             "semantic_goal": context.step.semantic_goal,
             "semantic_focus": {"kind": "location", "id": context.player_view.scene.id},
             "method_family": "action",
@@ -1003,6 +1016,7 @@ async def test_step_adjudicator_receives_published_narration_as_soft_context() -
             "check_proposal": {"mode": "none"},
             "success_effect_proposals": [{"type": "narrative_only"}],
             "failure_effect_proposals": [],
+            "completion": {"kind": "process", "interaction": "observe"},
         }
     )
 

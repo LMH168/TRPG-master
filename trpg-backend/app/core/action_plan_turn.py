@@ -1439,6 +1439,13 @@ class ActionPlanTurnApplication:
                 "行动状态尚未完成，请重试",
                 retryable=True,
             )
+        if execution.goal_outcome == "pending":
+            # 完成态不能把尚未判定的目标交给 Narrator，否则会绕过目标完成门禁。
+            raise TurnExecutionError(
+                "PENDING_GOAL_OUTCOME_NOT_WAITING",
+                "行动目标状态尚未完成，请重试",
+                retryable=True,
+            )
         completed_summary = CompletedPlanStepSummary(
             step_index=0,
             semantic_goal=summary,

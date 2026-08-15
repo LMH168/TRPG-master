@@ -406,7 +406,7 @@ class PromptHostTurnDecisionModel:
         for attempt in range(2):
             try:
                 raw = await self._client.generate(
-                    schema_name="trpg_host_decision_proposal_v1",
+                    schema_name="trpg_host_decision_proposal_v2",
                     schema=_HOST_DECISION_PROPOSAL_ADAPTER.json_schema(mode="serialization"),
                     instructions=(
                         instructions
