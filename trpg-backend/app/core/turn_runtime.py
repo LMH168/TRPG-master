@@ -211,6 +211,7 @@ class TurnFailureSnapshot(BaseModel):
     code: str = Field(min_length=1, max_length=100)
     stage: TurnErrorStage
     retryable: bool
+    attempt_count: int = Field(default=1, ge=1)
     commit_state: TurnCommitState
     recovery_action: TurnRecoveryAction
     public_message: str = Field(min_length=1, max_length=1000)

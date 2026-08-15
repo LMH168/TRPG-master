@@ -35,6 +35,10 @@ from app.core.turn_runtime import (
 
 TurnPhaseObserver = Callable[[TurnPhase], Awaitable[None]]
 
+# Narrator 或模型持续失败时最多自动恢复三次；耗尽后结束当前 Turn，避免一个
+# 永远无法生成叙事的回合永久占用房间。Engine receipt 已存在时只恢复叙事，绝不重做提交。
+MAX_TURN_RECOVERY_ATTEMPTS = 3
+
 
 @dataclass(frozen=True)
 class TurnExecutionOutcome:
@@ -354,18 +358,23 @@ class TurnCoordinator:
         return saved
 
     async def _record_failure(self, current: TurnRecord, exc: Exception) -> TurnRecord:
-        """持久化脱敏错误；可恢复故障保留当前阶段和房间占用。"""
+        """持久化脱敏错误；有限次恢复失败后终止回合并释放房间占用。"""
 
         receipts = await self._store.list_receipts(current.turn_id)
         commit_state = current.commit_state
         if receipts and commit_state == TurnCommitState.NOT_COMMITTED:
             commit_state = TurnCommitState.PARTIALLY_COMMITTED
-        retryable = bool(getattr(exc, "retryable", True))
+        previous_attempts = current.last_error.attempt_count if current.last_error else 0
+        attempt_count = previous_attempts + 1
+        retryable = bool(getattr(exc, "retryable", True)) and (
+            attempt_count < MAX_TURN_RECOVERY_ATTEMPTS
+        )
         stage, resume_point = self._error_location(current)
         failure = TurnFailureSnapshot(
             code=str(getattr(exc, "code", "TURN_INTERNAL_ERROR")),
             stage=stage,
             retryable=retryable,
+            attempt_count=attempt_count,
             commit_state=commit_state,
             recovery_action=(
                 TurnRecoveryAction.RETRY_SAME_INPUT
