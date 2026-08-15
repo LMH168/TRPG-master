@@ -32,8 +32,8 @@ from collaboration_framework.contracts import (
 )
 from starlette.testclient import TestClient
 
-from app.controller import ws as ws_controller
 from app.main import app
+from app.service import reliable_turn_runtime
 from tests.test_ws import (
     advance_to_building,
     complete_character,
@@ -103,7 +103,7 @@ def _play_one_action(
     complete_character(sync_client, room["roomId"], room["reconnectToken"])
     start_game(sync_client, room, token)
     planner = _ScriptedEffectPlanner(*effects)
-    monkeypatch.setattr(ws_controller.action_plan_turn_application, "_planner", planner)
+    monkeypatch.setattr(reliable_turn_runtime.action_plan_turn_application, "_planner", planner)
 
     with sync_client.websocket_connect(f"/ws/{room['roomId']}?token={token}") as ws:
         ws.send_json(

@@ -1,7 +1,6 @@
 """WebSocket protocol, authorization, persistence, and reconnect regression tests."""
 
 from dataclasses import replace
-from types import SimpleNamespace
 
 import pytest
 from collaboration_framework.contracts import (
@@ -31,6 +30,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from app.controller import ws as ws_controller
 from app.main import app
+from app.service import reliable_turn_runtime
 
 ROOMS_BASE = "/api/v1/rooms"
 
@@ -376,6 +376,18 @@ def receive_until(ws, predicate, *, limit: int = 24):
         if predicate(message):
             return message, seen
     raise AssertionError(f"expected WebSocket event not found; seen={seen!r}")
+
+
+def receive_turn_outbox(ws, *, limit: int = 60):
+    """按固定 Outbox 顺序读取到 turn.completed，并返回同批权威叙事。"""
+
+    completed, seen = receive_until(
+        ws,
+        lambda message: message.get("message_type") == "turn.completed",
+        limit=limit,
+    )
+    narration = next(message for message in seen if message.get("type") == "narration.push")
+    return completed, narration, seen
 
 
 def receive_replayed_opening(ws) -> dict:
@@ -784,16 +796,9 @@ def test_action_submit_broadcasts_narration_to_room_only(sync_client: TestClient
                 },
             }
         )
-        completed, progress = receive_until(
-            ws_a,
-            lambda message: message.get("message_type") == "turn.completed",
-        )
+        completed, narration, progress = receive_turn_outbox(ws_a)
         action_echo = next(
             message for message in progress if message.get("type") == "action.broadcast"
-        )
-        narration, _ = receive_until(
-            ws_a,
-            lambda message: message.get("type") == "narration.push",
         )
         guest_narration, _ = receive_until(
             ws_guest,
@@ -811,10 +816,7 @@ def test_action_submit_broadcasts_narration_to_room_only(sync_client: TestClient
                 },
             }
         )
-        retried, _ = receive_until(
-            ws_a,
-            lambda message: message.get("message_type") == "turn.completed",
-        )
+        retried, _, _ = receive_turn_outbox(ws_a)
         ws_a.send_json(
             {
                 "type": "room.join",
@@ -847,7 +849,8 @@ def test_action_submit_broadcasts_narration_to_room_only(sync_client: TestClient
     assert action_echo["type"] == "action.broadcast"
     assert action_echo["payload"]["utterance"] == "我看看托马斯"
     assert narration["type"] == "narration.push"
-    assert narration["payload"]["messageId"] == "action-broadcast-122"
+    assert narration["payload"]["messageId"] == completed["turn_id"]
+    assert narration["payload"]["clientActionId"] == "action-broadcast-122"
     assert guest_narration == narration
     assert retried["message_type"] == "turn.completed"
     assert next_after_retry["type"] == "session.bound"
@@ -871,7 +874,7 @@ def test_action_submit_broadcasts_narration_to_room_only(sync_client: TestClient
         and event["payload"]["text"] == narration["payload"]["text"]
     ]
     assert len(action_narrations) == 1
-    assert action_narrations[0]["payload"]["messageId"] == "action-broadcast-122"
+    assert action_narrations[0]["payload"]["messageId"] == completed["turn_id"]
 
 
 def test_turn_error_reason_keeps_contract_error_message_bounded() -> None:
@@ -1002,7 +1005,8 @@ def test_disconnected_socket_does_not_lose_the_turn_narration(
         )
 
     assert settled["type"] == "narration.push", seen
-    assert settled["payload"]["messageId"] == action_id
+    assert settled["payload"]["clientActionId"] == action_id
+    assert settled["payload"]["messageId"] == settled["payload"]["turnId"]
     assert all(message.get("type") != "turn.failed" for message in seen)
 
     # 落库才是这条断言的重点：客户端收没收到都可能，events 表里必须有。
@@ -1013,7 +1017,7 @@ def test_disconnected_socket_does_not_lose_the_turn_narration(
     persisted = [
         event
         for event in conversation
-        if event["type"] == "narration.push" and event["payload"]["messageId"] == action_id
+        if event["type"] == "narration.push" and event["payload"].get("clientActionId") == action_id
     ]
     assert len(persisted) == 1, conversation
 
@@ -1110,8 +1114,9 @@ def test_action_plan_submit_emits_safe_progress_and_one_parent_completion(
             lambda message: message.get("type") == "plan.completed",
             limit=40,
         )
+        completed, _, completion_seen = receive_turn_outbox(ws)
+        seen.extend(completion_seen)
 
-    completed = next(message for message in seen if message.get("message_type") == "turn.completed")
     action_echo = next(message for message in seen if message.get("type") == "action.broadcast")
     progress = [message for message in seen if message.get("type", "").startswith("plan.")]
     assert completed["correlation_id"] == "parent-plan-ws-225"
@@ -1157,13 +1162,7 @@ def test_action_plan_submit_emits_safe_progress_and_one_parent_completion(
 def _configure_v2_runtime(monkeypatch: pytest.MonkeyPatch, turn_store_factory):
     """把显式 v2 组合根完整切到当前用例的隔离数据库。"""
 
-    monkeypatch.setattr(
-        ws_controller,
-        "get_settings",
-        lambda: SimpleNamespace(turn_runtime_mode="v2"),
-    )
     from app.core.turn_coordinator import TurnCoordinator
-    from app.service import reliable_turn_runtime
     from app.service.turn_outbox import TurnOutboxDispatcher
 
     reliable_store = turn_store_factory()
@@ -1186,7 +1185,7 @@ def _configure_v2_runtime(monkeypatch: pytest.MonkeyPatch, turn_store_factory):
     monkeypatch.setattr(
         reliable_turn_runtime,
         "action_plan_turn_application",
-        ws_controller.action_plan_turn_application,
+        reliable_turn_runtime.action_plan_turn_application,
     )
     return reliable_store
 
@@ -1226,11 +1225,7 @@ def test_v2_action_persists_turn_and_sends_outbox_before_completion(
                 },
             }
         )
-        completed, seen = receive_until(
-            ws,
-            lambda message: message.get("message_type") == "turn.completed",
-            limit=60,
-        )
+        completed, _, seen = receive_turn_outbox(ws, limit=60)
 
     narration_index = next(
         index for index, message in enumerate(seen) if message.get("type") == "narration.push"
@@ -1243,7 +1238,7 @@ def test_v2_action_persists_turn_and_sends_outbox_before_completion(
     completed_index = seen.index(completed)
     assert narration_index < view_index < completed_index
     turn_id = completed["turn_id"]
-    assert completed["payload"]["turnId"] == turn_id
+    assert completed["payload"]["client_action_id"] == "reliable-v2-action"
 
     response = sync_client.get(
         f"{ROOMS_BASE}/{room['roomId']}/turns",
@@ -1267,7 +1262,7 @@ def test_v2_pending_decision_is_recoverable_from_turn_api(
 
     _configure_v2_runtime(monkeypatch, turn_store_factory)
     monkeypatch.setattr(
-        ws_controller.action_plan_turn_application,
+        reliable_turn_runtime.action_plan_turn_application,
         "_planner",
         _WsSingleActionCheckPlanner(),
     )
@@ -1333,12 +1328,12 @@ def test_single_action_pending_resumes_without_plan_run(
     planner = _WsSingleActionCheckPlanner()
     narration_model = _WsCountingActionPlanNarration()
     monkeypatch.setattr(
-        ws_controller.action_plan_turn_application,
+        reliable_turn_runtime.action_plan_turn_application,
         "_planner",
         planner,
     )
     monkeypatch.setattr(
-        ws_controller.action_plan_turn_application,
+        reliable_turn_runtime.action_plan_turn_application,
         "_narrator",
         ActionPlanNarrator(narration_model),
     )
@@ -1437,28 +1432,12 @@ def test_single_action_pending_resumes_without_plan_run(
                 },
             }
         )
-        completed, completion_events = receive_until(
-            ws,
-            lambda message: message.get("message_type") == "turn.completed",
-            limit=40,
-        )
-        narration, narration_events = receive_until(
-            ws,
-            lambda message: message.get("type") == "narration.push",
-            limit=40,
-        )
+        completed, narration, completion_events = receive_turn_outbox(ws, limit=40)
+        narration_events = completion_events
 
         ws.send_json(select_message)
-        repeated_completed, repeated_events = receive_until(
-            ws,
-            lambda message: message.get("message_type") == "turn.completed",
-            limit=20,
-        )
-        repeated_narration, repeated_narration_events = receive_until(
-            ws,
-            lambda message: message.get("type") == "narration.push",
-            limit=20,
-        )
+        repeated_completed, repeated_narration, repeated_events = receive_turn_outbox(ws, limit=20)
+        repeated_narration_events = repeated_events
 
         ws.send_json(
             {
@@ -1470,19 +1449,14 @@ def test_single_action_pending_resumes_without_plan_run(
                 },
             }
         )
-        repeated_submit, repeated_submit_events = receive_until(
-            ws,
-            lambda message: message.get("message_type") == "turn.completed",
-            limit=20,
+        repeated_submit, repeated_submit_narration, repeated_submit_events = receive_turn_outbox(
+            ws, limit=20
         )
-        repeated_submit_narration, repeated_submit_narration_events = receive_until(
-            ws,
-            lambda message: message.get("type") == "narration.push",
-            limit=20,
-        )
+        repeated_submit_narration_events = repeated_submit_events
 
     assert completed["correlation_id"] == action_id
-    assert narration["payload"]["messageId"] == action_id
+    assert narration["payload"]["clientActionId"] == action_id
+    assert narration["payload"]["messageId"] == completed["turn_id"]
     assert completed["payload"]["narration"]["suggested_actions"] == ["继续调查"]
     assert all(message.get("type") != "turn.failed" for message in completion_events)
     assert [
@@ -1515,7 +1489,8 @@ def test_single_action_pending_resumes_without_plan_run(
     narration_events = [
         event
         for event in replay
-        if event["eventType"] == "narration.push" and event["payload"].get("messageId") == action_id
+        if event["eventType"] == "narration.push"
+        and event["payload"].get("clientActionId") == action_id
     ]
     assert len(action_events) == 1
     assert len(narration_events) == 1
@@ -1546,7 +1521,7 @@ def test_single_action_pending_resumes_without_plan_run(
     conversation_narration = [
         event
         for event in conversation
-        if event["type"] == "narration.push" and event["payload"].get("messageId") == action_id
+        if event["type"] == "narration.push" and event["payload"].get("clientActionId") == action_id
     ]
     assert len(conversation_narration) == 1
     assert "_turnCompletion" not in conversation_narration[0]["payload"]
@@ -1561,7 +1536,7 @@ def test_action_plan_narrator_failure_retries_narration_without_replaying_steps(
     advance_to_building(sync_client, room)
     complete_character(sync_client, room["roomId"], room["reconnectToken"])
     start_game(sync_client, room, token)
-    application = ws_controller.action_plan_turn_application
+    application = reliable_turn_runtime.action_plan_turn_application
     narrator = _FailOnceActionPlanNarrator(application._narrator)
     monkeypatch.setattr(application, "_narrator", narrator)
     action = {
@@ -1595,16 +1570,13 @@ def test_action_plan_narrator_failure_retries_narration_without_replaying_steps(
         assert all(message.get("type") != "plan.completed" for message in first_seen)
 
         ws.send_json(action)
-        completed, retry_seen = receive_until(
-            ws,
-            lambda message: message.get("message_type") == "turn.completed",
-            limit=40,
-        )
-        terminal, _ = receive_until(
+        terminal, retry_seen = receive_until(
             ws,
             lambda message: message.get("type") == "plan.completed",
             limit=40,
         )
+        completed, _, completion_seen = receive_turn_outbox(ws, limit=40)
+        retry_seen.extend(completion_seen)
 
     assert narrator.calls == 2
     assert completed["correlation_id"] == "plan-narrator-retry-246"
@@ -1623,7 +1595,7 @@ def test_subject_ownership_failure_retries_before_publishing_narration(
     start_game(sync_client, room, token)
     narration_model = _WsFirstPersonThenSafeNarration()
     monkeypatch.setattr(
-        ws_controller.action_plan_turn_application,
+        reliable_turn_runtime.action_plan_turn_application,
         "_narrator",
         ActionPlanNarrator(narration_model),
     )
@@ -1650,16 +1622,7 @@ def test_subject_ownership_failure_retries_before_publishing_narration(
                 },
             }
         )
-        completed, seen = receive_until(
-            ws,
-            lambda message: message.get("message_type") == "turn.completed",
-            limit=40,
-        )
-        narration, _ = receive_until(
-            ws,
-            lambda message: message.get("type") == "narration.push",
-            limit=20,
-        )
+        completed, narration, seen = receive_turn_outbox(ws, limit=40)
 
     assert narration_model.calls == 2
     assert completed["payload"]["narration"]["text"] == "你带着托马斯进入墓地。"

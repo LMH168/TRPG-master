@@ -144,16 +144,6 @@ class SanCheckRollPayload(CamelModel):
     """
 
 
-class RoomRejoinPayload(CamelModel):
-    """room.rejoin 事件 payload（issue #77 新增，仅铺协议，见决策 6）。
-
-    `reconnect_token` 是房间身份体系的重连凭证（`players.reconnect_token`，
-    不是账号登录 token），本期只校验格式、不做真实的断线重连逻辑。
-    """
-
-    reconnect_token: str = Field(..., min_length=1)
-
-
 class ChatSendPayload(CamelModel):
     """chat.send 讨论区消息；该通道不会进入 Host Agent 上下文。"""
 
@@ -174,6 +164,8 @@ class SessionBoundPayload(CamelModel):
 class NarrationPushPayload(CamelModel):
     """narration.push 推送 payload。"""
 
+    turn_id: str | None = Field(default=None, min_length=1)
+    client_action_id: str | None = Field(default=None, min_length=1, max_length=200)
     message_id: str | None = Field(default=None, min_length=1)
     text: str
 
@@ -188,6 +180,8 @@ class NarrationChunkPayload(CamelModel):
     始终只认 `narration.push`，临时拼接内容不得写入权威历史。
     """
 
+    turn_id: str | None = Field(default=None, min_length=1)
+    client_action_id: str | None = Field(default=None, min_length=1, max_length=200)
     message_id: str = Field(..., min_length=1)
     sequence: int = Field(..., ge=0)
     text: str = Field(..., min_length=1)
@@ -213,6 +207,7 @@ class ChatMessagePayload(CamelModel):
 class ActionBroadcastPayload(CamelModel):
     """action.plan.submit 原话广播 payload。"""
 
+    turn_id: str
     player_id: str
     client_action_id: str
     nickname: str
@@ -221,10 +216,12 @@ class ActionBroadcastPayload(CamelModel):
 
 
 class TurnStartedPayload(CamelModel):
+    turn_id: str
     correlation_id: str
 
 
 class TurnPhaseChangedPayload(CamelModel):
+    turn_id: str
     correlation_id: str
     phase: Literal[
         "reading_player_view",
@@ -237,18 +234,21 @@ class TurnPhaseChangedPayload(CamelModel):
 
 
 class ToolStartedPayload(CamelModel):
+    turn_id: str
     correlation_id: str
     tool_name: str
     public_progress_label: str
 
 
 class ToolCompletedPayload(CamelModel):
+    turn_id: str
     correlation_id: str
     tool_name: str
     status: Literal["success", "error"]
 
 
 class TurnFailedPayload(CamelModel):
+    turn_id: str
     correlation_id: str
     code: str
     public_message: str
@@ -256,6 +256,7 @@ class TurnFailedPayload(CamelModel):
 
 
 class PlanProgressPayload(CamelModel):
+    turn_id: str
     correlation_id: str
     current_step: int = Field(..., ge=1)
     completed_steps: int = Field(..., ge=0)
@@ -272,6 +273,7 @@ class PlanProgressPayload(CamelModel):
 
 
 class AdjudicationPendingPayload(CamelModel):
+    turn_id: str
     correlation_id: str
     plan_id: str | None = None
     source_revision: str
@@ -281,6 +283,7 @@ class AdjudicationPendingPayload(CamelModel):
 
 
 class ViewUpdatedPayload(CamelModel):
+    turn_id: str | None = Field(default=None, min_length=1)
     player_id: str
     player_view: PlayerView
 
@@ -338,8 +341,9 @@ class CheckSkillOptionPayload(CamelModel):
 
 
 class CheckRequestPayload(CamelModel):
-    """向动作发起者推送经 Actor 技能值过滤后的可用检定项。"""
+    """向动作发起者推送可用检定项；旧历史允许缺少 turn_id。"""
 
+    turn_id: str | None = None
     player_id: str
     client_action_id: str
     summary: str
@@ -354,6 +358,7 @@ class CheckResultPayload(CamelModel):
     结算，避免把未达标骰点直接展示成普通成功（issue #327）。
     """
 
+    turn_id: str
     player_id: str
     client_action_id: str
     skill: str
@@ -402,11 +407,7 @@ class ClueGrantedPayload(CamelModel):
 
 
 class ErrorPayload(CamelModel):
-    """error 推送 payload（issue #77 新增）——本期唯一会被真的发出的新增
-    S→C 事件：`check.roll`/`san.check.roll`/`room.rejoin` 这三个 NOT_IMPLEMENTED
-    桩、以及原来 game.start 失败时被静默丢弃（`continue`，见 ws.py 旧逻辑）
-    的错误，都改成通过这个事件明确告知发起者，而不是让客户端干等。
-    """
+    """error 推送 payload；用于向发起连接返回玩家安全的协议错误。"""
 
     code: str
     message: str

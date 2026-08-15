@@ -13,6 +13,7 @@ import { InventoryResource } from './resources/inventory';
 import { ModulesResource } from './resources/modules';
 import { RoomSocket } from './resources/room-socket';
 import { RoomsResource } from './resources/rooms';
+import { TurnsResource } from './resources/turns';
 
 export * from './types';
 export { ApiClient, ApiError } from './client';
@@ -24,6 +25,8 @@ export {
   TurnFailedError,
 } from './resources/room-socket';
 export type { RoomSocketHandler } from './resources/room-socket';
+export { TurnsResource } from './resources/turns';
+export type { ListTurnsOptions } from './resources/turns';
 
 export interface TrpgSdkOptions extends ApiClientOptions {
   /** WS 连接的根地址，比如 "ws://127.0.0.1:8000"（不含 /api/v1，也不含
@@ -42,6 +45,7 @@ function deriveWsBaseUrl(baseUrl: string): string {
  */
 export class TrpgSdk {
   readonly rooms: RoomsResource;
+  readonly turns: TurnsResource;
   readonly auth: AuthResource;
   readonly characters: CharactersResource;
   readonly games: GamesResource;
@@ -54,6 +58,7 @@ export class TrpgSdk {
   constructor(options: TrpgSdkOptions) {
     const client = new ApiClient(options);
     this.rooms = new RoomsResource(client);
+    this.turns = new TurnsResource(client);
     this.auth = new AuthResource(client);
     this.characters = new CharactersResource(client);
     this.games = new GamesResource(client);

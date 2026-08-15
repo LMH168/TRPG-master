@@ -44,28 +44,22 @@ class TurnOutboxDispatcher:
             await self._dispatch_claimed(message)
         return len(messages)
 
+    async def redispatch_turn(self, turn_id: str) -> bool:
+        """重放已经持久化的稳定 Outbox，不改变发送次数和权威状态。"""
+
+        message = await self._store.get_outbox(turn_id)
+        if message is None:
+            return False
+        await self._deliver_frames(message)
+        return True
+
     async def _dispatch_claimed(self, message: NarrationOutboxMessage) -> None:
         """严格发送 chunk*、narration、view、completed；任一失败都保留重试。"""
 
         now = datetime.now(UTC)
         next_attempt = now + timedelta(seconds=self._retry_seconds)
         try:
-            frames = self._frames(message)
-            recipient_count: int | None = None
-            failed = False
-            for frame, player_scoped in frames:
-                stats = await self._manager.deliver(
-                    room_id=message.room_id,
-                    player_id=message.player_id,
-                    player_scoped=player_scoped,
-                    message=frame,
-                )
-                recipient_count = stats.recipient_count
-                if stats.failure_count:
-                    failed = True
-                    break
-                if stats.recipient_count == 0:
-                    break
+            recipient_count, failed = await self._deliver_frames(message)
             if recipient_count == 0:
                 outcome = "no_recipient"
                 error_code = None
@@ -91,6 +85,26 @@ class TurnOutboxDispatcher:
                 error_code=error_code,
             )
 
+    async def _deliver_frames(self, message: NarrationOutboxMessage) -> tuple[int | None, bool]:
+        """发送同一份稳定帧；调用方决定是否结算 Outbox lease。"""
+
+        recipient_count: int | None = None
+        failed = False
+        for frame, player_scoped in self._frames(message):
+            stats = await self._manager.deliver(
+                room_id=message.room_id,
+                player_id=message.player_id,
+                player_scoped=player_scoped,
+                message=frame,
+            )
+            recipient_count = stats.recipient_count
+            if stats.failure_count:
+                failed = True
+                break
+            if stats.recipient_count == 0:
+                break
+        return recipient_count, failed
+
     @staticmethod
     def _frames(message: NarrationOutboxMessage) -> tuple[tuple[dict, bool], ...]:
         """构造帧及作用域；玩家视图和完成结果永远只投递给 owner。"""
@@ -104,11 +118,29 @@ class TurnOutboxDispatcher:
             raise ValueError("Outbox narration 缺少文本")
         chunks = split_narration_chunks(text)
         narration_player_scoped = message.visibility == "player_scoped"
+        raw_narration = completion.get("narration")
+        if not isinstance(raw_narration, dict):
+            raise ValueError("Outbox completion 缺少 narration")
+        completed_payload = {
+            "room_id": completion["roomId"],
+            "player_id": completion["playerId"],
+            "actor_id": completion["actorId"],
+            "client_action_id": completion["clientActionId"],
+            "narration": {
+                "kind": raw_narration.get("kind"),
+                "text": raw_narration.get("text"),
+                "claimed_fact_ids": raw_narration.get("claimedFactIds", []),
+                "suggested_actions": raw_narration.get("suggestedActions", []),
+            },
+            "player_view": completion["playerView"],
+        }
         frames: list[tuple[dict, bool]] = [
             (
                 {
                     "type": "narration.chunk",
                     "payload": {
+                        "turnId": message.turn_id,
+                        "clientActionId": completion["clientActionId"],
                         "messageId": message.message_id,
                         "sequence": index,
                         "text": chunk,
@@ -128,6 +160,7 @@ class TurnOutboxDispatcher:
                     {
                         "type": "view.updated",
                         "payload": {
+                            "turnId": message.turn_id,
                             "playerId": completion["playerId"],
                             "playerView": completion["playerView"],
                         },
@@ -140,7 +173,7 @@ class TurnOutboxDispatcher:
                         "message_type": "turn.completed",
                         "correlation_id": completion["clientActionId"],
                         "turn_id": completion["turnId"],
-                        "payload": completion,
+                        "payload": completed_payload,
                     },
                     True,
                 ),

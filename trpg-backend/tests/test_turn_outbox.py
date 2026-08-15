@@ -231,4 +231,9 @@ async def test_sql_publish_atomically_persists_result_outbox_and_replay(
     assert len(outboxes) == 1
     assert outboxes[0].message_id == completed.turn_id
     assert len(replay) == 1
-    assert replay[0].payload == {"messageId": completed.turn_id, "text": "持久化叙事。"}
+    assert replay[0].payload == {
+        "turnId": completed.turn_id,
+        "clientActionId": "sql-outbox-125",
+        "messageId": completed.turn_id,
+        "text": "持久化叙事。",
+    }

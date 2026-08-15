@@ -154,7 +154,6 @@ _MODELS: list[type[BaseModel]] = [
     ws.AdjudicationPostRollPayload,
     ws.ActionPlanCancelPayload,
     ws.SanCheckRollPayload,
-    ws.RoomRejoinPayload,
     ws.RoomStatePayload,
     ws.PlayerJoinedPayload,
     ws.TurnBeginPayload,

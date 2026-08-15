@@ -18,10 +18,12 @@ const completedEvent = {
   protocol_version: '1',
   message_type: 'turn.completed',
   correlation_id: 'action-123',
+  turn_id: 'turn-123',
   payload: {
     room_id: 'room-1',
     player_id: 'player-1',
     actor_id: 'actor-1',
+    client_action_id: 'action-123',
     narration: {
       kind: 'narration',
       text: '规则已经确认了这次行动。',
@@ -78,6 +80,7 @@ test('isValidServerEvent：接受已知类型的合法事件', () => {
     isValidServerEvent({
       type: 'action.broadcast',
       payload: {
+        turnId: 'turn-1',
         playerId: 'player-1',
         clientActionId: 'action-1',
         nickname: '房主',
@@ -105,7 +108,7 @@ test('isValidServerEvent：接受已知类型的合法事件', () => {
   assert.equal(
     isValidServerEvent({
       type: 'turn.phase_changed',
-      payload: { correlationId: 'a1', phase: 'understanding_action' },
+      payload: { turnId: 'turn-1', correlationId: 'a1', phase: 'understanding_action' },
     }),
     true
   );
@@ -113,6 +116,7 @@ test('isValidServerEvent：接受已知类型的合法事件', () => {
     isValidServerEvent({
       type: 'turn.failed',
       payload: {
+        turnId: 'turn-1',
         correlationId: 'a1',
         code: 'HOST_AGENT_TIMEOUT',
         publicMessage: '请重试',
@@ -142,6 +146,7 @@ test('isValidServerEvent：接受缺少 characterName 的旧 action.broadcast', 
     isValidServerEvent({
       type: 'action.broadcast',
       payload: {
+        turnId: 'turn-1',
         playerId: 'player-1',
         clientActionId: 'action-1',
         nickname: '房主',
@@ -416,6 +421,7 @@ test('turn.failed reject pending action，view.updated 更新同一份缓存', a
     transport.emit({
       type: 'turn.failed',
       payload: {
+        turnId: 'turn-failed',
         correlationId: 'failed-action',
         code: 'HOST_AGENT_TIMEOUT',
         publicMessage: '主持 Agent 响应超时，请重试',
@@ -460,6 +466,7 @@ test('turn.failed reject pending action，view.updated 更新同一份缓存', a
     transport.emit({
       ...completedEvent,
       correlation_id: 'busy-action',
+      payload: { ...completedEvent.payload, client_action_id: 'busy-action' },
     });
     await assert.doesNotReject(retriedAction);
 

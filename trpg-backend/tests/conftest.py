@@ -28,9 +28,12 @@ from app.core.config import Settings
 from app.core.db import Base, get_db
 from app.core.seed import ensure_seed_content
 from app.core.turn import build_session_view_application
+from app.core.turn_coordinator import TurnCoordinator
 from app.main import app
+from app.service import reliable_turn_runtime
 from app.service.character_background import CharacterBackgroundService
 from app.service.paper_chase_loader import load_paper_chase
+from app.service.turn_outbox import TurnOutboxDispatcher
 from tests.content_fixtures import publish_multiplayer_module
 
 # 用临时文件 SQLite，不用 ":memory:"+StaticPool。关键原因是并发模型：异步 HTTP
@@ -79,7 +82,7 @@ ws_controller.session_view_application = build_session_view_application(  # type
     settings=Settings(host_model_provider="fake", opening_narration_mode="model"),
 )
 _test_plan_store = SqlAlchemyActionPlanRunStore(TestSessionLocal)
-ws_controller.action_plan_turn_application = build_action_plan_turn_application(
+reliable_turn_runtime.action_plan_turn_application = build_action_plan_turn_application(
     store=_test_turn_store,
     engine=RuleEngineService(_test_turn_store),
     adjudication_engine=AdjudicationEngineService(_test_turn_store),
@@ -87,6 +90,18 @@ ws_controller.action_plan_turn_application = build_action_plan_turn_application(
     settings=Settings(host_model_provider="fake", opening_narration_mode="template"),
 )
 ws_controller.adjudication_engine_service = AdjudicationEngineService(_test_turn_store)
+_test_turn_runtime_store = SqlAlchemyTurnStore(TestSessionLocal)
+reliable_turn_runtime.turn_store = _test_turn_runtime_store
+reliable_turn_runtime.turn_coordinator = TurnCoordinator(
+    _test_turn_runtime_store,
+    worker_id="pytest-turn-worker",
+)
+reliable_turn_runtime.turn_outbox_dispatcher = TurnOutboxDispatcher(
+    _test_turn_runtime_store,
+    ws_controller.manager,
+    worker_id="pytest-outbox-worker",
+)
+reliable_turn_runtime.session_view_application = ws_controller.session_view_application
 
 
 @pytest.fixture(autouse=True)

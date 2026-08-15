@@ -1,7 +1,7 @@
-"""把现有 ActionPlan 应用适配到可靠 Turn Coordinator 与 Narration Outbox。
+"""组装唯一生产回合入口：Turn Coordinator、ActionPlan 与 Narration Outbox。
 
-该模块是 PR2 的生产组合层。``legacy`` 与 ``shadow`` 模式仍由 Controller 保留旧
-入口；只有显式 ``v2`` 模式会调用这里，PR3 再完成默认切换和旧路径删除。
+Controller 的所有玩家动作都经由本模块创建或恢复 Turn；已提交结果只从持久化
+Outbox 重投，不再保留进程内锁、直接广播或零散 ActionPlan 恢复旁路。
 """
 
 from __future__ import annotations
@@ -11,10 +11,11 @@ import contextlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import structlog
 from collaboration_framework.contracts import PlayerInput, PlayerView
+from collaboration_framework.runtime_context import current_turn_id
 
 from app.adapters import SqlAlchemyTurnStore
 from app.core.action_plan_turn import (
@@ -61,6 +62,7 @@ async def start_action(
     utterance: str,
     on_progress: Callable[[object], Awaitable[None]] | None = None,
     on_phase: Callable[[TurnPhase], Awaitable[None]] | None = None,
+    on_started: Callable[[str], Awaitable[None]] | None = None,
     on_input_accepted: Callable[[PlayerInput, PlayerView], Awaitable[None]] | None = None,
 ) -> ReliableTurnResponse:
     """创建可靠回合，并用既有 ActionPlan 链推进到等待或最终结果。"""
@@ -77,6 +79,12 @@ async def start_action(
 
     async def execute(on_phase_observer: TurnPhaseObserver) -> TurnExecutionOutcome:
         nonlocal captured
+
+        turn_id = current_turn_id()
+        if turn_id is None:
+            raise RuntimeError("可靠回合执行缺少 turn_id 上下文")
+        if on_started is not None:
+            await on_started(turn_id)
 
         async def phases(phase: TurnPhase) -> None:
             await on_phase_observer(phase)
@@ -99,7 +107,10 @@ async def start_action(
         executor=execute,
         after_publish=lambda: _mark_plan_narration(room_id, client_action_id, on_progress),
     )
-    await turn_outbox_dispatcher.dispatch_due()
+    if captured is None and turn.result is not None:
+        await turn_outbox_dispatcher.redispatch_turn(turn.turn_id)
+    else:
+        await turn_outbox_dispatcher.dispatch_due()
     return ReliableTurnResponse(turn=turn, action_result=captured)
 
 
@@ -140,7 +151,10 @@ async def continue_after_decision(
         executor=execute,
         after_publish=lambda: _mark_plan_narration(room_id, client_action_id, on_progress),
     )
-    await turn_outbox_dispatcher.dispatch_due()
+    if captured is None and saved.result is not None:
+        await turn_outbox_dispatcher.redispatch_turn(saved.turn_id)
+    else:
+        await turn_outbox_dispatcher.dispatch_due()
     return ReliableTurnResponse(turn=saved, action_result=captured)
 
 
@@ -173,7 +187,10 @@ async def cancel_action(
         executor=execute,
         after_publish=lambda: _mark_plan_narration(room_id, client_action_id, None),
     )
-    await turn_outbox_dispatcher.dispatch_due()
+    if captured is None and saved.result is not None:
+        await turn_outbox_dispatcher.redispatch_turn(saved.turn_id)
+    else:
+        await turn_outbox_dispatcher.dispatch_due()
     return ReliableTurnResponse(turn=saved, action_result=captured)
 
 
@@ -320,6 +337,12 @@ class OutboxDispatcher(Protocol):
     async def dispatch_due(self, *, limit: int = 20) -> int: ...
 
 
+class LegacyTurnAdopter(Protocol):
+    """PR3 切换期使用的旧非终态记录收养端口。"""
+
+    async def adopt_legacy_inflight_turns(self, *, limit: int = 20) -> tuple[TurnRecord, ...]: ...
+
+
 class TurnRuntimeSupervisor:
     """单进程后台扫描器：恢复安全回合与到期 Outbox，不替玩家做选择。"""
 
@@ -328,11 +351,18 @@ class TurnRuntimeSupervisor:
         *,
         store: TurnRuntimeStore | None = None,
         dispatcher: OutboxDispatcher | None = None,
+        adopter: LegacyTurnAdopter | None = None,
         resume: Callable[[str], Awaitable[TurnRecord]] | None = None,
         interval_seconds: float = 2.0,
     ) -> None:
         self._store = store or turn_store
         self._dispatcher = dispatcher or turn_outbox_dispatcher
+        # 内存测试 Store 不承担数据迁移；生产 SQL Store 才暴露收养能力。
+        self._adopter: LegacyTurnAdopter | None = adopter or (
+            cast(LegacyTurnAdopter, self._store)
+            if hasattr(self._store, "adopt_legacy_inflight_turns")
+            else None
+        )
         self._resume = resume or resume_turn_by_id
         self._interval_seconds = interval_seconds
         self._task: asyncio.Task[None] | None = None
@@ -361,6 +391,23 @@ class TurnRuntimeSupervisor:
 
     async def run_once(self, *, limit: int = 20) -> None:
         """先恢复过期回合，再投递 Outbox；单个坏回合不能阻塞整批扫描。"""
+
+        # 先把仍可恢复且信息完整的旧记录绑定到 Turn，再与普通过期租约使用同一
+        # 恢复函数推进；终态历史和信息不完整记录不会被收养。
+        adopted = (
+            await self._adopter.adopt_legacy_inflight_turns(limit=limit)
+            if self._adopter is not None
+            else ()
+        )
+        for turn in adopted:
+            try:
+                await self._resume(turn.turn_id)
+            except Exception as exc:
+                logger.warning(
+                    "adopted_turn_recovery_failed",
+                    turn_id=turn.turn_id,
+                    error_type=type(exc).__name__,
+                )
 
         now = datetime.now(UTC)
         recoverable = await self._store.list_recoverable_turns(now=now, limit=limit)

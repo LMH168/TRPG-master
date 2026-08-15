@@ -9,7 +9,6 @@ from typing import NoReturn
 from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import Settings, get_settings
 from app.core.db import get_db
 from app.core.errors import AppException, ErrorCode
 from app.dto.common import ApiResponse
@@ -27,12 +26,6 @@ def _raise_public_error(exc: Exception) -> NoReturn:
         raise AppException(ErrorCode.TURN_NOT_FOUND, str(exc), status.HTTP_404_NOT_FOUND) from exc
     if isinstance(exc, turn_service.TurnReadAuthorizationError):
         raise AppException(ErrorCode.FORBIDDEN, str(exc), status.HTTP_403_FORBIDDEN) from exc
-    if isinstance(exc, turn_service.TurnResumeUnavailableError):
-        raise AppException(
-            ErrorCode.TURN_RESUME_UNAVAILABLE,
-            str(exc),
-            status.HTTP_501_NOT_IMPLEMENTED,
-        ) from exc
     if isinstance(exc, room_service.RoomAuthenticationError):
         raise AppException(ErrorCode.UNAUTHORIZED, str(exc), status.HTTP_401_UNAUTHORIZED) from exc
     if isinstance(exc, room_service.RoomAuthorizationError):
@@ -94,7 +87,6 @@ async def resume_turn(
     turn_id: str,
     reconnect_token: str | None = Header(default=None, alias="X-Reconnect-Token"),
     db: AsyncSession = Depends(get_db),
-    settings: Settings = Depends(get_settings),
 ) -> ApiResponse[TurnRead]:
     player = await _member(db, room_id, reconnect_token)
     try:
@@ -103,7 +95,6 @@ async def resume_turn(
             room_id=room_id,
             turn_id=turn_id,
             player_id=player.id,
-            runtime_mode=settings.turn_runtime_mode,
         )
     except Exception as exc:
         _raise_public_error(exc)

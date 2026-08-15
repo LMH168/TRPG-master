@@ -18,6 +18,7 @@ export interface AcceptResultOption {
  * action.plan.submit 原话广播 payload。
  */
 export interface ActionBroadcastPayload {
+  turnId: string;
   playerId: string;
   clientActionId: string;
   nickname: string;
@@ -80,6 +81,7 @@ export interface AdjudicationChoicePayload {
 }
 
 export interface AdjudicationPendingPayload {
+  turnId: string;
   correlationId: string;
   planId?: string | null;
   sourceRevision: string;
@@ -341,9 +343,10 @@ export interface ChatSendPayload {
 }
 
 /**
- * 向动作发起者推送经 Actor 技能值过滤后的可用检定项。
+ * 向动作发起者推送可用检定项；旧历史允许缺少 turn_id。
  */
 export interface CheckRequestPayload {
+  turnId?: string | null;
   playerId: string;
   clientActionId: string;
   summary: string;
@@ -358,6 +361,7 @@ export interface CheckRequestPayload {
  * 结算，避免把未达标骰点直接展示成普通成功（issue #327）。
  */
 export interface CheckResultPayload {
+  turnId: string;
   playerId: string;
   clientActionId: string;
   skill: string;
@@ -580,10 +584,7 @@ export interface ErrorDetail {
 }
 
 /**
- * error 推送 payload（issue #77 新增）——本期唯一会被真的发出的新增
- * S→C 事件：`check.roll`/`san.check.roll`/`room.rejoin` 这三个 NOT_IMPLEMENTED
- * 桩、以及原来 game.start 失败时被静默丢弃（`continue`，见 ws.py 旧逻辑）
- * 的错误，都改成通过这个事件明确告知发起者，而不是让客户端干等。
+ * error 推送 payload；用于向发起连接返回玩家安全的协议错误。
  */
 export interface ErrorPayload {
   code: string;
@@ -953,6 +954,8 @@ export interface MyRoomSummary {
  * 始终只认 `narration.push`，临时拼接内容不得写入权威历史。
  */
 export interface NarrationChunkPayload {
+  turnId?: string | null;
+  clientActionId?: string | null;
   messageId: string;
   sequence: number;
   text: string;
@@ -962,6 +965,8 @@ export interface NarrationChunkPayload {
  * narration.push 推送 payload。
  */
 export interface NarrationPushPayload {
+  turnId?: string | null;
+  clientActionId?: string | null;
   messageId?: string | null;
   text: string;
 }
@@ -1038,6 +1043,7 @@ export interface PendingCheckOption {
 }
 
 export interface PlanProgressPayload {
+  turnId: string;
   correlationId: string;
   currentStep: number;
   completedSteps: number;
@@ -1279,16 +1285,6 @@ export interface RoomPreview {
 }
 
 /**
- * room.rejoin 事件 payload（issue #77 新增，仅铺协议，见决策 6）。
- *
- * `reconnect_token` 是房间身份体系的重连凭证（`players.reconnect_token`，
- * 不是账号登录 token），本期只校验格式、不做真实的断线重连逻辑。
- */
-export interface RoomRejoinPayload {
-  reconnectToken: string;
-}
-
-/**
  * room.state 推送 payload（issue #77 新增，替代 HTTP 轮询伪广播）。
  *
  * 本期协议槽位已留好（信封类型/校验器/SDK 方法齐全），但 ws.py 里没有任何
@@ -1460,12 +1456,14 @@ export interface SpendResourceOption {
 }
 
 export interface ToolCompletedPayload {
+  turnId: string;
   correlationId: string;
   toolName: string;
   status: "success" | "error";
 }
 
 export interface ToolStartedPayload {
+  turnId: string;
   correlationId: string;
   toolName: string;
   publicProgressLabel: string;
@@ -1501,6 +1499,7 @@ export type TurnErrorStage =
   "receive" | "planning" | "validation" | "adjudication" | "execution" | "narration" | "delivery" | "recovery";
 
 export interface TurnFailedPayload {
+  turnId: string;
   correlationId: string;
   code: string;
   publicMessage: string;
@@ -1508,6 +1507,7 @@ export interface TurnFailedPayload {
 }
 
 export interface TurnPhaseChangedPayload {
+  turnId: string;
   correlationId: string;
   phase:
     | "reading_player_view"
@@ -1561,6 +1561,7 @@ export type TurnResumePoint =
   "planning" | "adjudicating" | "executing" | "narrating" | "delivering" | "awaiting_player" | "none";
 
 export interface TurnStartedPayload {
+  turnId: string;
   correlationId: string;
 }
 
@@ -1612,6 +1613,7 @@ export interface ViewPrivatePayload {
 }
 
 export interface ViewUpdatedPayload {
+  turnId?: string | null;
   playerId: string;
   playerView: PlayerView;
 }
