@@ -141,12 +141,18 @@ class RuleAgenda(ContractModel):
     Event revision.
     """
 
+    schema_version: Literal[1, 2] = 1
     agenda_id: str = Field(min_length=1)
     room_id: str = Field(min_length=1)
     module_id: str = Field(min_length=1)
     module_version: str = Field(min_length=1)
     correlation_id: str = Field(min_length=1)
     root_source: AgendaSource
+    origin_turn_id: str | None = Field(default=None, min_length=1)
+    active_turn_id: str | None = Field(default=None, min_length=1)
+    player_id: str | None = Field(default=None, min_length=1)
+    actor_id: str | None = Field(default=None, min_length=1)
+    current_source_event_id: str | None = Field(default=None, min_length=1)
     status: Literal[
         "running",
         "awaiting_active_check",
@@ -173,6 +179,74 @@ class RuleAgenda(ContractModel):
     lease_owner: str | None = None
     lease_expires_at: datetime | None = None
     lease_version: int = Field(default=0, ge=0)
+    attempt_count: int = Field(default=0, ge=0)
+    next_attempt_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_versioned_identity(self) -> RuleAgenda:
+        """v1 只读兼容；v2 必须冻结恢复所需的完整可信身份。"""
+
+        required_identity = (
+            self.origin_turn_id,
+            self.player_id,
+            self.actor_id,
+            self.current_source_event_id,
+        )
+        if self.schema_version == 1:
+            if self.active_turn_id is not None or any(
+                value is not None for value in required_identity
+            ):
+                raise ValueError("RuleAgenda v1 不得携带 v2 可信身份")
+            if self.attempt_count != 0 or self.next_attempt_at is not None:
+                raise ValueError("RuleAgenda v1 不得携带 v2 重试状态")
+            return self
+        if any(value is None for value in required_identity):
+            raise ValueError("RuleAgenda v2 必须包含 Turn、玩家、角色和来源事件身份")
+        if self.active_turn_id is None and self.status not in {
+            "awaiting_player_input",
+            "stable",
+            "failed",
+        }:
+            raise ValueError("可执行 RuleAgenda v2 必须绑定 active_turn_id")
+        return self
+
+
+class AgendaStepExecution(ContractModel):
+    """一个 Agenda 步骤已提交后的稳定执行证明。"""
+
+    schema_version: Literal[1] = 1
+    execution_id: str = Field(min_length=64, max_length=64)
+    room_id: str = Field(min_length=1)
+    origin_turn_id: str = Field(min_length=1)
+    execution_turn_id: str = Field(min_length=1)
+    agenda_id: str = Field(min_length=1)
+    source_event_id: str = Field(min_length=1)
+    rule_id: str = Field(min_length=1)
+    branch_id: str = Field(min_length=1)
+    step_id: str = Field(min_length=1)
+    execution_kind: Literal[
+        "passive_check",
+        "adjudicated_check",
+        "ruleset_action",
+        "npc_opportunity",
+        "presentation",
+        "effect_segment",
+    ]
+    request_schema_version: int = Field(default=1, ge=1)
+    request: dict[str, JsonValue] = Field(default_factory=dict)
+    result_schema_version: int = Field(default=1, ge=1)
+    result: dict[str, JsonValue] = Field(default_factory=dict)
+    committed_state_version: int = Field(ge=0)
+    created_at: datetime
+
+
+class PlotThreadState(ContractModel):
+    """GameState 内的权威剧情线程状态，版本用于事务内 CAS/幂等判断。"""
+
+    thread_id: str = Field(min_length=1, max_length=100)
+    status: Literal["locked", "available", "in_progress", "resolved", "failed"]
+    version: int = Field(default=1, ge=1)
+    last_transition_event_id: str | None = Field(default=None, min_length=1)
 
 
 class GameState(ContractModel):
@@ -204,6 +278,7 @@ class GameState(ContractModel):
         default_factory=dict
     )
     rule_agendas: dict[str, RuleAgenda] = Field(default_factory=dict)
+    plot_threads: dict[str, PlotThreadState] = Field(default_factory=dict)
     core_resolved: bool = False
     ending_available: bool = False
     ending_resolution: EndingResolution | None = None

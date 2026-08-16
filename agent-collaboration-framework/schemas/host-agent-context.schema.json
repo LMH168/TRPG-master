@@ -86,6 +86,73 @@
       "title": "ActorValueView",
       "type": "object"
     },
+    "AgendaContinuationCandidate": {
+      "additionalProperties": false,
+      "description": "由服务端按当前玩家作用域发布的等待 Agenda 候选。",
+      "properties": {
+        "agenda_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Agenda Id",
+          "type": "string"
+        },
+        "boundary_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Boundary Id",
+          "type": "string"
+        },
+        "player_safe_prompt": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Player Safe Prompt",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/AgendaContinuationOptionView"
+          },
+          "minItems": 1,
+          "title": "Options",
+          "type": "array"
+        }
+      },
+      "required": [
+        "agenda_id",
+        "boundary_id",
+        "player_safe_prompt",
+        "options"
+      ],
+      "title": "AgendaContinuationCandidate",
+      "type": "object"
+    },
+    "AgendaContinuationOptionView": {
+      "additionalProperties": false,
+      "description": "Host 可见的恢复选项，不暴露 Engine 下一游标。",
+      "properties": {
+        "option_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Option Id",
+          "type": "string"
+        },
+        "semantic_hints": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Semantic Hints",
+          "type": "array"
+        }
+      },
+      "required": [
+        "option_id",
+        "semantic_hints"
+      ],
+      "title": "AgendaContinuationOptionView",
+      "type": "object"
+    },
     "AvailableExitView": {
       "additionalProperties": false,
       "properties": {
@@ -2172,6 +2239,14 @@
     },
     "memory_context": {
       "$ref": "#/$defs/MemoryContext"
+    },
+    "agenda_continuation_candidates": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/AgendaContinuationCandidate"
+      },
+      "title": "Agenda Continuation Candidates",
+      "type": "array"
     },
     "keeper_capabilities": {
       "anyOf": [

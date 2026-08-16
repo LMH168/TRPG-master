@@ -10,21 +10,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from hashlib import sha256
 
 from collaboration_framework.contracts import (
     AdjudicatedCheckStep,
     AgentMatchTriggerSpec,
     AllCondition,
     AnyCondition,
-    ConditionExpr,
-    EffectStep,
     CheckStep,
+    ConditionExpr,
     ContractError,
+    EffectStep,
     EventTriggerSpec,
     FinishStep,
     ModuleContentV3,
     NotCondition,
     PredicateCondition,
+    RuleEffect,
     RuleSpecV3,
 )
 
@@ -39,7 +41,7 @@ _UNKNOWN_PREDICATE_IS_FALSE = False
 class RuleWalk:
     """What one rule's step chain produced."""
 
-    effects: list[object] = field(default_factory=list)
+    effects: list[RuleEffect] = field(default_factory=list)
     suspended_at: str | None = None
     suspended_kind: str | None = None
     step_count: int = 0
@@ -123,6 +125,13 @@ def _evaluate_predicate(
         )
     if condition.predicate == "core_resolved":
         return state.core_resolved is bool(args.get("value", True))
+    if condition.predicate == "plot_thread_status_is":
+        thread_id = args.get("thread_id")
+        expected = args.get("status")
+        if not isinstance(thread_id, str) or not isinstance(expected, str):
+            return False
+        current = state.plot_threads.get(thread_id)
+        return current is not None and current.status == expected
     return _UNKNOWN_PREDICATE_IS_FALSE
 
 
@@ -222,10 +231,29 @@ def create_rule_agenda(
     correlation_id: str,
     root_source: AgendaSource,
     revision: str,
+    origin_turn_id: str | None = None,
+    active_turn_id: str | None = None,
+    player_id: str | None = None,
+    actor_id: str | None = None,
+    current_source_event_id: str | None = None,
 ) -> RuleAgenda:
-    """Create the durable root before any blocking Rule step can be reached."""
+    """创建持久 Agenda；完整可信身份存在时新写 v2，否则保留旧生产兼容。"""
+
+    trusted = (
+        origin_turn_id,
+        active_turn_id,
+        player_id,
+        actor_id,
+        current_source_event_id,
+    )
+    if any(value is not None for value in trusted) and any(
+        value is None for value in trusted
+    ):
+        raise ContractError("RuleAgenda v2 可信身份必须一次性完整提供")
+    schema_version = 2 if all(value is not None for value in trusted) else 1
 
     return RuleAgenda(
+        schema_version=schema_version,
         agenda_id=agenda_id,
         room_id=room_id,
         module_id=module.module_id,
@@ -233,7 +261,40 @@ def create_rule_agenda(
         correlation_id=correlation_id,
         root_source=root_source,
         revision=revision,
+        origin_turn_id=origin_turn_id,
+        active_turn_id=active_turn_id,
+        player_id=player_id,
+        actor_id=actor_id,
+        current_source_event_id=current_source_event_id,
     )
+
+
+def agenda_step_execution_id(
+    *,
+    schema_version: int,
+    module_id: str,
+    module_version: str,
+    agenda_id: str,
+    source_event_id: str,
+    rule_id: str,
+    branch_id: str,
+    step_id: str,
+) -> str:
+    """按不可变 Rule 身份生成跨重试稳定的 Agenda 步骤执行 ID。"""
+
+    parts = (
+        str(schema_version),
+        module_id,
+        module_version,
+        agenda_id,
+        source_event_id,
+        rule_id,
+        branch_id,
+        step_id,
+    )
+    if any(not part for part in parts):
+        raise ContractError("Agenda execution identity 字段不能为空")
+    return sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
 
 def agenda_item_for_event(rule: RuleSpecV3, event: DomainEvent) -> AgendaItem:
@@ -284,8 +345,10 @@ def agenda_claim_key(agenda: RuleAgenda) -> tuple[int, int, str, str]:
 
 
 def agenda_is_claimable(agenda: RuleAgenda, *, now: datetime) -> bool:
-    return agenda.status == "running" and (
-        agenda.lease_expires_at is None or agenda.lease_expires_at <= now
+    return (
+        agenda.status == "running"
+        and (agenda.next_attempt_at is None or agenda.next_attempt_at <= now)
+        and (agenda.lease_expires_at is None or agenda.lease_expires_at <= now)
     )
 
 
@@ -314,8 +377,9 @@ __all__ = [
     "agenda_item_for_event",
     "agenda_item_key",
     "agenda_status_for_walk",
-    "create_rule_agenda",
+    "agenda_step_execution_id",
     "agent_match_scope_admits",
+    "create_rule_agenda",
     "effects_after_cancel",
     "effects_after_degree",
     "evaluate_condition",
@@ -383,16 +447,21 @@ def agent_match_scope_admits(
     scope = trigger.scope
     if scope.location_ids and location_id not in scope.location_ids:
         return False
-    if action_family is not None and scope.action_families:
-        if action_family not in scope.action_families:
-            return False
-    if target_kind is not None and scope.target_kinds:
-        if target_kind not in scope.target_kinds:
-            return False
-    if target_id is not None and scope.target_ids:
-        if target_id not in scope.target_ids:
-            return False
-    return True
+    if (
+        action_family is not None
+        and scope.action_families
+        and action_family not in scope.action_families
+    ):
+        return False
+    if (
+        target_kind is not None
+        and scope.target_kinds
+        and target_kind not in scope.target_kinds
+    ):
+        return False
+    return not (
+        target_id is not None and scope.target_ids and target_id not in scope.target_ids
+    )
 
 
 def pending_check_for(rule: RuleSpecV3, branch_id: str):
@@ -415,7 +484,9 @@ def pending_check_for(rule: RuleSpecV3, branch_id: str):
     return step, walk.effects
 
 
-def effects_after_degree(rule: RuleSpecV3, step_id: str, degree: str) -> list:
+def effects_after_degree(
+    rule: RuleSpecV3, step_id: str, degree: str
+) -> list[RuleEffect]:
     """Continue the rule from where the roll routed it (#226 §4)."""
 
     step = next((item for item in rule.execution.steps if item.id == step_id), None)
@@ -427,7 +498,7 @@ def effects_after_degree(rule: RuleSpecV3, step_id: str, degree: str) -> list:
     return walk_rule_from(rule, resume_id).effects
 
 
-def effects_after_cancel(rule: RuleSpecV3, step_id: str) -> list:
+def effects_after_cancel(rule: RuleSpecV3, step_id: str) -> list[RuleEffect]:
     step = next((item for item in rule.execution.steps if item.id == step_id), None)
     if not isinstance(step, AdjudicatedCheckStep):
         return []

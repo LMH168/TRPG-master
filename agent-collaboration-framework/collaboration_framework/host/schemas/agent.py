@@ -8,6 +8,7 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import ConfigDict, Field, JsonValue, RootModel, model_validator
 
 from collaboration_framework.contracts import (
+    AgendaContinuationCandidate,
     ContractModel,
     KeeperCapabilityView,
     PlayerInput,
@@ -38,6 +39,7 @@ def _validate_keeper_scope(
     if capabilities.revision != player_view.revision:
         raise ValueError("KeeperCapabilityView revision 与 PlayerView 不一致")
 
+
 HostAgentTerminationReason: TypeAlias = Literal[
     "completed",
     "max_turns",
@@ -63,6 +65,8 @@ class HostAgentContext(ContractModel):
     player_view: PlayerView
     recent_history: RecentTurnContext
     memory_context: MemoryContext
+    # 仅包含当前玩家可见的有限选项；Host 不能指定下一游标或任何 Effect。
+    agenda_continuation_candidates: tuple[AgendaContinuationCandidate, ...] = ()
     # Controlled Keeper-side capability list. Optional so offline/fake
     # compositions and older callers keep working; when absent the Agent can
     # still only name what the player-safe view exposes.
@@ -87,6 +91,12 @@ class HostAgentContext(ContractModel):
             player_input=self.player_input,
             player_view=self.player_view,
         )
+        boundaries = [
+            (candidate.agenda_id, candidate.boundary_id)
+            for candidate in self.agenda_continuation_candidates
+        ]
+        if len(boundaries) != len(set(boundaries)):
+            raise ValueError("HostAgentContext 等待 Agenda boundary 必须唯一")
         return self
 
 

@@ -9,7 +9,7 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 PREVIOUS_REVISION = "1a02058345ee"
 ENGINE_IDENTITY_PREVIOUS_REVISION = "9c4e7a2b1d6f"
-HEAD_REVISION = "f4a5b6c7d8e9"
+HEAD_REVISION = "a5b6c7d8e9f0"
 
 
 def _run_alembic(database: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -91,6 +91,7 @@ def test_migration_upgrades_empty_sqlite_and_round_trips(tmp_path: Path) -> None
         "narration_outbox",
         "memory_projection_runs",
         "memory_entries",
+        "agenda_step_executions",
     }.issubset(tables)
     assert "decision_schema_version" in _column_names(
         database,
@@ -106,6 +107,23 @@ def test_migration_upgrades_empty_sqlite_and_round_trips(tmp_path: Path) -> None
     )
     assert "request_json" in _column_names(database, "inventory_import_drafts")
     assert "agenda_state_version" in _column_names(database, "game_sessions")
+    assert {
+        "execution_id",
+        "origin_turn_id",
+        "execution_turn_id",
+        "agenda_id",
+        "source_event_id",
+        "request_json",
+        "result_json",
+        "committed_state_version",
+    }.issubset(_column_names(database, "agenda_step_executions"))
+    assert ("room_id", "execution_id") in _unique_column_sets(database, "agenda_step_executions")
+    assert {
+        ("origin_turn_id", "turn_records", "turn_id"),
+        ("execution_turn_id", "turn_records", "turn_id"),
+        ("room_id", "turn_commit_receipts", "room_id"),
+        ("execution_id", "turn_commit_receipts", "engine_request_id"),
+    }.issubset(_foreign_keys(database, "agenda_step_executions"))
     assert {"run_version", "run_json", "lease_owner", "lease_expires_at"}.issubset(
         _column_names(database, "action_plan_runs")
     )

@@ -23,8 +23,8 @@ from pydantic.json_schema import SkipJsonSchema
 
 from .common import ContractModel
 
-CheckDifficulty: TypeAlias = Literal["regular", "hard", "extreme"]  # noqa: UP040
-CheckDegree: TypeAlias = Literal[  # noqa: UP040
+CheckDifficulty: TypeAlias = Literal["regular", "hard", "extreme"]
+CheckDegree: TypeAlias = Literal[
     "critical_success",
     "extreme_success",
     "hard_success",
@@ -32,7 +32,7 @@ CheckDegree: TypeAlias = Literal[  # noqa: UP040
     "failure",
     "fumble",
 ]
-PersistenceIntent: TypeAlias = Literal[  # noqa: UP040
+PersistenceIntent: TypeAlias = Literal[
     "none",
     "character_state",
     "object_state",

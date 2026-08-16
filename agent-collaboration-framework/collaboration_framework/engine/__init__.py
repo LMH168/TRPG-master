@@ -1,7 +1,5 @@
 """Deterministic game-rule execution boundary."""
 
-# ruff: noqa: F401 -- this module intentionally re-exports the public engine API.
-
 from collaboration_framework.runtime_context import current_turn_id, engine_turn_context
 
 from .adapters import InMemoryEngineStore
@@ -18,6 +16,7 @@ from .models import (
     ActorState,
     AgendaItem,
     AgendaSource,
+    AgendaStepExecution,
     CheckRun,
     CompletedAction,
     CompletedAdjudicationCommand,
@@ -27,6 +26,7 @@ from .models import (
     GameState,
     LocationKnowledge,
     PendingCheckDecision,
+    PlotThreadState,
     RuleAgenda,
     StateModifiedEvent,
     ValidatedActionCommand,
@@ -41,6 +41,7 @@ from .persistent_results import (
     committed_results_from_events,
     validate_persistent_effects,
 )
+from .plot_threads import transition_plot_thread
 from .ports import EngineStore, EngineTransaction, RevisionConflictError
 from .proposal_compiler import (
     ProposalCompiler,
@@ -51,17 +52,18 @@ from .proposal_compiler import (
 from .service import RuleEngineService
 
 __all__ = [
-    "AgendaItem",
-    "AgendaSource",
-    "CompletedAction",
-    "CompletedAdjudicationCommand",
+    "CHARACTER_STATE_VALUES",
+    "OBJECT_STATE_VALUES",
+    "PUBLIC_STATE_KEYS",
     "ActorResources",
     "ActorState",
-    "LocationKnowledge",
     "AdjudicationEngineService",
-    "WorldTimePoint",
-    "WorldTimeState",
+    "AgendaItem",
+    "AgendaSource",
+    "AgendaStepExecution",
     "CheckRun",
+    "CompletedAction",
+    "CompletedAdjudicationCommand",
     "DiceRoller",
     "DomainEvent",
     "EngineExecutionResult",
@@ -70,29 +72,31 @@ __all__ = [
     "EngineTransaction",
     "GameState",
     "InMemoryEngineStore",
+    "LocationKnowledge",
     "PendingCheckDecision",
+    "PlotThreadState",
     "ProposalCompiler",
     "ProposalShadowComparison",
     "ProposalShadowCompiler",
-    "derive_runtime_object_id",
-    "RuleAgenda",
     "RevisionConflictError",
-    "RuntimeCapabilityIssue",
+    "RuleAgenda",
     "RuleEngineService",
+    "RuntimeCapabilityIssue",
     "SequenceDiceSource",
     "StateModifiedEvent",
     "SystemDiceSource",
     "ValidatedActionCommand",
+    "WorldTimePoint",
+    "WorldTimeState",
     "audit_runtime_capabilities",
+    "committed_results_from_events",
     "create_initial_game_state",
+    "current_turn_id",
+    "derive_runtime_object_id",
     "effective_location_knowledge",
+    "engine_turn_context",
     "require_runtime_capabilities",
     "resolve_location_target",
-    "CHARACTER_STATE_VALUES",
-    "OBJECT_STATE_VALUES",
-    "PUBLIC_STATE_KEYS",
-    "committed_results_from_events",
+    "transition_plot_thread",
     "validate_persistent_effects",
-    "current_turn_id",
-    "engine_turn_context",
 ]

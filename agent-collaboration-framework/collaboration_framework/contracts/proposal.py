@@ -193,7 +193,7 @@ class EnvironmentActionMeansProposal(ContractModel):
     target_ref: ProposalRef
 
 
-ActionMeansProposal: TypeAlias = Annotated[  # noqa: UP040
+ActionMeansProposal: TypeAlias = Annotated[
     IntrinsicActionMeansProposal
     | ItemActionMeansProposal
     | EnvironmentActionMeansProposal,
@@ -228,7 +228,7 @@ class EffectsGoalCompletionProposal(ContractModel):
         return self
 
 
-GoalCompletionProposal: TypeAlias = Annotated[  # noqa: UP040
+GoalCompletionProposal: TypeAlias = Annotated[
     ProcessGoalCompletionProposal | EffectsGoalCompletionProposal,
     Field(discriminator="kind"),
 ]
@@ -308,7 +308,46 @@ class ActionPlanProposal(ContractModel):
     steps: tuple[ActionPlanProposalStep, ...] = Field(min_length=2)
 
 
-HostDecisionProposal: TypeAlias = Annotated[  # noqa: UP040
+class AgendaContinuationProposal(ContractModel):
+    """Host 对服务端等待候选的无授权选择，不能携带身份或 Effect。"""
+
+    kind: Literal["agenda_continuation"] = "agenda_continuation"
+    schema_version: Literal[1] = 1
+    agenda_id: str = Field(min_length=1, max_length=200)
+    boundary_id: str = Field(min_length=1, max_length=100)
+    option_id: str = Field(min_length=1, max_length=100)
+
+
+class AgendaContinuationOptionView(ContractModel):
+    """Host 可见的恢复选项，不暴露 Engine 下一游标。"""
+
+    option_id: str = Field(min_length=1, max_length=100)
+    semantic_hints: tuple[str, ...] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_hints(self) -> AgendaContinuationOptionView:
+        if any(not hint.strip() for hint in self.semantic_hints):
+            raise ValueError("Agenda continuation semantic_hints 不能为空")
+        return self
+
+
+class AgendaContinuationCandidate(ContractModel):
+    """由服务端按当前玩家作用域发布的等待 Agenda 候选。"""
+
+    agenda_id: str = Field(min_length=1, max_length=200)
+    boundary_id: str = Field(min_length=1, max_length=100)
+    player_safe_prompt: str = Field(min_length=1, max_length=1000)
+    options: tuple[AgendaContinuationOptionView, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_unique_options(self) -> AgendaContinuationCandidate:
+        option_ids = [option.option_id for option in self.options]
+        if len(option_ids) != len(set(option_ids)):
+            raise ValueError("Agenda continuation option_id 必须唯一")
+        return self
+
+
+HostDecisionProposal: TypeAlias = Annotated[
     ClarificationProposal | SingleActionProposal | ActionPlanProposal,
     Field(discriminator="kind"),
 ]
