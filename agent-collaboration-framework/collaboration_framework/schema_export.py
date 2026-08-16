@@ -35,7 +35,7 @@ from collaboration_framework.host.schemas import (
     HostAgentContext,
     HostAgentEventSchema,
     HostAgentUsage,
-    NarrationOutput,
+    OpeningNarrationOutput,
     OpeningNarrationContext,
     RecentTurnContext,
     WebSocketOutput,
@@ -64,7 +64,8 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "get-adjudication-status-request.schema.json": GetAdjudicationStatusRequest,
     "validation-result.schema.json": ValidationResult,
     "validation-feedback.schema.json": ValidationFeedback,
-    "narration-output.schema.json": NarrationOutput,
+    # 旧公开 schema 继续描述既有载荷，统一 NarrationOutput 只在 Host 内部使用。
+    "narration-output.schema.json": OpeningNarrationOutput,
     "opening-narration-context.schema.json": OpeningNarrationContext,
     "websocket-output.schema.json": WebSocketOutput,
     "host-agent-context.schema.json": HostAgentContext,

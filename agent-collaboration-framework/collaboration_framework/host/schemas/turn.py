@@ -10,7 +10,7 @@ from collaboration_framework.contracts import (
     PlayerView,
 )
 
-from .output import NarrationOutput
+from .output import OpeningNarrationOutput
 
 
 class TurnState(ContractModel):
@@ -19,5 +19,5 @@ class TurnState(ContractModel):
     intent: Intent | None = None
     action_result: ActionResult | None = None
     view_after: PlayerView | None = None
-    narration: NarrationOutput | None = None
+    narration: OpeningNarrationOutput | None = None
     status: Literal["running", "completed", "clarification"] = "running"
