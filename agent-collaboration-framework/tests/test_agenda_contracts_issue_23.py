@@ -18,6 +18,7 @@ from collaboration_framework.contracts import (
     ModuleContentV3,
     PlotThreadSpec,
     PredicateCondition,
+    PresentationStep,
     RuleInputOption,
     TransitionPlotThreadEffect,
 )
@@ -444,6 +445,42 @@ def test_host_effect_union_cannot_construct_plot_thread_transition() -> None:
                 "to_status": "resolved",
             }
         )
+
+
+def test_blocking_agent_rule_requires_player_safe_presentation() -> None:
+    """换用其他模组时，阻塞 Agenda 也不能在没有安全结果的情况下发布。"""
+
+    module = _module()
+    rule = next(item for item in module.rules if item.id == "crypt_stench_on_entry")
+    steps = tuple(
+        step.model_copy(update={"next_step_id": "crypt_finish"}, deep=True)
+        if step.id == "faint_willing"
+        else step
+        for step in rule.execution.steps
+        if not isinstance(step, PresentationStep)
+    )
+    changed_rule = rule.model_copy(
+        update={
+            "presentation": None,
+            "execution": rule.execution.model_copy(update={"steps": steps}, deep=True),
+        },
+        deep=True,
+    )
+    changed = module.model_copy(
+        update={
+            "rules": tuple(
+                changed_rule if item.id == changed_rule.id else item
+                for item in module.rules
+            )
+        },
+        deep=True,
+    )
+
+    report = validate_module_v3(changed)
+
+    assert "MODULE_V3_AGENDA_PRESENTATION_REQUIRED" in {
+        issue.code for issue in report.errors
+    }
 
 
 def test_module_validation_checks_plot_dependencies_and_transition_targets() -> None:

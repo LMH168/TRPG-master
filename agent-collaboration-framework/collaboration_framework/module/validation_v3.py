@@ -23,11 +23,13 @@ from collaboration_framework.contracts.module_v3 import (
     AgentMatchTriggerSpec,
     AllCondition,
     AnyCondition,
+    AwaitPlayerInputStep,
     CheckStep,
     ConditionExpr,
     CreateNpcActionOpportunityStep,
     EffectStep,
     EventTriggerSpec,
+    InvokeRulesetActionStep,
     ModuleContentV3,
     NotCondition,
     PredicateCondition,
@@ -384,6 +386,34 @@ def _rule_issues(
                 "locations",
                 "MODULE_V3_LOCATION_NOT_FOUND",
                 f"{path}.trigger.scope.location_ids.{index}",
+            )
+        blocking_steps = tuple(
+            step
+            for step in rule.execution.steps
+            if isinstance(
+                step,
+                InvokeRulesetActionStep
+                | CreateNpcActionOpportunityStep
+                | AwaitPlayerInputStep,
+            )
+            or (
+                isinstance(step, CheckStep)
+                and step.check.initiation_kind == "passive_rule"
+            )
+        )
+        presentation_steps = tuple(
+            step for step in rule.execution.steps if isinstance(step, PresentationStep)
+        )
+        if blocking_steps and (rule.presentation is None or not presentation_steps):
+            # 阻塞步骤的结果会在初始裁决之后提交；没有显式安全展示时，
+            # Narrator 只能看到旧动作结果并退回场景模板。发布阶段必须阻止它。
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code="MODULE_V3_AGENDA_PRESENTATION_REQUIRED",
+                    path=f"{path}.presentation",
+                    message="含阻塞步骤的玩家规则必须提供可达的安全 PresentationStep",
+                )
             )
 
     reachable = _reachable_steps(rule)

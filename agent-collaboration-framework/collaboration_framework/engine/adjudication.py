@@ -47,6 +47,7 @@ from collaboration_framework.contracts import (
     NarrativeOnlyEffect,
     PendingCheckOption,
     PostRollDecisionRequest,
+    PresentationStep,
     PushOption,
     RevealInformationEffect,
     RuleEffect,
@@ -1431,6 +1432,27 @@ class AdjudicationEngineService:
 
         if not runtime.is_v3:
             return ()
+        presentation_evidence: list[NarrationEvidence] = []
+        for event in events:
+            presentation_id = event.payload.get("presentation_id")
+            summary = event.payload.get("player_safe_summary")
+            if (
+                event.visibility != "public"
+                or event.type != "rule.presentation"
+                or not isinstance(presentation_id, str)
+                or not isinstance(summary, str)
+            ):
+                continue
+            presentation_evidence.append(
+                NarrationEvidence(
+                    ref=event.event_id,
+                    kind="rule_presentation",
+                    subject_id=presentation_id,
+                    subject_name=summary,
+                    description=summary,
+                    required_in_narration=True,
+                )
+            )
         candidate_events = tuple(
             event
             for event in events
@@ -1448,7 +1470,7 @@ class AdjudicationEngineService:
             )
         )
         if not candidate_events:
-            return ()
+            return tuple(presentation_evidence)
         final_runtime = runtime.model_copy(
             update={
                 "game_state": new_state,
@@ -1483,7 +1505,7 @@ class AdjudicationEngineService:
                     required_in_narration=True,
                 )
             )
-        return tuple(evidence)
+        return (*evidence, *presentation_evidence)
 
     @staticmethod
     def _validate_identity(
@@ -2113,6 +2135,42 @@ class AdjudicationEngineService:
         # 从冻结 cursor 继续，不能重放这些前缀 Effect。
         return tuple(walk.effects)
 
+    @staticmethod
+    def _completed_rule_presentation(
+        runtime: EngineRuntimeSnapshot,
+        *,
+        adjudication: ActionAdjudication,
+        passed: bool,
+        check_run: CheckRun | None,
+    ) -> tuple[str, str] | None:
+        """只在成功分支稳定结束后发布模组作者提供的玩家安全摘要。"""
+
+        decision = adjudication.rule_decision
+        if not passed or decision is None or not runtime.is_v3:
+            return None
+        rule, branch_id = resolve_rule_option(
+            runtime.v3,
+            rule_id=decision.rule_id,
+            option_id=decision.option_id,
+        )
+        if rule.presentation is None:
+            return None
+        # 含显式 PresentationStep 的多分支规则由路径决定何时公开；不能把一个
+        # 分支的摘要自动套到同 Rule 的其他选项上。
+        if any(isinstance(step, PresentationStep) for step in rule.execution.steps):
+            return None
+        check_step, _ = pending_check_for(rule, branch_id)
+        if check_step is not None:
+            if check_run is None:
+                return None
+            degree = (check_run.final_result or check_run.roll).degree
+            walk = walk_rule_from(rule, check_step.result_routes[degree])
+        else:
+            walk = walk_rule(rule, branch_id=branch_id)
+        if not walk.completed:
+            return None
+        return rule.presentation.id, rule.presentation.player_safe_summary
+
     def _finalize_action(
         self,
         runtime: EngineRuntimeSnapshot,
@@ -2170,6 +2228,28 @@ class AdjudicationEngineService:
                 offset=len(events) + 1,
             )
             events.extend(emitted)
+        presentation = self._completed_rule_presentation(
+            runtime,
+            adjudication=adjudication,
+            passed=passed,
+            check_run=check_run,
+        )
+        if presentation is not None:
+            presentation_id, player_safe_summary = presentation
+            events.append(
+                self._event_from_state(
+                    state,
+                    room_id=runtime.game_state.room_id,
+                    offset=len(events) + 1,
+                    request_id=request_id,
+                    actor_id=adjudication.actor_id,
+                    event_type="rule.presentation",
+                    payload={
+                        "presentation_id": presentation_id,
+                        "player_safe_summary": player_safe_summary,
+                    },
+                )
+            )
         events.append(
             self._event_from_state(
                 state,

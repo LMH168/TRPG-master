@@ -26,6 +26,7 @@ from collaboration_framework.contracts import (
     CancelCheckChoice,
     ChangeEntityStateEffect,
     CheckDecisionRequest,
+    CommittedResult,
     ConsumeEntityEffect,
     ContractError,
     EnsureRuntimeEntityEffect,
@@ -38,6 +39,7 @@ from collaboration_framework.contracts import (
     KeeperCapabilityView,
     MarkCoreResolvedEffect,
     MoveEntityEffect,
+    NarrationEvidence,
     NarrativeOnlyEffect,
     NoAdjudicationCheck,
     PlayerInput,
@@ -54,6 +56,7 @@ from collaboration_framework.contracts import (
 )
 from collaboration_framework.engine import (
     AdjudicationEngineService,
+    AgendaStepExecution,
     EngineStore,
     RuleAgendaExecutor,
     RuleEngineService,
@@ -1574,11 +1577,12 @@ class ActionPlanTurnApplication:
                 "行动计划尚未到达可返回状态",
                 retryable=True,
             )
-        await self._drain_rule_agendas(player_input)
+        agenda_executions = await self._drain_rule_agendas(player_input)
         context = await self._orchestrator.build_narration_context(
             player_input,
             verify_fingerprint=verify_fingerprint,
         )
+        context = self._merge_agenda_results(context, agenda_executions)
         narration = await self._narrate(context)
         return ActionPlanTurnResult(
             player_input=player_input,
@@ -1625,7 +1629,7 @@ class ActionPlanTurnApplication:
                 "行动目标状态尚未完成，请重试",
                 retryable=True,
             )
-        await self._drain_rule_agendas(player_input)
+        agenda_executions = await self._drain_rule_agendas(player_input)
         # Agenda 可能提交 SAN、condition 或规则 Effect；Narrator 只能读取 drain
         # 后的最终视图，不能继续使用裁决返回时的旧快照。
         final_view = await self._projector.project(player_input)
@@ -1664,6 +1668,7 @@ class ActionPlanTurnApplication:
             allowed_evidence_refs=execution.public_event_refs,
             narration_evidence=execution.narration_evidence,
         )
+        context = self._merge_agenda_results(context, agenda_executions)
         return ActionPlanTurnResult(
             player_input=player_input,
             player_view=result.player_view,
@@ -1672,15 +1677,107 @@ class ActionPlanTurnApplication:
             narration=await self._narrate(context),
         )
 
-    async def _drain_rule_agendas(self, player_input: PlayerInput) -> None:
-        """在 Narrator 前推进当前可靠 Turn 的全部自动 Agenda。"""
+    async def _drain_rule_agendas(
+        self,
+        player_input: PlayerInput,
+    ) -> tuple[AgendaStepExecution, ...]:
+        """推进 Agenda 并读取本 Turn 全部证明，覆盖提交后恢复场景。"""
 
         turn_id = current_turn_id()
         if self._agenda_executor is None or turn_id is None:
-            return
+            return ()
         await self._agenda_executor.drain(
             room_id=player_input.room_id,
             turn_id=turn_id,
+        )
+        return await self._agenda_executor.executions_for_turn(
+            room_id=player_input.room_id,
+            turn_id=turn_id,
+        )
+
+    @staticmethod
+    def _merge_agenda_results(
+        context: NarrationContext,
+        executions: tuple[AgendaStepExecution, ...],
+    ) -> NarrationContext:
+        """把 Agenda 已提交的公开结果归入当前动作，供 Narrator 与恢复共用。"""
+
+        if not executions or not context.completed_steps:
+            return context
+        public_refs: list[str] = []
+        committed_results: list[CommittedResult] = []
+        narration_evidence: list[NarrationEvidence] = []
+        for execution in executions:
+            raw_refs = execution.result.get("public_event_refs", [])
+            if isinstance(raw_refs, list):
+                public_refs.extend(item for item in raw_refs if isinstance(item, str))
+            raw_results = execution.result.get("committed_results", [])
+            if not isinstance(raw_results, list):
+                continue
+            for payload in raw_results:
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    committed_results.append(CommittedResult.model_validate(payload))
+                except ValueError:
+                    # 历史或损坏的派生摘要不能扩大 Narrator 权限；权威状态仍保留。
+                    logger.warning(
+                        "agenda_narration_result_ignored",
+                        execution_id=execution.execution_id,
+                    )
+            raw_evidence = execution.result.get("narration_evidence", [])
+            if not isinstance(raw_evidence, list):
+                continue
+            for payload in raw_evidence:
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    narration_evidence.append(NarrationEvidence.model_validate(payload))
+                except ValueError:
+                    logger.warning(
+                        "agenda_narration_evidence_ignored",
+                        execution_id=execution.execution_id,
+                    )
+
+        last = context.completed_steps[-1]
+        event_refs = tuple(dict.fromkeys((*last.event_refs, *public_refs)))
+        results_by_identity = {
+            (
+                item.event_ref,
+                item.kind,
+                item.target_id,
+                item.state_key,
+                repr(item.state_value),
+            ): item
+            for item in (*last.committed_results, *committed_results)
+            if item.event_ref in event_refs
+        }
+        merged_last = last.model_copy(
+            update={
+                "view_revision": context.player_view.revision,
+                "event_refs": event_refs,
+                "committed_results": tuple(results_by_identity.values()),
+                "narration_evidence": tuple(
+                    {
+                        item.ref: item
+                        for item in (*last.narration_evidence, *narration_evidence)
+                        if item.ref in event_refs
+                    }.values()
+                ),
+            }
+        )
+        completed_steps = (*context.completed_steps[:-1], merged_last)
+        allowed_refs = tuple(
+            dict.fromkeys(ref for step in completed_steps for ref in step.event_refs)
+        )
+        return context.model_copy(
+            update={
+                "completed_steps": completed_steps,
+                "allowed_evidence_refs": allowed_refs,
+                "narration_evidence": tuple(
+                    item for step in completed_steps for item in step.narration_evidence
+                ),
+            }
         )
 
     async def _from_single_clarification(
@@ -1736,13 +1833,8 @@ class ActionPlanTurnApplication:
         self,
         context: NarrationContext,
     ) -> NarrationOutput:
-        if any(
-            getattr(step, "goal_outcome", "legacy_unknown")
-            in {"partially_achieved", "not_achieved"}
-            for step in context.completed_steps
-        ):
-            # 未完成持久目标时不让自由文本从检定成功外推伤势、死亡或物品变化。
-            return self._safe_narration_fallback(context)
+        # goal_outcome 未完成不等于“没有可叙述结果”。Narrator 仍可表达本轮
+        # committed_results，但后续持久声明校验会阻止它把检定成功外推为目标完成。
         for attempt in range(2):
             try:
                 return await self._narrator.narrate(context)
@@ -1843,6 +1935,9 @@ class ActionPlanTurnApplication:
             )
         sentences: list[str] = []
         for item in required:
+            if item.kind == "rule_presentation":
+                sentences.append(item.description.rstrip("。！？!?；;，,") + "。")
+                continue
             sentences.append(f"随着调查深入，你很快辨认出{item.subject_name}。")
             description = item.description.strip()
             if description:

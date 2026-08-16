@@ -31,6 +31,7 @@ from collaboration_framework.engine import (
     AgendaRetryScheduledError,
     AgendaSource,
     DiceRoller,
+    DomainEvent,
     InMemoryEngineStore,
     RuleAgendaExecutor,
     SequenceDiceSource,
@@ -121,6 +122,49 @@ async def test_passive_check_commits_once_and_recovery_does_not_reroll() -> None
         )
         == 1
     )
+    by_turn = await executor.executions_for_turn(room_id="room-1", turn_id="turn-1")
+    assert tuple(item.execution_id for item in by_turn) == (executions[0].execution_id,)
+
+
+def test_rule_presentation_becomes_required_player_safe_evidence() -> None:
+    """Agenda 只能从显式 Presentation 生成叙事证据，不能解释普通事件载荷。"""
+
+    evidence = RuleAgendaExecutor._narration_evidence(
+        (
+            DomainEvent(
+                event_id="evt-presentation",
+                sequence=1,
+                type="rule.presentation",
+                room_id="room-1",
+                actor_id="actor-1",
+                client_action_id="agenda-execution",
+                cause="agenda:agenda-1",
+                visibility="public",
+                payload={
+                    "presentation_id": "crypt-faint",
+                    "player_safe_summary": "地穴恶臭令你失去意识。",
+                },
+            ),
+            DomainEvent(
+                event_id="evt-hidden",
+                sequence=2,
+                type="rule.presentation",
+                room_id="room-1",
+                actor_id="actor-1",
+                client_action_id="agenda-execution",
+                cause="agenda:agenda-1",
+                visibility="hidden",
+                payload={
+                    "presentation_id": "keeper-only",
+                    "player_safe_summary": "这段内容不能公开。",
+                },
+            ),
+        )
+    )
+
+    assert len(evidence) == 1
+    assert evidence[0].ref == "evt-presentation"
+    assert evidence[0].required_in_narration is True
 
 
 @pytest.mark.asyncio

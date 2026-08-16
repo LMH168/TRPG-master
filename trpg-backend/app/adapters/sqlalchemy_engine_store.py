@@ -115,6 +115,30 @@ class SqlAlchemyEngineStore(EngineStore):
             )
             return tuple(_agenda_step_execution_from_record(item) for item in records)
 
+    async def list_agenda_step_executions_for_turn(
+        self,
+        *,
+        room_id: str,
+        turn_id: str,
+    ) -> tuple[AgendaStepExecution, ...]:
+        """读取 Turn 已提交的 Agenda 证明；恢复时不能依赖本进程 drain 返回值。"""
+
+        async with self._session_factory() as session:
+            records = tuple(
+                await session.scalars(
+                    select(AgendaStepExecutionRecord)
+                    .where(
+                        AgendaStepExecutionRecord.room_id == room_id,
+                        AgendaStepExecutionRecord.execution_turn_id == turn_id,
+                    )
+                    .order_by(
+                        AgendaStepExecutionRecord.committed_state_version,
+                        AgendaStepExecutionRecord.execution_id,
+                    )
+                )
+            )
+            return tuple(_agenda_step_execution_from_record(item) for item in records)
+
     async def list_recoverable_rule_agenda_bindings(
         self,
         *,

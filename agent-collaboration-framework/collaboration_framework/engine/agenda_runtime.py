@@ -17,17 +17,20 @@ from collaboration_framework.contracts import (
     AwaitPlayerInputStep,
     CheckDegree,
     CheckStep,
+    CommittedResult,
     ContractError,
     CreateNpcActionOpportunityStep,
     EffectStep,
     FinishStep,
     InvokeRulesetActionStep,
+    NarrationEvidence,
     PresentationStep,
 )
 
 from .adjudication import AdjudicationEngineService
 from .dice import DiceRoller, coc7_success_level, outcome_name, passes_difficulty
 from .models import AgendaStepExecution, DomainEvent, GameState, RuleAgenda
+from .persistent_results import committed_results_from_events
 from .ports import EngineStore, RevisionConflictError
 from .rules_v3 import (
     agenda_item_for_event,
@@ -324,6 +327,19 @@ class RuleAgendaExecutor:
         else:
             raise ContractError("RuleAgenda 单次 drain 超出确定性段预算")
         return tuple(committed)
+
+    async def executions_for_turn(
+        self,
+        *,
+        room_id: str,
+        turn_id: str,
+    ) -> tuple[AgendaStepExecution, ...]:
+        """读取已提交证明，确保叙事恢复不会丢失先前 drain 的结果。"""
+
+        return await self._store.list_agenda_step_executions_for_turn(
+            room_id=room_id,
+            turn_id=turn_id,
+        )
 
     async def boundary_for_turn(
         self,
@@ -633,7 +649,25 @@ class RuleAgendaExecutor:
                 step_id=step.id,
                 execution_kind=kind,
                 request=request,
-                result={**result, "agenda_status": agenda.status},
+                result={
+                    **result,
+                    "agenda_status": agenda.status,
+                    "public_event_refs": [
+                        event.event_id
+                        for event in events
+                        if event.visibility == "public"
+                    ],
+                    "committed_results": [
+                        item.to_json_dict()
+                        for item in self._committed_results_for_narration(
+                            tuple(events), actor_id=agenda.actor_id or ""
+                        )
+                    ],
+                    "narration_evidence": [
+                        item.to_json_dict()
+                        for item in self._narration_evidence(tuple(events))
+                    ],
+                },
                 committed_state_version=state.event_sequence,
                 created_at=datetime.now(UTC),
             )
@@ -645,6 +679,66 @@ class RuleAgendaExecutor:
                 execution=execution,
             )
             return execution
+
+    @staticmethod
+    def _committed_results_for_narration(
+        events: tuple[DomainEvent, ...],
+        *,
+        actor_id: str,
+    ) -> tuple[CommittedResult, ...]:
+        """把 Agenda 的公开权威事件转换成 Narrator 可消费的安全结果。"""
+
+        results = list(committed_results_from_events(events))
+        for event in events:
+            if event.visibility != "public" or event.type != "actor.condition_applied":
+                continue
+            condition = event.payload.get("condition")
+            if not isinstance(condition, str):
+                continue
+            # Ruleset registry 定义了 condition 的权威语义；这里规范化为现有
+            # 持久状态词汇，避免 Narrator 只能看到内部 condition 标识。
+            if condition in {"unconscious", "unconscious_until_night"}:
+                state_key = "consciousness"
+                state_value = "unconscious"
+            else:
+                state_key = "condition"
+                state_value = condition
+            results.append(
+                CommittedResult(
+                    kind="character_state",
+                    target_id=actor_id,
+                    state_key=state_key,
+                    state_value=state_value,
+                    event_ref=event.event_id,
+                )
+            )
+        return tuple(results)
+
+    @staticmethod
+    def _narration_evidence(
+        events: tuple[DomainEvent, ...],
+    ) -> tuple[NarrationEvidence, ...]:
+        """只把模组显式发布的安全 Presentation 交给 Narrator。"""
+
+        evidence: list[NarrationEvidence] = []
+        for event in events:
+            if event.visibility != "public" or event.type != "rule.presentation":
+                continue
+            presentation_id = event.payload.get("presentation_id")
+            summary = event.payload.get("player_safe_summary")
+            if not isinstance(presentation_id, str) or not isinstance(summary, str):
+                continue
+            evidence.append(
+                NarrationEvidence(
+                    ref=event.event_id,
+                    kind="rule_presentation",
+                    subject_id=presentation_id,
+                    subject_name=summary,
+                    description=summary,
+                    required_in_narration=True,
+                )
+            )
+        return tuple(evidence)
 
     def _run_passive_check(
         self,

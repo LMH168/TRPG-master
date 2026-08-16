@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -7,18 +8,25 @@ from unittest.mock import AsyncMock
 import pytest
 from collaboration_framework.contracts import (
     ActionPlanPolicy,
+    CommittedResult,
     NarrationEvidence,
     PlayerInput,
     PlayerView,
     PostRollDecisionRequest,
 )
+from collaboration_framework.engine import AgendaStepExecution
 from collaboration_framework.host.application import (
     NarrationValidationError,
 )
 from collaboration_framework.host.application.narrator import (
     unsupported_focus_shift_claim,
 )
-from collaboration_framework.host.schemas import NarrationContext, RecentTurnContext
+from collaboration_framework.host.schemas import (
+    CompletedPlanStepSummary,
+    NarrationContext,
+    NarrationOutput,
+    RecentTurnContext,
+)
 
 from app.core.action_plan_turn import ActionPlanTurnApplication
 
@@ -480,6 +488,100 @@ async def test_narration_falls_back_to_required_player_safe_evidence() -> None:
     assert "石板下的地穴入口" in narration.text
     assert "沉重石板" in narration.text
     assert "。。" not in narration.text
+
+
+@pytest.mark.asyncio
+async def test_not_achieved_goal_still_narrates_committed_rule_result() -> None:
+    """完整目标未满足时仍应调用 Narrator 表达实际结果，不能直接返回地点模板。"""
+
+    application = object.__new__(ActionPlanTurnApplication)
+    expected = NarrationOutput(text="沉重的石板被推到一旁，向下的通道显露出来。")
+    narrate = AsyncMock(return_value=expected)
+    application._narrator = SimpleNamespace(narrate=narrate)
+    context = _NarrationContextStub(
+        NarrationEvidence(
+            ref="evt-slab-moved",
+            kind="rule_presentation",
+            subject_id="slab-moved",
+            subject_name="沉重的入口石板已经被你推开，通往下方的通道显露出来。",
+            description="沉重的入口石板已经被你推开，通往下方的通道显露出来。",
+        ),
+        "resolved",
+    )
+    context.completed_steps = (SimpleNamespace(outcome="success", goal_outcome="not_achieved"),)
+
+    narration = await application._narrate(cast(NarrationContext, context))
+
+    assert narration == expected
+    narrate.assert_awaited_once()
+
+
+def test_merge_agenda_results_restores_persisted_player_safe_evidence() -> None:
+    """叙事前恢复必须按 Turn execution 合并 Agenda 公开结果与 Presentation。"""
+
+    event_ref = "evt-agenda-condition"
+    presentation_ref = "evt-agenda-presentation"
+    step = CompletedPlanStepSummary(
+        step_index=0,
+        semantic_goal="进入地穴",
+        outcome="success",
+        goal_outcome="not_achieved",
+        view_revision="4",
+    )
+    context = NarrationContext.model_construct(
+        background="测试背景",
+        player_input=SimpleNamespace(),
+        plan_goal="进入地穴",
+        termination_status="resolved",
+        completed_steps=(step,),
+        player_view=SimpleNamespace(revision="7"),
+        memory_context=SimpleNamespace(),
+        allowed_evidence_refs=(),
+        narration_evidence=(),
+    )
+    execution = AgendaStepExecution(
+        execution_id="a" * 64,
+        room_id="room-1",
+        origin_turn_id="turn-1",
+        execution_turn_id="turn-1",
+        agenda_id="agenda-1",
+        source_event_id="evt-source",
+        rule_id="enter-crypt",
+        branch_id="just-enter",
+        step_id="faint",
+        execution_kind="ruleset_action",
+        result={
+            "public_event_refs": [event_ref, presentation_ref],
+            "committed_results": [
+                CommittedResult(
+                    kind="character_state",
+                    target_id="actor-1",
+                    state_key="consciousness",
+                    state_value="unconscious",
+                    event_ref=event_ref,
+                ).to_json_dict()
+            ],
+            "narration_evidence": [
+                NarrationEvidence(
+                    ref=presentation_ref,
+                    kind="rule_presentation",
+                    subject_id="crypt-faint",
+                    subject_name="地穴恶臭令你失去意识。",
+                    description="地穴恶臭令你失去意识。",
+                    required_in_narration=True,
+                ).to_json_dict()
+            ],
+        },
+        committed_state_version=7,
+        created_at=datetime.now(UTC),
+    )
+
+    merged = ActionPlanTurnApplication._merge_agenda_results(context, (execution,))
+
+    assert merged.completed_steps[0].view_revision == "7"
+    assert merged.allowed_evidence_refs == (event_ref, presentation_ref)
+    assert merged.completed_steps[0].committed_results[0].state_value == "unconscious"
+    assert merged.narration_evidence[0].ref == presentation_ref
 
 
 @pytest.mark.asyncio

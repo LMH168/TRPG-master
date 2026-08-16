@@ -126,6 +126,28 @@ class InMemoryEngineStore:
             for item in sorted(records, key=lambda value: value.execution_id)
         )
 
+    async def list_agenda_step_executions_for_turn(
+        self,
+        *,
+        room_id: str,
+        turn_id: str,
+    ) -> tuple[AgendaStepExecution, ...]:
+        """按提交 revision 返回同一 Turn 的全部 Agenda 执行证明。"""
+
+        self._record(room_id)
+        records = (
+            execution
+            for execution in self._agenda_step_executions[room_id].values()
+            if execution.execution_turn_id == turn_id
+        )
+        return tuple(
+            item.model_copy(deep=True)
+            for item in sorted(
+                records,
+                key=lambda value: (value.committed_state_version, value.execution_id),
+            )
+        )
+
     @asynccontextmanager
     async def transaction(
         self,

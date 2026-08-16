@@ -1507,7 +1507,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
         )
         check_run = resolved.check_run
         assert check_run is not None
-        await engine.decide_post_roll(
+        slab_result = await engine.decide_post_roll(
             PostRollDecisionRequest(
                 request_id="crypt-slab:accept",
                 room_id=ROOM,
@@ -1517,6 +1517,12 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
                 check_version=check_run.version,
                 option_id="accept-current",
             )
+        )
+        self.assertEqual(slab_result.goal_outcome, "legacy_unknown")
+        self.assertEqual(len(slab_result.narration_evidence), 1)
+        self.assertEqual(
+            slab_result.narration_evidence[0].description,
+            "沉重的入口石板已经被你推开，通往下方的通道显露出来。",
         )
         self.assertIs(
             store.inspect_state(ROOM).entities["crypt_entrance"]["slab_moved"], True
