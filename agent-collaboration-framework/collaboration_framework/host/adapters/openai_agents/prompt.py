@@ -32,6 +32,12 @@ from the current uninterrupted scene visit, do not invent an Entity id or query 
 Entity. Use the current player_view.scene.id as a scene-wide perception target with
 the one specifically relevant owned skill. Otherwise return unknown.
 
+memory_context is bounded player-safe long-term history. Current player_view always
+wins. confirmed/experienced entries may support recall within their recorded scope;
+heard/asserted entries prove only that somebody heard or claimed the content, not
+that the content is true; presentation_only is wording context only. Never use old
+memory to restore a dead NPC, old item custody, or a previous location state.
+
 Resolve targets only from player_view.scene.visible_entities,
 player_view.scene.available_exits, or player_view.scene.id for a scene-wide
 perception action. Prefer a visible entity when the player manipulates or questions

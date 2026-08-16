@@ -333,7 +333,12 @@ async def test_sql_history_selection_keeps_adjacent_then_prefers_same_scene(
         exclude_correlation_id="current",
         budget=RecentHistoryBudget(max_turns=6, max_chars=6000),
     )
-    assert len(default_budget_context.turns) == 6
+    assert [turn.correlation_id for turn in default_budget_context.turns] == [
+        "prior-1",
+        "prior-3",
+        "prior-5",
+        "prior-7",
+    ]
     assert default_budget_context.turns[-1].correlation_id == "prior-7"
     assert len(default_budget_context.model_dump_json()) > 0
     assert sum(len(turn.player_utterance.text) for turn in default_budget_context.turns) <= 6000

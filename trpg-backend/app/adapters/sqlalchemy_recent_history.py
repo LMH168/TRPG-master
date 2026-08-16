@@ -85,8 +85,9 @@ def _select_turns(
         for turn in turns_newest_first[1:]
         if turn.scene_id is not None and turn.scene_id == scene_id
     ]
-    other = [turn for turn in turns_newest_first[1:] if turn not in same_scene]
-    for turn in (*same_scene, *other):
+    # RecentTurnContext 只负责相邻指代与当前场景节奏；跨场景召回已经由
+    # MemoryContext 承担，继续拼接其他场景会重复占用 token 并模糊 NPC 认知边界。
+    for turn in same_scene:
         if len(selected) >= budget.max_turns:
             break
         selected.append(turn)

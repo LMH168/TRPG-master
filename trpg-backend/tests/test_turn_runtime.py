@@ -151,6 +151,47 @@ async def test_cancel_after_partial_commit_keeps_partial_state_during_narration(
 
 
 @pytest.mark.asyncio
+async def test_stopped_plan_after_receipt_publishes_partial_result() -> None:
+    """同次执行先提交步骤再停止时，叙事发布不得触发 commit_state 降级。"""
+
+    store = InMemoryTurnStore()
+    coordinator = TurnCoordinator(store, worker_id="worker-1")
+
+    async def stop_after_first_step(on_phase):  # noqa: ANN001
+        await on_phase("executing_action")
+        turn_id = current_turn_id()
+        assert turn_id is not None
+        await store.append_receipt(
+            TurnCommitReceipt(
+                turn_id=turn_id,
+                room_id="room-1",
+                engine_request_id="engine-stopped-plan",
+                action_request_id="completed-step-1",
+                committed_state_version=1,
+                created_at=datetime.now(UTC),
+            )
+        )
+        await on_phase("generating_narration")
+        return TurnExecutionOutcome(
+            status="stopped",
+            player_view={"scene": {"id": "study"}, "revision": "1"},
+            view_revision="1",
+            scene_id="study",
+            narration={
+                "kind": "narration",
+                "text": "第一步已经保存，后续步骤未执行。",
+            },
+        )
+
+    completed = await coordinator.start(_request(), executor=stop_after_first_step)
+
+    assert completed.status == TurnStatus.COMPLETED
+    assert completed.commit_state == TurnCommitState.PARTIALLY_COMMITTED
+    assert completed.last_error is None
+    assert await store.get_outbox(completed.turn_id) is not None
+
+
+@pytest.mark.asyncio
 async def test_narrator_failure_resumes_without_second_engine_receipt() -> None:
     store = InMemoryTurnStore()
     coordinator = TurnCoordinator(store, worker_id="worker-1")
@@ -180,11 +221,14 @@ async def test_narrator_failure_resumes_without_second_engine_receipt() -> None:
 
     failed = await coordinator.start(_request(), executor=execute)
     assert failed.status == TurnStatus.AWAITING_NARRATION
-    assert failed.commit_state == TurnCommitState.COMMITTED
+    # 叙事失败时 Coordinator 尚未拿到最终 outcome，只能确认至少一项提交存在；
+    # 恢复成功后才能区分完整单动作与复合计划的部分结果并升级为 committed。
+    assert failed.commit_state == TurnCommitState.PARTIALLY_COMMITTED
     assert failed.last_error is not None
 
     completed = await coordinator.resume(failed.turn_id, executor=execute)
     assert completed.status == TurnStatus.COMPLETED
+    assert completed.commit_state == TurnCommitState.COMMITTED
     assert len(await store.list_receipts(failed.turn_id)) == 1
 
 

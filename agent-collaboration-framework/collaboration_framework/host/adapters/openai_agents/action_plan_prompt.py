@@ -44,6 +44,9 @@ def host_turn_decision_instructions(policy: ActionPlanPolicy) -> str:
 - 当前绝对技术安全上限是 {policy.max_plan_steps} 步。若玩家明确目标超过该上限，
   不得截断或假装完成，应该请求玩家拆分或缩小目标。
 - 无法安全切分时请求澄清，不能丢失玩家表达的后续目标。
+- memory_context 是玩家安全的长期历史投影，只用于跨场景召回、旧行动和角色认知。
+  当前 player_view 永远优先；asserted/heard 只证明某角色说过或听过，不能提升为世界事实，
+  presentation_only 只用于承接表达。旧记忆不得恢复已死亡 NPC、旧物品 custody 或旧地点状态。
 """.strip()
 
 

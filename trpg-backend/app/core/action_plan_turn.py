@@ -79,7 +79,13 @@ from collaboration_framework.host.schemas import (
     SingleActionClarificationResult,
     SingleActionTurnResult,
 )
-from collaboration_framework.memory import MemoryContext
+from collaboration_framework.memory import (
+    MemoryBudget,
+    MemoryContext,
+    MemoryQuery,
+    MemoryReadScope,
+    MemoryStore,
+)
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -848,6 +854,8 @@ class ActionPlanTurnApplication:
         recent_history_source: RecentHistorySource,
         recent_history_budget: RecentHistoryBudget,
         recent_history_enabled: bool,
+        memory_store: MemoryStore | None = None,
+        memory_budget: MemoryBudget | None = None,
     ) -> None:
         self._store = store
         self._engine = engine
@@ -857,6 +865,8 @@ class ActionPlanTurnApplication:
         self._recent_history_source = recent_history_source
         self._recent_history_budget = recent_history_budget
         self._recent_history_enabled = recent_history_enabled
+        self._memory_store = memory_store
+        self._memory_budget = memory_budget or MemoryBudget()
         self._narrator = narrator
         self._projector = PlayerViewProjector(engine)
         self._dispatcher = HostTurnDecisionExecutor(
@@ -941,16 +951,17 @@ class ActionPlanTurnApplication:
             player_input=player_input,
             player_view=view,
         )
+        memory_context = await self._read_memory_context(
+            player_input=player_input,
+            player_view=view,
+        )
         try:
             decision = await self._planner.generate(
                 HostAgentContext(
                     player_input=player_input,
                     player_view=view,
                     recent_history=recent_history,
-                    memory_context=MemoryContext.empty(
-                        player_input=player_input,
-                        player_view=view,
-                    ),
+                    memory_context=memory_context,
                     # A single action is adjudicated right here in the planner call,
                     # so it needs the same Keeper vocabulary a plan step gets.
                     keeper_capabilities=keeper_capabilities,
@@ -1571,7 +1582,7 @@ class ActionPlanTurnApplication:
                 recent_history,
                 player_view=result.player_view,
             ),
-            memory_context=MemoryContext.empty(
+            memory_context=await self._read_memory_context(
                 player_input=player_input,
                 player_view=result.player_view,
             ),
@@ -1608,7 +1619,7 @@ class ActionPlanTurnApplication:
                 recent_history,
                 player_view=result.player_view,
             ),
-            memory_context=MemoryContext.empty(
+            memory_context=await self._read_memory_context(
                 player_input=player_input,
                 player_view=result.player_view,
             ),
@@ -1936,6 +1947,42 @@ class ActionPlanTurnApplication:
             )
         return recent_history
 
+    async def _read_memory_context(
+        self,
+        *,
+        player_input: PlayerInput,
+        player_view: PlayerView,
+    ) -> MemoryContext:
+        """按可信当前视图预载固定预算 Memory，不让派生数据阻断行动。"""
+
+        empty = MemoryContext.empty(
+            player_input=player_input,
+            player_view=player_view,
+        )
+        if self._memory_store is None:
+            return empty
+        try:
+            context = await self._memory_store.read_context(
+                scope=MemoryReadScope.from_view(
+                    player_input=player_input,
+                    player_view=player_view,
+                ),
+                query=MemoryQuery(),
+                budget=self._memory_budget,
+            )
+            return context.validate_for(
+                player_input=player_input,
+                player_view=player_view,
+            )
+        except Exception as exc:  # noqa: BLE001 - Memory 适配器故障不得阻断 Turn
+            logger.warning(
+                "action_plan_memory_context_degraded",
+                room_id=player_input.room_id,
+                correlation_id=player_input.client_action_id,
+                error_type=type(exc).__name__,
+            )
+            return empty
+
     async def _resolve_actor_id(self, room_id: str, player_id: str) -> str:
         async with self._store.transaction(room_id) as transaction:
             runtime = await transaction.load_runtime()
@@ -1975,6 +2022,7 @@ def build_action_plan_turn_application(
     settings=None,
     client=None,
     recent_history_source: RecentHistorySource | None = None,
+    memory_store: MemoryStore | None = None,
 ) -> ActionPlanTurnApplication:
     """Compose the finite-plan path without changing the single-intent Engine."""
 
@@ -2042,6 +2090,7 @@ def build_action_plan_turn_application(
         max_turns=resolved.recent_history_max_turns,
         max_chars=resolved.recent_history_max_chars,
     )
+    memory_budget = MemoryBudget(max_entries=8, max_chars=4000)
     history_source = recent_history_source or _EmptyRecentHistorySource()
     orchestrator = ActionPlanOrchestrator(
         store=plan_store,
@@ -2052,6 +2101,8 @@ def build_action_plan_turn_application(
         on_step_failure=_log_step_adjudication_failure,
         recent_history_source=(history_source if resolved.recent_history_enabled else None),
         recent_history_budget=recent_history_budget,
+        memory_store=memory_store,
+        memory_budget=memory_budget,
     )
     return ActionPlanTurnApplication(
         store=store,
@@ -2063,6 +2114,8 @@ def build_action_plan_turn_application(
         recent_history_source=history_source,
         recent_history_budget=recent_history_budget,
         recent_history_enabled=resolved.recent_history_enabled,
+        memory_store=memory_store,
+        memory_budget=memory_budget,
     )
 
 
@@ -2439,7 +2492,7 @@ __all__ = [
 
 
 def _production_application() -> ActionPlanTurnApplication:
-    from app.adapters import SqlAlchemyRecentHistorySource
+    from app.adapters import SqlAlchemyMemoryStore, SqlAlchemyRecentHistorySource
     from app.core.db import async_session_factory
     from app.core.engine import (
         action_plan_store,
@@ -2454,6 +2507,7 @@ def _production_application() -> ActionPlanTurnApplication:
         adjudication_engine=adjudication_engine_service,
         plan_store=action_plan_store,
         recent_history_source=SqlAlchemyRecentHistorySource(async_session_factory),
+        memory_store=SqlAlchemyMemoryStore(async_session_factory),
     )
 
 
