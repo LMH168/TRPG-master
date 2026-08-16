@@ -16,6 +16,7 @@ from collaboration_framework.host.schemas import (
     RecentTurnContext,
     VisibleHistoryText,
 )
+from collaboration_framework.memory import MemoryContext
 from collaboration_framework.schema_export import rendered_schemas
 
 
@@ -78,6 +79,10 @@ def test_recent_history_scope_and_host_contract_are_required() -> None:
     context = HostAgentContext(
         player_input=player_input,
         player_view=player_view,
+        memory_context=MemoryContext.empty(
+            player_input=player_input,
+            player_view=player_view,
+        ),
         recent_history=recent_history,
     )
 
@@ -89,6 +94,10 @@ def test_recent_history_scope_and_host_contract_are_required() -> None:
         HostAgentContext(
             player_input=player_input,
             player_view=player_view,
+            memory_context=MemoryContext.empty(
+                player_input=player_input,
+                player_view=player_view,
+            ),
             recent_history=recent_history.model_copy(update={"as_of_revision": "6"}),
         )
 

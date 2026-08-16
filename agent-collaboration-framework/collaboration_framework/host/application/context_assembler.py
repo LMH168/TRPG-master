@@ -12,6 +12,7 @@ from collaboration_framework.host.schemas import (
     OpeningSceneContext,
     RecentTurnContext,
 )
+from collaboration_framework.memory import MemoryContext
 
 
 class ContextAssembler:
@@ -132,6 +133,10 @@ class ContextAssembler:
             completed_steps=completed_steps,
             player_view=player_view,
             recent_history=recent_history,
+            memory_context=MemoryContext.empty(
+                player_input=player_input,
+                player_view=player_view,
+            ),
             focus_entity_ids=current_focus,
             opening_world_time=opening_world_time,
             allowed_evidence_refs=tuple(

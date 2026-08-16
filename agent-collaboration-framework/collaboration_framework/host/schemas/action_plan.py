@@ -28,6 +28,7 @@ from collaboration_framework.contracts import (
 )
 from collaboration_framework.host.schemas.agent import _validate_keeper_scope
 from collaboration_framework.host.schemas.history import RecentTurnContext
+from collaboration_framework.memory import MemoryContext
 
 PlanRunStatus = Literal[
     "active",
@@ -425,6 +426,8 @@ class NarrationContext(ContractModel):
     player_view: PlayerView
     # 最终叙事与 Host 共享玩家安全历史，用于承接说话者、交互焦点和既有措辞。
     recent_history: RecentTurnContext | None = None
+    # PR1 先显式传入同作用域空 Context；后续 PR 再接入长期投影读取。
+    memory_context: MemoryContext
     # 从本回合已持久化 Proposal 投影；Narrator 不能自行切换到其他可见实体。
     focus_entity_ids: tuple[str, ...] = ()
     # `player_view` is the post-turn state, so it is the *only* clock the
@@ -482,6 +485,10 @@ class NarrationContext(ContractModel):
                 player_input=self.player_input,
                 player_view=self.player_view,
             )
+        self.memory_context.validate_for(
+            player_input=self.player_input,
+            player_view=self.player_view,
+        )
         visible_entity_ids = {
             entity.id for entity in self.player_view.scene.visible_entities
         } | {actor.id for actor in self.player_view.scene.visible_actors}

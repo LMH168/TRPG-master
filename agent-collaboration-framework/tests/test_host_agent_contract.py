@@ -22,6 +22,7 @@ from collaboration_framework.host.schemas import (
     HostAgentUsage,
     RecentTurnContext,
 )
+from collaboration_framework.memory import MemoryContext
 from collaboration_framework.schema_export import rendered_schemas
 from pydantic import TypeAdapter, ValidationError
 
@@ -122,6 +123,10 @@ class HostAgentSchemaTests(unittest.TestCase):
         context = HostAgentContext(
             player_input=self.player_input,
             player_view=self.player_view,
+            memory_context=MemoryContext.empty(
+                player_input=self.player_input,
+                player_view=self.player_view,
+            ),
             recent_history=RecentTurnContext.empty(
                 player_input=self.player_input,
                 player_view=self.player_view,
@@ -132,6 +137,7 @@ class HostAgentSchemaTests(unittest.TestCase):
             {
                 "player_input",
                 "player_view",
+                "memory_context",
                 "recent_history",
                 "keeper_capabilities",
             },
@@ -141,6 +147,7 @@ class HostAgentSchemaTests(unittest.TestCase):
             {
                 "player_input",
                 "player_view",
+                "memory_context",
                 "recent_history",
                 "keeper_capabilities",
             },
@@ -151,6 +158,10 @@ class HostAgentSchemaTests(unittest.TestCase):
                 {
                     "player_input": self.player_input,
                     "player_view": self.player_view,
+                    "memory_context": MemoryContext.empty(
+                        player_input=self.player_input,
+                        player_view=self.player_view,
+                    ),
                     "recent_history": RecentTurnContext.empty(
                         player_input=self.player_input,
                         player_view=self.player_view,
@@ -169,6 +180,10 @@ class HostAgentSchemaTests(unittest.TestCase):
                     HostAgentContext(
                         player_input=self.player_input,
                         player_view=mismatched_view,
+                        memory_context=MemoryContext.empty(
+                            player_input=self.player_input,
+                            player_view=self.player_view,
+                        ),
                         recent_history=RecentTurnContext.empty(
                             player_input=self.player_input,
                             player_view=self.player_view,
@@ -187,9 +202,7 @@ class HostAgentSchemaTests(unittest.TestCase):
         self.assertIsNone(unreported.to_json_dict()["input_tokens"])
         self.assertIsNone(unreported.to_json_dict()["output_tokens"])
 
-        reported_zero = unreported.model_copy(
-            update={"input_tokens": 0, "output_tokens": 0}
-        )
+        reported_zero = unreported.model_copy(update={"input_tokens": 0, "output_tokens": 0})
         self.assertEqual(reported_zero.input_tokens, 0)
         self.assertEqual(reported_zero.output_tokens, 0)
 
@@ -340,6 +353,7 @@ class HostAgentSchemaTests(unittest.TestCase):
             {
                 "player_input",
                 "player_view",
+                "memory_context",
                 "recent_history",
                 "keeper_capabilities",
             },
@@ -380,6 +394,10 @@ class FakeHostAgentTests(
         self.context = HostAgentContext(
             player_input=player_input,
             player_view=player_view,
+            memory_context=MemoryContext.empty(
+                player_input=player_input,
+                player_view=player_view,
+            ),
             recent_history=RecentTurnContext.empty(
                 player_input=player_input,
                 player_view=player_view,

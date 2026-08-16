@@ -48,6 +48,7 @@ from collaboration_framework.host.schemas import (
     VisibleEntitySummary,
 )
 from collaboration_framework.host.tools import build_player_view_tool_registry
+from collaboration_framework.memory import MemoryContext
 from openai.types.responses import (
     Response,
     ResponseCompletedEvent,
@@ -107,6 +108,10 @@ def make_context(*, utterance: str = "检查红色书架") -> HostAgentContext:
     return HostAgentContext(
         player_input=player_input,
         player_view=player_view,
+        memory_context=MemoryContext.empty(
+            player_input=player_input,
+            player_view=player_view,
+        ),
         recent_history=RecentTurnContext.empty(
             player_input=player_input,
             player_view=player_view,

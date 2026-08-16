@@ -26,6 +26,7 @@ from collaboration_framework.contracts import (
 from collaboration_framework.engine import RuleEngineService
 from collaboration_framework.host.application import PlayerViewProjector
 from collaboration_framework.host.schemas import HostAgentContext, RecentTurnContext
+from collaboration_framework.memory import MemoryContext
 from httpx import ASGITransport, AsyncClient
 
 from app.adapters import PromptHostTurnDecisionModel, SqlAlchemyEngineStore
@@ -155,6 +156,10 @@ async def test_configured_model_reaches_for_the_newly_opened_effects() -> None:
             HostAgentContext(
                 player_input=player_input,
                 player_view=view,
+                memory_context=MemoryContext.empty(
+                    player_input=player_input,
+                    player_view=view,
+                ),
                 recent_history=RecentTurnContext.empty(
                     player_input=player_input,
                     player_view=view,

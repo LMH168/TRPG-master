@@ -52,6 +52,7 @@ from collaboration_framework.host.schemas import (
     HostAgentContext,
     RecentTurnContext,
 )
+from collaboration_framework.memory import MemoryContext
 
 from app.core.action_plan_turn import (
     DeterministicHostTurnDecisionModel,
@@ -248,6 +249,10 @@ async def test_fake_single_action_uses_the_same_rule_match_view() -> None:
         HostAgentContext(
             player_input=step_context.player_input,
             player_view=step_context.player_view,
+            memory_context=MemoryContext.empty(
+                player_input=step_context.player_input,
+                player_view=step_context.player_view,
+            ),
             recent_history=RecentTurnContext.empty(
                 player_input=step_context.player_input,
                 player_view=step_context.player_view,

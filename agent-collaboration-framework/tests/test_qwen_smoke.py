@@ -30,6 +30,7 @@ from collaboration_framework.host.tools import (
     GET_VISIBLE_ENTITY_TOOL,
     SEARCH_VISIBLE_ENTITIES_TOOL,
 )
+from collaboration_framework.memory import MemoryContext
 
 RUN_QWEN_SMOKE = os.getenv("RUN_QWEN_SMOKE") == "1"
 
@@ -77,6 +78,10 @@ def make_context(utterance: str) -> HostAgentContext:
     return HostAgentContext(
         player_input=player_input,
         player_view=player_view,
+        memory_context=MemoryContext.empty(
+            player_input=player_input,
+            player_view=player_view,
+        ),
         recent_history=RecentTurnContext.empty(
             player_input=player_input,
             player_view=player_view,
