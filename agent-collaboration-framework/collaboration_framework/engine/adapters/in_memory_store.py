@@ -141,6 +141,7 @@ class InMemoryEngineStore:
             transaction = _InMemoryEngineTransaction(
                 room_id=room_id,
                 record=record,
+                agenda_step_executions=self._agenda_step_executions[room_id],
                 before_commit=self._before_commit,
             )
             try:
@@ -254,11 +255,15 @@ class InMemoryEngineStore:
                 expected_lease_version=expected_lease_version,
                 now=now,
             )
-            terminal = agenda.status != "running"
+            release = agenda.status in {
+                "stable",
+                "failed",
+                "awaiting_player_input",
+            } or (agenda.next_attempt_at is not None)
             saved = agenda.model_copy(
                 update={
-                    "lease_owner": None if terminal else worker_id,
-                    "lease_expires_at": None if terminal else agenda.lease_expires_at,
+                    "lease_owner": None if release else worker_id,
+                    "lease_expires_at": None if release else agenda.lease_expires_at,
                     "lease_version": expected_lease_version + 1,
                 },
                 deep=True,
@@ -267,6 +272,36 @@ class InMemoryEngineStore:
             agendas[saved.agenda_id] = saved
             state = state.model_copy(update={"rule_agendas": agendas}, deep=True)
             record.data = replace(record.data, game_state=state)
+            return saved.model_copy(deep=True)
+
+    async def resume_rule_agenda_input(
+        self,
+        *,
+        agenda: RuleAgenda,
+        expected_lease_version: int,
+    ) -> RuleAgenda:
+        """以 CAS 恢复玩家等待边界；并发回答只能有一个成功。"""
+
+        record = self._record(agenda.room_id)
+        async with record.lock:
+            state = record.data.game_state.model_copy(deep=True)
+            current = state.rule_agendas.get(agenda.agenda_id)
+            _validate_agenda_input_resume(
+                current=current,
+                proposed=agenda,
+                expected_lease_version=expected_lease_version,
+            )
+            saved = agenda.model_copy(
+                update={"lease_version": expected_lease_version + 1}, deep=True
+            )
+            agendas = dict(state.rule_agendas)
+            agendas[saved.agenda_id] = saved
+            record.data = replace(
+                record.data,
+                game_state=state.model_copy(
+                    update={"rule_agendas": agendas}, deep=True
+                ),
+            )
             return saved.model_copy(deep=True)
 
     def _record(self, room_id: str) -> _RoomRecord:
@@ -309,10 +344,46 @@ def _validate_agenda_checkpoint(
         raise ContractError("RuleAgenda checkpoint 不能改写不可变身份")
     if proposed.lease_owner != worker_id:
         raise ContractError("RuleAgenda checkpoint 的 worker 不匹配")
-    if proposed.status == "running" and (
-        proposed.lease_expires_at is None or proposed.lease_expires_at <= now
+    if (
+        proposed.status == "running"
+        and proposed.next_attempt_at is None
+        and (proposed.lease_expires_at is None or proposed.lease_expires_at <= now)
     ):
         raise ContractError("运行中的 RuleAgenda 必须保留有效 lease")
+
+
+def _validate_agenda_input_resume(
+    *,
+    current: RuleAgenda | None,
+    proposed: RuleAgenda,
+    expected_lease_version: int,
+) -> None:
+    """限制玩家恢复只能改变游标、状态和 active Turn。"""
+
+    if current is None or current.status != "awaiting_player_input":
+        raise RevisionConflictError("RuleAgenda 已不再等待玩家输入")
+    if current.lease_version != expected_lease_version:
+        raise RevisionConflictError("RuleAgenda 玩家输入版本已变化")
+    immutable = (
+        "schema_version",
+        "agenda_id",
+        "room_id",
+        "module_id",
+        "module_version",
+        "correlation_id",
+        "root_source",
+        "origin_turn_id",
+        "player_id",
+        "actor_id",
+        "queue",
+        "source_event_ids",
+    )
+    if any(getattr(current, name) != getattr(proposed, name) for name in immutable):
+        raise ContractError("RuleAgenda 玩家输入恢复不能改写可信身份或队列")
+    if proposed.status != "running" or proposed.active_turn_id is None:
+        raise ContractError("RuleAgenda 玩家输入恢复必须绑定新的活动 Turn")
+    if proposed.pending_boundary_id is not None:
+        raise ContractError("RuleAgenda 玩家输入恢复后必须清除 boundary")
 
 
 class _InMemoryEngineTransaction(EngineTransaction):
@@ -321,10 +392,12 @@ class _InMemoryEngineTransaction(EngineTransaction):
         *,
         room_id: str,
         record: _RoomRecord,
+        agenda_step_executions: dict[str, AgendaStepExecution],
         before_commit: Callable[[str], None] | None,
     ) -> None:
         self._room_id = room_id
         self._record = record
+        self._agenda_step_executions = agenda_step_executions
         self._before_commit = before_commit
         self._closed = False
         self._committed = False
@@ -556,6 +629,56 @@ class _InMemoryEngineTransaction(EngineTransaction):
         if self._before_commit is not None:
             self._before_commit(self._room_id)
         self._record.data = staged
+        self._committed = True
+
+    async def commit_agenda_segment(
+        self,
+        *,
+        expected_revision: str,
+        new_state: GameState,
+        events: tuple[DomainEvent, ...],
+        agenda: RuleAgenda,
+        execution: AgendaStepExecution,
+    ) -> None:
+        """在内存测试 Store 中模拟数据库的 Agenda 原子提交边界。"""
+
+        self._ensure_active()
+        if self._committed:
+            raise ContractError("同一引擎事务只能提交一次")
+        current = self._record.data
+        if current.revision != expected_revision:
+            raise RevisionConflictError("Agenda 提交时房间 revision 已变化")
+        if execution.execution_id in self._agenda_step_executions:
+            raise ContractError("Agenda 步骤已经提交")
+        if execution.room_id != self._room_id or agenda.room_id != self._room_id:
+            raise ContractError("Agenda 提交身份与事务房间不一致")
+        if execution.agenda_id != agenda.agenda_id:
+            raise ContractError("Agenda execution 与游标不一致")
+        if execution.committed_state_version != new_state.event_sequence:
+            raise ContractError("Agenda execution 与状态版本不一致")
+        self._validate_domain_events(
+            current_state=current.game_state,
+            new_state=new_state,
+            events=events,
+            request_id=execution.execution_id,
+        )
+        if new_state.rule_agendas.get(agenda.agenda_id) != agenda:
+            raise ContractError("GameState 未包含待提交的 Agenda 游标")
+
+        staged = replace(
+            current,
+            game_state=new_state.model_copy(deep=True),
+            revision=str(new_state.event_sequence),
+            domain_events=current.domain_events
+            + tuple(event.model_copy(deep=True) for event in events),
+        )
+        if self._before_commit is not None:
+            self._before_commit(self._room_id)
+        # 状态与 execution 最后一起发布，异常不会暴露半提交结果。
+        self._record.data = staged
+        self._agenda_step_executions[execution.execution_id] = execution.model_copy(
+            deep=True
+        )
         self._committed = True
 
     def close(self) -> None:

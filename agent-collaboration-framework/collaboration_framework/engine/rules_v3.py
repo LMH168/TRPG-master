@@ -345,8 +345,25 @@ def agenda_claim_key(agenda: RuleAgenda) -> tuple[int, int, str, str]:
 
 
 def agenda_is_claimable(agenda: RuleAgenda, *, now: datetime) -> bool:
+    """判断 Agenda 是否可以由自动执行器接管。
+
+    等待玩家和主动检定必须由新的玩家 Turn 恢复；其余阻塞点都属于确定性后台
+    工作，不能因为状态名不是 ``running`` 而永久滞留。
+    """
+
     return (
-        agenda.status == "running"
+        (
+            agenda.status
+            in {
+                "running",
+                "awaiting_passive_check",
+                "awaiting_presentation",
+            }
+            or (
+                agenda.status == "awaiting_active_check"
+                and agenda.pending_check_id is not None
+            )
+        )
         and (agenda.next_attempt_at is None or agenda.next_attempt_at <= now)
         and (agenda.lease_expires_at is None or agenda.lease_expires_at <= now)
     )

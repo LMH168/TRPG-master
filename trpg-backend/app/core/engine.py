@@ -3,6 +3,7 @@
 from collaboration_framework.engine import (
     AdjudicationEngineService,
     DiceRoller,
+    RuleAgendaExecutor,
     RuleEngineService,
 )
 
@@ -30,11 +31,17 @@ _dice = (
     else None
 )
 adjudication_engine_service = AdjudicationEngineService(engine_store, dice=_dice)
+rule_agenda_executor = RuleAgendaExecutor(
+    engine_store,
+    engine=adjudication_engine_service,
+    dice=_dice,
+)
 rule_engine_service = RuleEngineService(engine_store)
 
 __all__ = [
     "adjudication_engine_service",
     "action_plan_store",
     "engine_store",
+    "rule_agenda_executor",
     "rule_engine_service",
 ]
