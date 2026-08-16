@@ -10,16 +10,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from hashlib import sha256
 
 from collaboration_framework.contracts import (
     AdjudicatedCheckStep,
     AgentMatchTriggerSpec,
     AllCondition,
     AnyCondition,
-    ConditionExpr,
-    EffectStep,
     CheckStep,
+    ConditionExpr,
     ContractError,
+    EffectStep,
     EventTriggerSpec,
     FinishStep,
     ModuleContentV3,
@@ -222,10 +223,29 @@ def create_rule_agenda(
     correlation_id: str,
     root_source: AgendaSource,
     revision: str,
+    origin_turn_id: str | None = None,
+    active_turn_id: str | None = None,
+    player_id: str | None = None,
+    actor_id: str | None = None,
+    current_source_event_id: str | None = None,
 ) -> RuleAgenda:
-    """Create the durable root before any blocking Rule step can be reached."""
+    """创建持久 Agenda；完整可信身份存在时新写 v2，否则保留旧生产兼容。"""
+
+    trusted = (
+        origin_turn_id,
+        active_turn_id,
+        player_id,
+        actor_id,
+        current_source_event_id,
+    )
+    if any(value is not None for value in trusted) and any(
+        value is None for value in trusted
+    ):
+        raise ContractError("RuleAgenda v2 可信身份必须一次性完整提供")
+    schema_version = 2 if all(value is not None for value in trusted) else 1
 
     return RuleAgenda(
+        schema_version=schema_version,
         agenda_id=agenda_id,
         room_id=room_id,
         module_id=module.module_id,
@@ -233,7 +253,40 @@ def create_rule_agenda(
         correlation_id=correlation_id,
         root_source=root_source,
         revision=revision,
+        origin_turn_id=origin_turn_id,
+        active_turn_id=active_turn_id,
+        player_id=player_id,
+        actor_id=actor_id,
+        current_source_event_id=current_source_event_id,
     )
+
+
+def agenda_step_execution_id(
+    *,
+    schema_version: int,
+    module_id: str,
+    module_version: str,
+    agenda_id: str,
+    source_event_id: str,
+    rule_id: str,
+    branch_id: str,
+    step_id: str,
+) -> str:
+    """按不可变 Rule 身份生成跨重试稳定的 Agenda 步骤执行 ID。"""
+
+    parts = (
+        str(schema_version),
+        module_id,
+        module_version,
+        agenda_id,
+        source_event_id,
+        rule_id,
+        branch_id,
+        step_id,
+    )
+    if any(not part for part in parts):
+        raise ContractError("Agenda execution identity 字段不能为空")
+    return sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
 
 def agenda_item_for_event(rule: RuleSpecV3, event: DomainEvent) -> AgendaItem:
@@ -284,8 +337,10 @@ def agenda_claim_key(agenda: RuleAgenda) -> tuple[int, int, str, str]:
 
 
 def agenda_is_claimable(agenda: RuleAgenda, *, now: datetime) -> bool:
-    return agenda.status == "running" and (
-        agenda.lease_expires_at is None or agenda.lease_expires_at <= now
+    return (
+        agenda.status == "running"
+        and (agenda.next_attempt_at is None or agenda.next_attempt_at <= now)
+        and (agenda.lease_expires_at is None or agenda.lease_expires_at <= now)
     )
 
 
@@ -314,8 +369,9 @@ __all__ = [
     "agenda_item_for_event",
     "agenda_item_key",
     "agenda_status_for_walk",
-    "create_rule_agenda",
+    "agenda_step_execution_id",
     "agent_match_scope_admits",
+    "create_rule_agenda",
     "effects_after_cancel",
     "effects_after_degree",
     "evaluate_condition",

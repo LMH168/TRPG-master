@@ -482,7 +482,48 @@ class AwaitPlayerInputStep(ContractModel):
 
     id: Identifier
     kind: Literal["await_player_input"] = "await_player_input"
-    resume_step_id: Identifier
+    schema_version: Literal[1, 2] = 1
+    resume_step_id: Identifier | None = None
+    boundary_id: Identifier | None = None
+    player_safe_prompt: str | None = Field(default=None, min_length=1, max_length=1000)
+    options: tuple[RuleInputOption, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_versioned_input_boundary(self) -> AwaitPlayerInputStep:
+        """旧步骤保留单一路径，新步骤必须发布有限且玩家安全的候选。"""
+
+        if self.schema_version == 1:
+            if self.resume_step_id is None:
+                raise ValueError("AwaitPlayerInputStep v1 必须包含 resume_step_id")
+            if self.boundary_id is not None or self.player_safe_prompt or self.options:
+                raise ValueError("AwaitPlayerInputStep v1 不得包含 v2 等待候选")
+            return self
+        if self.resume_step_id is not None:
+            raise ValueError("AwaitPlayerInputStep v2 不再使用 resume_step_id")
+        if (
+            self.boundary_id is None
+            or self.player_safe_prompt is None
+            or not self.options
+        ):
+            raise ValueError(
+                "AwaitPlayerInputStep v2 必须包含 boundary、Prompt 和 options"
+            )
+        _require_unique_ids(self.options, "Rule input option")
+        return self
+
+
+class RuleInputOption(ContractModel):
+    """模组发布的有限恢复选项；next_step_id 永远不进入玩家输入。"""
+
+    id: Identifier
+    semantic_hints: tuple[str, ...] = Field(min_length=1, max_length=8)
+    next_step_id: Identifier
+
+    @model_validator(mode="after")
+    def validate_hints(self) -> RuleInputOption:
+        if any(not hint.strip() for hint in self.semantic_hints):
+            raise ValueError("RuleInputOption semantic_hints 不能为空")
+        return self
 
 
 class FinishStep(ContractModel):
@@ -540,7 +581,10 @@ def _step_targets(step: RuleStepSpec) -> tuple[str, ...]:
             return (*routes, step.cancel_step_id)
         return routes
     if isinstance(step, AwaitPlayerInputStep):
-        return (step.resume_step_id,)
+        if step.schema_version == 1:
+            assert step.resume_step_id is not None
+            return (step.resume_step_id,)
+        return tuple(option.next_step_id for option in step.options)
     if isinstance(step, FinishStep):
         return ()
     return (step.next_step_id,)
@@ -802,6 +846,7 @@ __all__ = [
     "PresentationStep",
     "RuleCheckSpec",
     "RuleExecutionSpec",
+    "RuleInputOption",
     "RuleLimitsSpec",
     "RulePresentationSpec",
     "RuleSpecV3",
