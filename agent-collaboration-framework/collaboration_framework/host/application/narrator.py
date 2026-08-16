@@ -346,7 +346,7 @@ class Narrator:
         if subject_rejection is not None:
             raise NarrationValidationError(subject_rejection)
         # 普通单动作叙事同样只能描述最终 PlayerView 已确认的持久状态，
-        # 避免它绕过 ActionPlanNarrator 的证据边界自行补写 NPC 后果。
+        # 避免它绕过 Narrator 的证据边界自行补写 NPC 后果。
         committed_results = tuple(
             result
             for step in completed_steps

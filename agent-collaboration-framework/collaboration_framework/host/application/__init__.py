@@ -1,9 +1,5 @@
 """Public Host application services and validation boundaries."""
 
-from .action_plan_narrator import (
-    ActionPlanNarrationValidationError,
-    ActionPlanNarrator,
-)
 from .action_plan_orchestrator import ActionPlanOrchestrator, HostTurnDecisionExecutor
 from .action_plan_parser import HostTurnDecisionParser
 from .context_assembler import ContextAssembler
@@ -51,8 +47,6 @@ __all__ = [
     "CORE_ENGINE_ACTIONS",
     "REFERENCE_MODULE_ACTIONS",
     "RULE_ENGINE_ACTION_VOCABULARY",
-    "ActionPlanNarrationValidationError",
-    "ActionPlanNarrator",
     "ActionPlanOrchestrator",
     "BoundToolRegistry",
     "ContextAssembler",

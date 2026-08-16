@@ -71,7 +71,7 @@ Canon 与 Runtime 的 Location/Entity 当前位置、可提交的 Ending id、`c
 
 - 只进入 planner（单动作）与步骤裁决两处模型调用，通过
   `HostAgentContext.keeper_capabilities` 与 `ActionPlanStepContext.keeper_capabilities`；
-- 不进入 `ActionPlanNarrationContext`——Narrator 仍然只能引用已提交的 evidence；
+- 不进入 `NarrationContext`——Narrator 仍然只能引用已提交的 evidence；
 - 不出现在任何发往客户端的 payload 里；
 - 与配套 PlayerView 必须同 revision，两者由 schema 校验强制配对；
 - 它只是词汇表，不是授权：Engine 在 submit 时用同一份快照重新校验每一个 id。

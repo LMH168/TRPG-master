@@ -19,7 +19,7 @@ from collaboration_framework.host.adapters.fakes import (
     FakeNarrationModel,
     FakeOpeningNarrationModel,
 )
-from collaboration_framework.host.application import ActionPlanNarrator
+from collaboration_framework.host.application import Narrator
 from collaboration_framework.host.schemas import (
     IntentContext,
     NarrationContext,
@@ -161,7 +161,7 @@ class _WsSingleActionCheckPlanner:
         )
 
 
-class _WsCountingActionPlanNarration:
+class _WsCountingNarration:
     def __init__(self) -> None:
         self.calls = 0
 
@@ -243,8 +243,8 @@ class _WsCountingOpening:
         return await self._fake.generate(context)
 
 
-class _FailOnceActionPlanNarrator:
-    def __init__(self, delegate: ActionPlanNarrator) -> None:
+class _FailOnceNarrator:
+    def __init__(self, delegate: Narrator) -> None:
         self.delegate = delegate
         self.calls = 0
 
@@ -1365,7 +1365,7 @@ def test_single_action_pending_resumes_without_plan_run(
     complete_character(sync_client, room["roomId"], room["reconnectToken"])
     start_game(sync_client, room, token)
     planner = _WsSingleActionCheckPlanner()
-    narration_model = _WsCountingActionPlanNarration()
+    narration_model = _WsCountingNarration()
     monkeypatch.setattr(
         reliable_turn_runtime.action_plan_turn_application,
         "_planner",
@@ -1374,7 +1374,7 @@ def test_single_action_pending_resumes_without_plan_run(
     monkeypatch.setattr(
         reliable_turn_runtime.action_plan_turn_application,
         "_narrator",
-        ActionPlanNarrator(narration_model),
+        Narrator(narration_model),
     )
     monkeypatch.setattr(
         ws_controller.adjudication_engine_service,
@@ -1566,17 +1566,17 @@ def test_single_action_pending_resumes_without_plan_run(
     assert "_turnCompletion" not in conversation_narration[0]["payload"]
 
 
-def test_action_plan_narrator_failure_uses_fallback_without_blocking_room(
+def test_narrator_failure_uses_fallback_without_blocking_room(
     sync_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    token = register_and_login(sync_client, "action_plan_narrator_retry")
+    token = register_and_login(sync_client, "narrator_retry")
     room = create_room(sync_client, token)
     advance_to_building(sync_client, room)
     complete_character(sync_client, room["roomId"], room["reconnectToken"])
     start_game(sync_client, room, token)
     application = reliable_turn_runtime.action_plan_turn_application
-    narrator = _FailOnceActionPlanNarrator(application._narrator)
+    narrator = _FailOnceNarrator(application._narrator)
     monkeypatch.setattr(application, "_narrator", narrator)
     action = {
         "type": "action.plan.submit",
@@ -1622,7 +1622,7 @@ def test_subject_ownership_failure_retries_before_publishing_narration(
     monkeypatch.setattr(
         reliable_turn_runtime.action_plan_turn_application,
         "_narrator",
-        ActionPlanNarrator(narration_model),
+        Narrator(narration_model),
     )
     action_id = "subject-ownership-retry-308"
 

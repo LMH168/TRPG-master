@@ -12,17 +12,17 @@ from collaboration_framework.contracts import (
     ActionPlan,
     ActionPlanPolicy,
     ActionPlanStep,
-    AdjudicationExecution,
     ActionResult,
+    AdjudicationExecution,
     CommittedResult,
     ContractModel,
+    Intent,
     JsonObject,
     KeeperCapabilityView,
     NarrationEvidence,
     PlayerInput,
     PlayerView,
     SingleActionProposal,
-    Intent,
     ValidationFeedback,
     WorldClockView,
 )
@@ -514,8 +514,3 @@ class NarrationOutput(ContractModel):
     text: str = Field(min_length=1)
     claimed_evidence_refs: tuple[str, ...] = ()
     suggested_actions: tuple[str, ...] = Field(default=(), max_length=3)
-
-
-# PR1 只统一规范名称，旧名称保留为临时导入兼容；PR2 切换完成后删除。
-ActionPlanNarrationContext = NarrationContext
-ActionPlanNarrationOutput = NarrationOutput

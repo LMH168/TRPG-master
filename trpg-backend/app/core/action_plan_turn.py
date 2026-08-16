@@ -68,12 +68,12 @@ from collaboration_framework.host.ports import (
 )
 from collaboration_framework.host.schemas import (
     ActionPlanAdvanceResult,
-    ActionPlanNarrationContext,
-    ActionPlanNarrationOutput,
     ActionPlanRun,
     ActionPlanStepContext,
     CompletedPlanStepSummary,
     HostAgentContext,
+    NarrationContext,
+    NarrationOutput,
     RecentHistoryBudget,
     RecentTurnContext,
     SingleActionClarificationResult,
@@ -132,7 +132,7 @@ class ActionPlanTurnResult:
     player_view: PlayerView
     status: str
     execution: AdjudicationExecution | None = None
-    narration: ActionPlanNarrationOutput | None = None
+    narration: NarrationOutput | None = None
     plan_id: str | None = None
 
     @property
@@ -742,7 +742,7 @@ def _has_unmatched_explicit_travel_destination(view: PlayerView, text: str) -> b
     return _explicit_travel_phrase(text) is not None and _match_travel_target(view, text) is None
 
 
-def _deterministic_clarification_text(context: ActionPlanNarrationContext) -> str:
+def _deterministic_clarification_text(context: NarrationContext) -> str:
     """根据已提交步骤生成不会推翻权威状态的澄清文案。"""
 
     successful_steps = tuple(
@@ -795,8 +795,8 @@ def _best_label_overlap(text: str, labels: tuple[str, ...]) -> str | None:
     return max(candidates, key=lambda item: (len(item), item)) if candidates else None
 
 
-class DeterministicActionPlanNarrationModel:
-    async def generate(self, context: ActionPlanNarrationContext) -> JsonObject:
+class DeterministicNarrationModel:
+    async def generate(self, context: NarrationContext) -> JsonObject:
         completed = "；".join(
             _quote_action_summary(step.semantic_goal) for step in context.completed_steps
         )
@@ -1047,7 +1047,7 @@ class ActionPlanTurnApplication:
             player_input=player_input,
             player_view=player_view,
             status="needs_clarification",
-            narration=ActionPlanNarrationOutput(
+            narration=NarrationOutput(
                 kind="clarification",
                 text="我暂时没能准确理解这次行动。请再明确一下你想做什么，以及行动的对象或地点。",
             ),
@@ -1555,7 +1555,7 @@ class ActionPlanTurnApplication:
             narration_evidence=execution.narration_evidence,
             committed_results=execution.committed_results,
         )
-        context = ActionPlanNarrationContext(
+        context = NarrationContext(
             background=result.player_view.background,
             player_input=player_input,
             plan_goal=summary,
@@ -1589,7 +1589,7 @@ class ActionPlanTurnApplication:
     ) -> ActionPlanTurnResult:
         """把未发生任何权威写入的单动作失败转换成自然主持人澄清。"""
 
-        context = ActionPlanNarrationContext(
+        context = NarrationContext(
             background=result.player_view.background,
             player_input=player_input,
             plan_goal=summary,
@@ -1626,8 +1626,8 @@ class ActionPlanTurnApplication:
 
     async def _narrate(
         self,
-        context: ActionPlanNarrationContext,
-    ) -> ActionPlanNarrationOutput:
+        context: NarrationContext,
+    ) -> NarrationOutput:
         if any(
             getattr(step, "goal_outcome", "legacy_unknown")
             in {"partially_achieved", "not_achieved"}
@@ -1697,8 +1697,8 @@ class ActionPlanTurnApplication:
 
     @staticmethod
     def _required_evidence_fallback(
-        context: ActionPlanNarrationContext,
-    ) -> ActionPlanNarrationOutput:
+        context: NarrationContext,
+    ) -> NarrationOutput:
         required = tuple(item for item in context.narration_evidence if item.required_in_narration)
         if not required:
             raise TurnExecutionError(
@@ -1712,15 +1712,15 @@ class ActionPlanTurnApplication:
             description = item.description.strip()
             if description:
                 sentences.append(description.rstrip("。！？!?；;，,") + "。")
-        return ActionPlanNarrationOutput(
+        return NarrationOutput(
             text="".join(sentences),
             claimed_evidence_refs=tuple(item.ref for item in required),
         )
 
     @staticmethod
     def _deterministic_narration_fallback(
-        context: ActionPlanNarrationContext,
-    ) -> ActionPlanNarrationOutput:
+        context: NarrationContext,
+    ) -> NarrationOutput:
         """只复述结构化已提交结果，绝不从 semantic_goal 推断持久后果。"""
 
         if context.termination_status == "needs_clarification":
@@ -1736,13 +1736,13 @@ class ActionPlanTurnApplication:
                 word in context.player_input.utterance for word in ("尸体", "遗体")
             ):
                 names = "、".join(entity.name for entity in visible_dead)
-                return ActionPlanNarrationOutput(
+                return NarrationOutput(
                     kind="clarification",
                     text=(
                         f"{names}的尸体就在当前场景中。你想检查尸体、搜查随身物品，还是处理现场？"
                     ),
                 )
-            return ActionPlanNarrationOutput(
+            return NarrationOutput(
                 kind="clarification",
                 text=_deterministic_clarification_text(context),
             )
@@ -1807,7 +1807,7 @@ class ActionPlanTurnApplication:
             fallback_text = status_text + "".join(statements)
         else:
             fallback_text = "".join(statements) or status_text
-        return ActionPlanNarrationOutput(
+        return NarrationOutput(
             # 失败或取消时即使存在失败分支效果，也必须先明确行动结果，不能让
             # 玩家把后面的状态变化误读成目标已经成功达成。
             text=fallback_text,
@@ -1930,7 +1930,7 @@ def build_action_plan_turn_application(
     if resolved.host_model_provider == "fake":
         planner = DeterministicHostTurnDecisionModel()
         adjudicator = _DeterministicStepAdjudicator()
-        narration_model = DeterministicActionPlanNarrationModel()
+        narration_model = DeterministicNarrationModel()
     else:
         if client is None:
             if resolved.host_model_provider == "deepseek":
@@ -2364,7 +2364,7 @@ _ACTION_FAMILY_HINTS: dict[str, tuple[str, ...]] = {
 __all__ = [
     "ActionPlanTurnApplication",
     "ActionPlanTurnResult",
-    "DeterministicActionPlanNarrationModel",
+    "DeterministicNarrationModel",
     "DeterministicHostTurnDecisionModel",
     "HostTurnDecisionModel",
     "build_action_plan_turn_application",

@@ -49,7 +49,7 @@ from pydantic import ValidationError
 
 from app.adapters.deepseek_models import DeepSeekChatCompletionsJsonClient
 from app.adapters.openai_models import (
-    _ACTION_PLAN_NARRATION_INSTRUCTIONS,
+    _NARRATION_INSTRUCTIONS,
     OpenAIResponsesJsonClient,
     PromptActionPlanStepAdjudicator,
     PromptHostTurnDecisionModel,
@@ -75,14 +75,14 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_action_plan_narration_uses_final_post_roll_outcome() -> None:
     """叙事不能把消耗幸运或强推之前的失败当成最终结果。"""
 
-    assert "消耗幸运" in _ACTION_PLAN_NARRATION_INSTRUCTIONS
-    assert "outcome=success" in _ACTION_PLAN_NARRATION_INSTRUCTIONS
-    assert "最终权威结果" in _ACTION_PLAN_NARRATION_INSTRUCTIONS
+    assert "消耗幸运" in _NARRATION_INSTRUCTIONS
+    assert "outcome=success" in _NARRATION_INSTRUCTIONS
+    assert "最终权威结果" in _NARRATION_INSTRUCTIONS
 
 
 def test_action_plan_narration_preserves_completed_travel_before_clarification() -> None:
-    assert "completed_steps 已有成功的旅行步骤" in (_ACTION_PLAN_NARRATION_INSTRUCTIONS)
-    assert "绝不得说\n该地点没找到" in _ACTION_PLAN_NARRATION_INSTRUCTIONS
+    assert "completed_steps 已有成功的旅行步骤" in (_NARRATION_INSTRUCTIONS)
+    assert "绝不得说\n该地点没找到" in _NARRATION_INSTRUCTIONS
 
 
 def load_paper_chase() -> ModuleContent:
@@ -404,9 +404,7 @@ async def test_prompts_treat_scene_orientation_as_narration_not_form_validation(
     assert "claimed_fact_ids" in narration_instructions
     assert "JSON/schema 片段" in narration_instructions
     assert "Markdown JSON 代码块" in narration_instructions
-    assert "同一 target_id 确实出现在最终 player_view.inventory" in (
-        _ACTION_PLAN_NARRATION_INSTRUCTIONS
-    )
+    assert "同一 target_id 确实出现在最终 player_view.inventory" in (_NARRATION_INSTRUCTIONS)
     serialized_view = client.inputs["trpg_narration"]["player_view"]
     assert serialized_view["scene"]["visible_entities"][0]["id"] == "thomas"
     assert serialized_view["scene"]["description"] == "托马斯坐在你面前，等待你回应他的委托。"

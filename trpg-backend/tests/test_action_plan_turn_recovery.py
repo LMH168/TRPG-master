@@ -13,12 +13,12 @@ from collaboration_framework.contracts import (
     PostRollDecisionRequest,
 )
 from collaboration_framework.host.application import (
-    ActionPlanNarrationValidationError,
+    NarrationValidationError,
 )
-from collaboration_framework.host.application.action_plan_narrator import (
+from collaboration_framework.host.application.narrator import (
     unsupported_focus_shift_claim,
 )
-from collaboration_framework.host.schemas import ActionPlanNarrationContext, RecentTurnContext
+from collaboration_framework.host.schemas import NarrationContext, RecentTurnContext
 
 from app.core.action_plan_turn import ActionPlanTurnApplication
 
@@ -401,7 +401,7 @@ def test_planning_failure_returns_host_reply_without_execution() -> None:
 @pytest.mark.asyncio
 async def test_narration_falls_back_to_required_player_safe_evidence() -> None:
     application = object.__new__(ActionPlanTurnApplication)
-    narrate = AsyncMock(side_effect=ActionPlanNarrationValidationError("required_evidence_missing"))
+    narrate = AsyncMock(side_effect=NarrationValidationError("required_evidence_missing"))
     application._narrator = SimpleNamespace(narrate=narrate)
     evidence = NarrationEvidence(
         ref="evt-crypt-discovered",
@@ -412,7 +412,7 @@ async def test_narration_falls_back_to_required_player_safe_evidence() -> None:
         required_in_narration=True,
     )
     context = cast(
-        ActionPlanNarrationContext,
+        NarrationContext,
         _NarrationContextStub(evidence, "resolved"),
     )
 
@@ -431,7 +431,7 @@ async def test_narration_falls_back_to_required_player_safe_evidence() -> None:
 @pytest.mark.asyncio
 async def test_required_evidence_fallback_never_changes_clarification_scope() -> None:
     application = object.__new__(ActionPlanTurnApplication)
-    narrate = AsyncMock(side_effect=ActionPlanNarrationValidationError("required_evidence_missing"))
+    narrate = AsyncMock(side_effect=NarrationValidationError("required_evidence_missing"))
     application._narrator = SimpleNamespace(narrate=narrate)
     evidence = NarrationEvidence(
         ref="evt-crypt-discovered",
@@ -441,7 +441,7 @@ async def test_required_evidence_fallback_never_changes_clarification_scope() ->
         required_in_narration=True,
     )
     context = cast(
-        ActionPlanNarrationContext,
+        NarrationContext,
         _NarrationContextStub(evidence, "needs_clarification"),
     )
 

@@ -11,7 +11,7 @@ from collaboration_framework.contracts import (
     SingleActionDecision,
     SingleActionProposal,
 )
-from collaboration_framework.host.application import ActionPlanNarrator
+from collaboration_framework.host.application import Narrator
 
 from .application_adapter import InMemoryRuntimeAdapter
 from .contracts import BaselineFault, BaselineScenario, BaselineTurn, BaselineTurnResult
@@ -168,7 +168,7 @@ class FaultRecoveryAdapter(InMemoryRuntimeAdapter):
             self._application._planner,
             self._controller,
         )
-        self._application._narrator = ActionPlanNarrator(
+        self._application._narrator = Narrator(
             _FaultingNarrationModel(self._narration_model, self._controller)
         )
         self._application._dispatcher._executor = _FaultingEngine(
