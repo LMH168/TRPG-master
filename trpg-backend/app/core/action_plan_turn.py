@@ -310,6 +310,9 @@ def _proposal_from_adjudication(adjudication: ActionAdjudication) -> SingleActio
             "semantic_goal": adjudication.summary,
             "semantic_focus": semantic_focus,
             "anchor_ref": anchor_ref,
+            "target_interaction": (
+                completion["interaction"] if completion["kind"] == "process" else "physical"
+            ),
             "method_family": adjudication.method.family,
             "method_description": adjudication.method.description,
             # Legacy ActionAdjudication 没有结构化实施手段；确定性兼容路径只声明

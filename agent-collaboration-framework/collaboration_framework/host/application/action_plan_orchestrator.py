@@ -1119,6 +1119,8 @@ class ActionPlanOrchestrator:
                 != current.repair_proposal_baseline.semantic_goal
                 or candidate.method_family
                 != current.repair_proposal_baseline.method_family
+                or candidate.target_interaction
+                != current.repair_proposal_baseline.target_interaction
                 or candidate.completion != current.repair_proposal_baseline.completion
                 or candidate.execution_means
                 != current.repair_proposal_baseline.execution_means
@@ -1823,6 +1825,7 @@ class HostTurnDecisionExecutor:
                     not isinstance(repaired, SingleActionProposal)
                     or repaired.semantic_goal != proposal.semantic_goal
                     or repaired.method_family != proposal.method_family
+                    or repaired.target_interaction != proposal.target_interaction
                 ):
                     return SingleActionClarificationResult(
                         player_view=view,

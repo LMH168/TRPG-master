@@ -39,10 +39,10 @@ from collaboration_framework.contracts.proposal import (
     AdvanceWorldTimeEffectProposal,
     ChangeEntityStateEffectProposal,
     ChangeItemConditionEffectProposal,
-    EffectsGoalCompletionProposal,
     CommitTerminalEndingEffectProposal,
     ConsumeEntityEffectProposal,
     EffectProposal,
+    EffectsGoalCompletionProposal,
     EnsureRuntimeEntityEffectProposal,
     EnsureRuntimeLocationEffectProposal,
     EnterLocationEffectProposal,
@@ -152,6 +152,13 @@ class ProposalCompiler:
                 "RULE_EFFECT_OVERRIDE",
                 "规则已经拥有结果，不能同时提交 Host 结果",
             )
+        if proposal.rule_ref is not None and proposal.target_interaction is None:
+            # 规则可以拥有最终 Effect，但不能替 Host 补猜它如何作用于目标；否则
+            # 已死亡 NPC 仍可能借一条社交规则进入检定并产出新的回应。
+            self._reject(
+                "TARGET_INTERACTION_REQUIRED",
+                "当前行动缺少目标交互类型，请重新确认行动",
+            )
         self._reject_forbidden_host_effects(
             (*proposal.success_effect_proposals, *proposal.failure_effect_proposals)
         )
@@ -207,6 +214,7 @@ class ProposalCompiler:
             self._validate_completion_contract(
                 runtime,
                 request,
+                target_id=focus.id,
                 completion_mode=completion_mode,
                 process_interaction=process_interaction,
                 requirements=completion_requirements,
@@ -247,6 +255,7 @@ class ProposalCompiler:
         runtime: EngineRuntimeSnapshot,
         request: SubmitProposalRequest,
         *,
+        target_id: str,
         completion_mode: str,
         process_interaction: str | None,
         requirements: tuple[ActionEffect, ...],
@@ -255,21 +264,24 @@ class ProposalCompiler:
     ) -> None:
         """校验目标完成条件、成功 Effect 和当前权威状态之间的一致性。"""
 
+        # target_interaction 独立于完成条件：规则动作即使声明 effects，也必须先
+        # 满足目标当前能够参与该交互的前置条件。
+        interaction = request.proposal.target_interaction or process_interaction
+        if interaction == "social":
+            state = runtime.game_state.entities.get(target_id, {})
+            if state.get("consciousness") in {"dead", "unconscious"}:
+                self._reject(
+                    "TARGET_NOT_RESPONSIVE",
+                    "目标当前无法回应这次交互",
+                    repairability="requires_player_choice",
+                    fault="player",
+                )
+
         if completion_mode == "process":
             if any(
                 not isinstance(item, NarrativeOnlyEffect) for item in success_effects
             ):
                 self._reject("GOAL_EFFECT_MISMATCH", "过程行动不能夹带未声明的持久结果")
-            if process_interaction == "social":
-                target_id = request.proposal.semantic_focus.id
-                state = runtime.game_state.entities.get(target_id, {})
-                if state.get("consciousness") in {"dead", "unconscious"}:
-                    self._reject(
-                        "TARGET_NOT_RESPONSIVE",
-                        "目标当前无法回应这次交互",
-                        repairability="requires_player_choice",
-                        fault="player",
-                    )
             return
         if completion_mode != "effects":
             self._reject("GOAL_COMPLETION_REQUIRED", "新动作必须声明目标完成条件")

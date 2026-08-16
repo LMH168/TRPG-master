@@ -56,9 +56,11 @@ ProposalRef 引用；当前视图对象使用其实际 kind/id，本次新建对
 runtime_entity 的逻辑别名，并先 ensure 再引用。
 
 单动作固定输出 schema_version=2，必须逐字保留输入中冻结的 semantic_goal，并给出
-semantic_focus、可选 anchor_ref、开放字符串
-method_family/method_description、execution_means、check_proposal 及有序的成功/失败
-Effect Proposal。
+semantic_focus、可选 anchor_ref、开放字符串 method_family/method_description、
+target_interaction、execution_means、check_proposal 及有序的成功/失败 Effect Proposal。
+target_interaction 描述动作如何作用于目标：观察取 observe，需要目标回应或配合取 social，
+搬动、攻击、搜查实体等物理作用取 physical，确实不属于前三类才取 other。它与 completion
+独立：命中模组规则或声明持久后置条件时也不能省略。
 每个动作都必须声明结构化实施手段：只依赖角色自身时使用 intrinsic；依赖装备或工具时使用 item
 并引用当前 PlayerView.inventory 中的具体 id；依赖现场对象时使用 environment。不能根据玩家声称
 “持有某物”虚构物品或引用远端物品。纯叙事动作
@@ -443,9 +445,11 @@ class PromptHostTurnDecisionModel:
                 )
                 proposal = _HOST_DECISION_PROPOSAL_ADAPTER.validate_python(raw)
                 if isinstance(proposal, SingleActionProposal) and (
-                    proposal.schema_version != 2 or proposal.execution_means is None
+                    proposal.schema_version != 2
+                    or proposal.execution_means is None
+                    or proposal.target_interaction is None
                 ):
-                    raise ValueError("生产单动作必须使用 Proposal v2 并声明实施手段")
+                    raise ValueError("生产单动作必须使用 Proposal v2 并声明实施手段与目标交互类型")
                 return proposal
             except TurnExecutionError as exc:
                 if exc.code != "MODEL_OUTPUT_UNREADABLE":
@@ -522,8 +526,12 @@ class PromptActionPlanStepAdjudicator:
 
         try:
             proposal = SingleActionProposal.model_validate(raw)
-            if proposal.schema_version != 2 or proposal.execution_means is None:
-                raise ValueError("生产计划步骤必须使用 Proposal v2 并声明实施手段")
+            if (
+                proposal.schema_version != 2
+                or proposal.execution_means is None
+                or proposal.target_interaction is None
+            ):
+                raise ValueError("生产计划步骤必须使用 Proposal v2 并声明实施手段与目标交互类型")
             return proposal
         except (ValidationError, ValueError) as exc:
             # HTTP 与 JSON 都成功也不代表输出符合 Proposal 契约；这一类同样
