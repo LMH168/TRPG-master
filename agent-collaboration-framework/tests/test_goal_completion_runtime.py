@@ -30,6 +30,7 @@ from collaboration_framework.engine import (
 )
 from collaboration_framework.engine.adjudication import GoalCompletionEvaluationError
 from collaboration_framework.engine.initialization import create_initial_game_state
+from collaboration_framework.engine.timeline import advance_to_target
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = (
@@ -554,6 +555,21 @@ def test_narrative_only_cannot_silently_complete_persistent_goal() -> None:
             committed_events=(),
             actor_id=ACTOR,
         )
+
+
+def test_advance_world_time_preserves_intermediate_points() -> None:
+    """跨夜推进必须逐点产生时间状态，不能直接跳过中间剧情触发点。"""
+
+    module = ModuleContentV3.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    state = create_initial_game_state(module, room_id=ROOM, actors={})
+    points = advance_to_target(module, state.world_time, "hour_06")
+
+    assert [item.current_point_id for item in points] == [
+        "hour_18",
+        "hour_20",
+        "hour_00",
+        "hour_06",
+    ]
 
 
 @pytest.mark.asyncio

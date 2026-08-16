@@ -101,7 +101,11 @@ from .rules_v3 import (
     resolve_rule_option,
     walk_rule,
 )
-from .timeline import advanced_to_next, next_point_after, time_advance_block_reason
+from .timeline import (
+    advance_to_target,
+    advanced_to_next,
+    time_advance_block_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1685,7 +1689,11 @@ class AdjudicationEngineService:
                         effect.location_id,
                     )
             elif isinstance(effect, AdvanceWorldTimeEffect):
-                world_time = advanced_to_next(runtime.v3, world_time)
+                world_time = (
+                    advance_to_target(runtime.v3, world_time, effect.to_point_id)[-1]
+                    if effect.to_point_id is not None
+                    else advanced_to_next(runtime.v3, world_time)
+                )
 
     def _validated_options(
         self,
@@ -1923,20 +1931,21 @@ class AdjudicationEngineService:
                     player_safe_reason="当前存在需要玩家先处理的事项，不能推进时间",
                     internal_reason=blocked,
                 )
-            target, _ = next_point_after(
-                runtime.v3, world_time if world_time is not None else state.world_time
-            )
-            if effect.to_point_id is not None and effect.to_point_id != target.id:
-                self._reject_validation(
-                    "TIME_POINT_MISMATCH",
-                    repairability="auto_repairable",
-                    fault="agent",
-                    player_safe_reason="当前时间目标与世界时间线不一致",
-                    internal_reason=(
-                        "advance_world_time 声明的时间点不是时间线上的下一个点: "
-                        f"{effect.to_point_id} != {target.id}"
-                    ),
-                )
+            if effect.to_point_id is not None:
+                try:
+                    advance_to_target(
+                        runtime.v3,
+                        world_time if world_time is not None else state.world_time,
+                        effect.to_point_id,
+                    )
+                except ContractError as exc:
+                    self._reject_validation(
+                        "TIME_POINT_MISMATCH",
+                        repairability="auto_repairable",
+                        fault="agent",
+                        player_safe_reason="当前时间目标与世界时间线不一致",
+                        internal_reason=str(exc),
+                    )
         elif isinstance(effect, CommitTerminalEndingEffect):
             self._reject_validation(
                 "ENDING_REQUIRES_DRAFT",
@@ -2908,15 +2917,31 @@ class AdjudicationEngineService:
             event_type = "entity.consumed"
             payload = {"entity_id": effect.entity_id}
         elif isinstance(effect, AdvanceWorldTimeEffect):
-            advanced = advanced_to_next(runtime.v3, state.world_time)
-            state = state.model_copy(update={"world_time": advanced}, deep=True)
-            event_type = "time.point_entered"
-            payload = {
-                "point_id": advanced.current_point_id,
-                "day_index": advanced.current.day_index,
-                "hour_of_day": advanced.current.hour_of_day,
-                "time_of_day": advanced.time_of_day,
-            }
+            points = (
+                advance_to_target(runtime.v3, state.world_time, effect.to_point_id)
+                if effect.to_point_id is not None
+                else (advanced_to_next(runtime.v3, state.world_time),)
+            )
+            events: list[DomainEvent] = []
+            for index, advanced in enumerate(points, start=offset):
+                state = state.model_copy(update={"world_time": advanced}, deep=True)
+                events.append(
+                    self._event_from_state(
+                        state,
+                        room_id=room_id,
+                        offset=index,
+                        request_id=request_id,
+                        actor_id=actor_id,
+                        event_type="time.point_entered",
+                        payload={
+                            "point_id": advanced.current_point_id,
+                            "day_index": advanced.current.day_index,
+                            "hour_of_day": advanced.current.hour_of_day,
+                            "time_of_day": advanced.time_of_day,
+                        },
+                    )
+                )
+            return state, tuple(events)
         elif isinstance(effect, MarkCoreResolvedEffect):
             state = state.model_copy(update={"core_resolved": True}, deep=True)
             event_type = "core.resolved"
