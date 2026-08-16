@@ -3,7 +3,6 @@
 from .action_plan import (
     ActionPlanBusyError,
     ActionPlanConflictError,
-    ActionPlanNarrationModelPort,
     ActionPlanProgressObserver,
     ActionPlanRunStore,
     ActionPlanStepAdjudicator,
@@ -23,7 +22,6 @@ from .turn import TurnPort
 __all__ = [
     "ActionPlanBusyError",
     "ActionPlanConflictError",
-    "ActionPlanNarrationModelPort",
     "ActionPlanProgressObserver",
     "ActionPlanRunStore",
     "ActionPlanStepAdjudicator",

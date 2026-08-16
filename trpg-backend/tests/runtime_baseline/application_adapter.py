@@ -26,8 +26,8 @@ from collaboration_framework.engine import (
 )
 from collaboration_framework.engine.initialization import create_initial_game_state
 from collaboration_framework.engine.models import ActorResources, ActorState, GameState
-from collaboration_framework.host.application import ActionPlanNarrator
-from collaboration_framework.host.schemas import ActionPlanNarrationContext, HostAgentContext
+from collaboration_framework.host.application import Narrator
+from collaboration_framework.host.schemas import HostAgentContext, NarrationContext
 
 from app.core.action_plan_turn import (
     _proposal_from_adjudication,
@@ -112,7 +112,7 @@ class _EvidenceNarrationModel:
     def __init__(self) -> None:
         self.outputs: dict[str, dict[str, object]] = {}
 
-    async def generate(self, context: ActionPlanNarrationContext) -> dict[str, object]:
+    async def generate(self, context: NarrationContext) -> dict[str, object]:
         scripted = self.outputs.get(context.player_input.client_action_id)
         if scripted is not None:
             return dict(scripted)
@@ -255,7 +255,7 @@ class InMemoryRuntimeAdapter:
             if turn.narrator_output is not None
         }
         self._application._planner = self._planner
-        self._application._narrator = ActionPlanNarrator(self._narration_model)
+        self._application._narrator = Narrator(self._narration_model)
 
     def rebuild_application(self) -> None:
         """模拟进程重启后的依赖重组，同时保留已提交的权威 Store。"""

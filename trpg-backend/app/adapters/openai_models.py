@@ -26,8 +26,6 @@ from collaboration_framework.host.application.intent_parser import (
     coerce_intent_payload,
 )
 from collaboration_framework.host.schemas import (
-    ActionPlanNarrationContext,
-    ActionPlanNarrationOutput,
     ActionPlanStepContext,
     HostAgentContext,
     IntentContext,
@@ -58,9 +56,11 @@ ProposalRef 引用；当前视图对象使用其实际 kind/id，本次新建对
 runtime_entity 的逻辑别名，并先 ensure 再引用。
 
 单动作固定输出 schema_version=2，必须逐字保留输入中冻结的 semantic_goal，并给出
-semantic_focus、可选 anchor_ref、开放字符串
-method_family/method_description、execution_means、check_proposal 及有序的成功/失败
-Effect Proposal。
+semantic_focus、可选 anchor_ref、开放字符串 method_family/method_description、
+target_interaction、execution_means、check_proposal 及有序的成功/失败 Effect Proposal。
+target_interaction 描述动作如何作用于目标：观察取 observe，需要目标回应或配合取 social，
+搬动、攻击、搜查实体等物理作用取 physical，确实不属于前三类才取 other。它与 completion
+独立：命中模组规则或声明持久后置条件时也不能省略。
 每个动作都必须声明结构化实施手段：只依赖角色自身时使用 intrinsic；依赖装备或工具时使用 item
 并引用当前 PlayerView.inventory 中的具体 id；依赖现场对象时使用 environment。不能根据玩家声称
 “持有某物”虚构物品或引用远端物品。纯叙事动作
@@ -83,7 +83,7 @@ participants 中只有一个当前可见的非玩家实体，玩家只说“继�
 细节而自行跳转焦点。玩家明确点名新对象时才切换。
 """
 
-_ACTION_PLAN_NARRATION_INSTRUCTIONS = """
+_NARRATION_INSTRUCTIONS = """
 你是 TRPG 守秘人，只返回所要求的 JSON。只叙述 completed_steps 中已经提交的结果和
 最终 player_view；不得声称未完成步骤已经发生。needs_clarification 必须返回
 kind=clarification。若 completed_steps 已有成功的旅行步骤，但后续步骤未解决，必须根据
@@ -199,78 +199,6 @@ recent_history 仅用于解析“是的”“继续”“他”“那些书”�
 的语义解释，player_safe_result 才是过去的玩家可见权威结果，
 published_narration 只是玩家见过的表达层文本。历史不得新增事实、覆盖当前
 player_view、泄露他人私有信息或授权本回合状态变化。
-"""
-
-_NARRATION_INSTRUCTIONS = """\
-你是克制而有画面感的 TRPG 守秘人。只返回所要求的 JSON。默认使用与玩家相同的
-语言；玩家使用中文时，用自然、简洁的简体中文和“你”来叙述，不使用客服敬语。
-
-场景定位或感知请求必须根据 PlayerView 直接给出当前可见场景描述，不得凭空补写对象。
-
-【叙事主体】
-- 你是守秘人，不是玩家角色。player_input 中玩家使用的“我”始终指
-  player_view.self_actor；叙述该角色的行动时使用“你”或角色名，不得把玩家第一人称
-  改写成守秘人的自述。
-- 玩家声明的职业、经历、能力、态度和承诺只属于玩家角色。例如玩家说“我保护你们，
-  我是退役军官”，可以写成“你表示会保护同行者”或明确引用为玩家对白；不得写成
-  守秘人“我保护你们”“我当过兵”。
-- 玩家说“你们”或“我们”时，可以指已由可信素材确认的同行 NPC 或在场角色；应按
-  实际参与者自然转述，不得把它误解成守秘人与玩家组成的“我们”，也不得凭空增加
-  同行者。
-- 第一人称可以出现在明确归属于玩家或某个 NPC 的对白中，但对白的说话者必须清楚；
-  引号外的守秘人叙述不得以“我”认领玩家的行为、身份或经历。
-
-【可信素材】
-- action_result.visible_facts：本次已由规则引擎确认的可见结果。
-- action_result.outcome 和 check_result：服务端权威的行动结果、实际采用技能、
-  技能值、骰点、难度、成功等级与是否通过；不得改写或重新掷骰。
-- player_view.scene：当前玩家可见的场景名称、描述、时间、实体、人物和出口。
-- player_view.self_actor：当前角色的属性、技能、资源、状态、装备和安全背景摘要。
-- player_view.known_information：玩家已经获得且允许当前作用域读取的信息。
-- background：只用于时代、地点、玩家侧故事前提和叙事基调。
-- recent_history：只用于承接玩家已经看到的近期对话和指代。旧玩家原话仍是主张，
-  accepted_intent_summary 只是语义解释，旧 Narration 只是表达层文本；只有其中
-  player_safe_result 才是过去的玩家可见权威结果，而且也不能授权本回合状态变化。
-- action_result.narration_constraints：必须逐条遵守。
-不要推断隐藏状态、守秘人信息、未公开线索、骰点或未提交的状态变化。允许添加少量
-不产生玩法信息的氛围纹理，例如语气、停顿、寂静或与 background 一致的泛化感官
-描写；不得借此创造门窗、出口、人物、物品、路线、天气、线索或行动结果。
-这项限制同样适用于角色对白：即使 NPC 在说话，也不得让其透露可信素材中没有的
-具体地标、行动习惯、藏匿位置或可交互对象。检定失败时尤其不得用对白补发新事实。
-
-【叙事策略】
-1. 已识别并结算的行动：先写玩家立刻感受到的结果，再补一两个具体细节。忠实转述
-   action_result.visible_facts，不扩大成功或失败的含义。
-2. check_result 不为空时必须按照 passed、success_level 和 action_result.outcome
-   叙述。checkpoint_id 为空表示普通检定：成功只能描述 visible_facts、动作后的
-   PlayerView 和不产生玩法信息的即时感受；失败不得声称发现隐藏信息、获得线索或
-   取得依赖该检定的额外效果。普通检定不能代替或补触发模组 checkpoint。
-3. “我在哪里”“描述周围”“观察环境”“我能看到什么”等场景定位/感知请求：
-   即使 action_result.resolution 是 unrecognized，也要根据 PlayerView 直接给出一段场景描述，
-   kind 使用 narration。忽略“没有找到对应目标”之类仅供引擎诊断
-   的 visible_fact，claimed_fact_ids 留空；不要要求玩家先指定目标或先做检定。
-4. 玩家尝试接触一个当前素材中没有、或不能唯一确定的地点/物体（例如未出现的花园
-   或未指明的门）：不要编造行动成功。先用一句角色内的即时反馈维持画面，再只问
-   一个简短问题，或给一个基于 visible_entities 的自然下一步；kind 使用
-   clarification。不要给“选项 A / 选项 B”式菜单。
-5. 其他真正不明确的输入：同样先给场景内反馈，再进行一次最小澄清。澄清也必须像
-   守秘人在主持故事，而不是系统在校验表单。
-6. kind=dialogue 且 target 为 unmatched 时，这是无动作的对话承接（例如“好的”或
-   “谢谢”）：自然回应玩家，承接最近对话或当前场景，最后用一句角色内话语邀请
-   玩家继续；不要追问“要对哪个人物、物品或地点做什么”。
-
-输出通常为 1 至 2 个短段落，优先使用具体名词和动作，避免空泛总结。不得对玩家说
-“元游戏问题”“当前场景目标”“PlayerView”“checkpoint”“未识别动作”
-“规则边界”“没有找到对应目标”“视线范围”等系统术语。suggested_actions 最多
-3 条，只能基于当前可信素材，并写成玩家可直接说出的角色内短句；不需要建议时返回
-空数组。claimed_fact_ids 只能包含 action_result.visible_facts 的精确 id，且只有
-正文实际表达了对应结果时才填写。
-
-【输出卫生】
-text 只能包含玩家可见的角色内叙事。kind、text、claimed_fact_ids 和
-suggested_actions 只能作为外层 JSON 字段各出现一次；不得把任何字段名、字段值、
-JSON/schema 片段、Markdown JSON 代码块、格式说明或自检内容重复写入 text。提交
-前再次检查 text，确保玩家只会看到自然叙事，而不会看到结构化输出协议。
 """
 
 _OPENING_NARRATION_INSTRUCTIONS = """\
@@ -392,7 +320,7 @@ class PromptNarrationModel:
         return await self._client.generate(
             schema_name="trpg_narration",
             schema=NarrationOutput.model_json_schema(mode="serialization"),
-            instructions=_ACTION_PLAN_NARRATION_INSTRUCTIONS,
+            instructions=_NARRATION_INSTRUCTIONS,
             input_payload=context.to_json_dict(),
         )
 
@@ -445,9 +373,11 @@ class PromptHostTurnDecisionModel:
                 )
                 proposal = _HOST_DECISION_PROPOSAL_ADAPTER.validate_python(raw)
                 if isinstance(proposal, SingleActionProposal) and (
-                    proposal.schema_version != 2 or proposal.execution_means is None
+                    proposal.schema_version != 2
+                    or proposal.execution_means is None
+                    or proposal.target_interaction is None
                 ):
-                    raise ValueError("生产单动作必须使用 Proposal v2 并声明实施手段")
+                    raise ValueError("生产单动作必须使用 Proposal v2 并声明实施手段与目标交互类型")
                 return proposal
             except TurnExecutionError as exc:
                 if exc.code != "MODEL_OUTPUT_UNREADABLE":
@@ -524,8 +454,12 @@ class PromptActionPlanStepAdjudicator:
 
         try:
             proposal = SingleActionProposal.model_validate(raw)
-            if proposal.schema_version != 2 or proposal.execution_means is None:
-                raise ValueError("生产计划步骤必须使用 Proposal v2 并声明实施手段")
+            if (
+                proposal.schema_version != 2
+                or proposal.execution_means is None
+                or proposal.target_interaction is None
+            ):
+                raise ValueError("生产计划步骤必须使用 Proposal v2 并声明实施手段与目标交互类型")
             return proposal
         except (ValidationError, ValueError) as exc:
             # HTTP 与 JSON 都成功也不代表输出符合 Proposal 契约；这一类同样
@@ -535,22 +469,6 @@ class PromptActionPlanStepAdjudicator:
                 "主持模型返回了无法解读的结果，当前步骤未生效，请重试",
                 retryable=True,
             ) from exc
-
-
-class PromptActionPlanNarrationModel:
-    def __init__(self, client: StructuredJsonClient) -> None:
-        self._client = client
-
-    async def generate(
-        self,
-        context: ActionPlanNarrationContext,
-    ) -> JsonObject:
-        return await self._client.generate(
-            schema_name="trpg_action_plan_narration",
-            schema=ActionPlanNarrationOutput.model_json_schema(mode="serialization"),
-            instructions=_ACTION_PLAN_NARRATION_INSTRUCTIONS,
-            input_payload=context.to_json_dict(),
-        )
 
 
 def _log_structured_usage(

@@ -4,10 +4,6 @@ import unittest
 from types import SimpleNamespace
 
 from collaboration_framework.contracts import CommittedResult, PlayerInput
-from collaboration_framework.host.application.action_plan_narrator import (
-    ActionPlanNarrationValidationError,
-    ActionPlanNarrator,
-)
 from collaboration_framework.host.application.narrator import (
     NarrationValidationError,
     Narrator,
@@ -15,7 +11,7 @@ from collaboration_framework.host.application.narrator import (
     narration_text_rejection_reason,
     normalize_narration_text,
 )
-from collaboration_framework.host.schemas import ActionPlanNarrationContext
+from collaboration_framework.host.schemas import NarrationContext
 
 
 class NarrationTextPolicyTests(unittest.TestCase):
@@ -194,7 +190,7 @@ class PersistentNarrationPolicyTests(unittest.IsolatedAsyncioTestCase):
             scene=SimpleNamespace(visible_entities=()),
             inventory=inventory,
         )
-        return ActionPlanNarrationContext.model_construct(
+        return NarrationContext.model_construct(
             background="背景",
             player_input=PlayerInput(
                 room_id="room",
@@ -220,10 +216,10 @@ class PersistentNarrationPolicyTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_rejects_uncommitted_unconscious_claim(self):
-        with self.assertRaises(ActionPlanNarrationValidationError):
-            await ActionPlanNarrator(
-                _PersistentNarrationModel("守墓人昏迷了。")
-            ).narrate(self._context())
+        with self.assertRaises(NarrationValidationError):
+            await Narrator(_PersistentNarrationModel("守墓人昏迷了。")).narrate(
+                self._context()
+            )
 
     async def test_allows_committed_unconscious_claim(self):
         result = CommittedResult(
@@ -233,9 +229,9 @@ class PersistentNarrationPolicyTests(unittest.IsolatedAsyncioTestCase):
             state_value="unconscious",
             event_ref="event-1",
         )
-        output = await ActionPlanNarrator(
-            _PersistentNarrationModel("守墓人昏迷了。")
-        ).narrate(self._context(results=(result,)))
+        output = await Narrator(_PersistentNarrationModel("守墓人昏迷了。")).narrate(
+            self._context(results=(result,))
+        )
         self.assertEqual(output.text, "守墓人昏迷了。")
 
     async def test_allows_previous_turn_unconscious_state_from_player_view(self):
@@ -250,7 +246,7 @@ class PersistentNarrationPolicyTests(unittest.IsolatedAsyncioTestCase):
         )
         context = self._context()
         context.player_view.scene.visible_entities = (entity,)
-        output = await ActionPlanNarrator(
+        output = await Narrator(
             _PersistentNarrationModel("守墓人双眼紧闭，仍然没有醒来。")
         ).narrate(context)
         self.assertIn("仍然没有醒来", output.text)
@@ -262,8 +258,8 @@ class PersistentNarrationPolicyTests(unittest.IsolatedAsyncioTestCase):
             event_ref="event-1",
         )
 
-        with self.assertRaises(ActionPlanNarrationValidationError) as raised:
-            await ActionPlanNarrator(
+        with self.assertRaises(NarrationValidationError) as raised:
+            await Narrator(
                 _PersistentNarrationModel("你把那册资料收好，放进背包。")
             ).narrate(self._context(results=(result,)))
 
@@ -278,11 +274,9 @@ class PersistentNarrationPolicyTests(unittest.IsolatedAsyncioTestCase):
             target_id="runtime_volume",
             event_ref="event-1",
         )
-        inventory = (
-            SimpleNamespace(id="runtime_volume", name="一本薄诗集"),
-        )
+        inventory = (SimpleNamespace(id="runtime_volume", name="一本薄诗集"),)
 
-        output = await ActionPlanNarrator(
+        output = await Narrator(
             _PersistentNarrationModel("你拿起诗集，将它放进背包。")
         ).narrate(self._context(results=(result,), inventory=inventory))
 
@@ -294,14 +288,12 @@ class PersistentNarrationPolicyTests(unittest.IsolatedAsyncioTestCase):
             target_id="runtime_branch",
             event_ref="event-1",
         )
-        inventory = (
-            SimpleNamespace(id="runtime_branch", name="一根干树枝"),
-        )
+        inventory = (SimpleNamespace(id="runtime_branch", name="一根干树枝"),)
 
-        with self.assertRaises(ActionPlanNarrationValidationError):
-            await ActionPlanNarrator(
-                _PersistentNarrationModel("你把那本手册装进背包。")
-            ).narrate(self._context(results=(result,), inventory=inventory))
+        with self.assertRaises(NarrationValidationError):
+            await Narrator(_PersistentNarrationModel("你把那本手册装进背包。")).narrate(
+                self._context(results=(result,), inventory=inventory)
+            )
 
     async def test_rejects_uncommitted_sleeping_synonyms(self):
         """没有证据时，闭眼、未醒和躺倒等同义事实也必须被拒绝。"""
@@ -312,15 +304,13 @@ class PersistentNarrationPolicyTests(unittest.IsolatedAsyncioTestCase):
         ):
             with (
                 self.subTest(text=text),
-                self.assertRaises(ActionPlanNarrationValidationError),
+                self.assertRaises(NarrationValidationError),
             ):
-                await ActionPlanNarrator(_PersistentNarrationModel(text)).narrate(
-                    self._context()
-                )
+                await Narrator(_PersistentNarrationModel(text)).narrate(self._context())
 
     async def test_allows_unprojected_companion_active_presence(self):
         """未进入标准场景投影的随行人物不能被全局在场校验误伤。"""
-        output = await ActionPlanNarrator(
+        output = await Narrator(
             _PersistentNarrationModel("托马斯跟在你身边，正站在墓园入口。")
         ).narrate(self._context())
 
@@ -336,13 +326,13 @@ class PersistentNarrationPolicyTests(unittest.IsolatedAsyncioTestCase):
         )
         context = self._context()
         context.player_view.scene.visible_entities = (entity,)
-        with self.assertRaises(ActionPlanNarrationValidationError):
-            await ActionPlanNarrator(
-                _PersistentNarrationModel("守墓人仍站在墓碑旁。")
-            ).narrate(context)
+        with self.assertRaises(NarrationValidationError):
+            await Narrator(_PersistentNarrationModel("守墓人仍站在墓碑旁。")).narrate(
+                context
+            )
 
-        with self.assertRaises(ActionPlanNarrationValidationError):
-            await ActionPlanNarrator(
+        with self.assertRaises(NarrationValidationError):
+            await Narrator(
                 _PersistentNarrationModel(
                     "梅洛迪亚斯·杰弗逊的外套还在，人却已经不见了。"
                 )
@@ -359,8 +349,8 @@ class PersistentNarrationPolicyTests(unittest.IsolatedAsyncioTestCase):
         context = self._context(utterance="去找他的尸体")
         context.player_view.scene.visible_entities = (entity,)
 
-        with self.assertRaises(ActionPlanNarrationValidationError) as raised:
-            await ActionPlanNarrator(
+        with self.assertRaises(NarrationValidationError) as raised:
+            await Narrator(
                 _PersistentNarrationModel("你打算从哪里开始找？还是扩大范围搜寻尸体？")
             ).narrate(context)
 
@@ -368,12 +358,12 @@ class PersistentNarrationPolicyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_allows_player_presence_without_visible_npc(self):
         """校验只限制 NPC 在场断言，不阻止主持人描述玩家自己的位置。"""
-        output = await ActionPlanNarrator(
+        output = await Narrator(
             _PersistentNarrationModel("你站在寄宿屋的房间里。")
         ).narrate(self._context())
         self.assertEqual(output.text, "你站在寄宿屋的房间里。")
 
-        plural_output = await ActionPlanNarrator(
+        plural_output = await Narrator(
             _PersistentNarrationModel("你们正坐在旅店的桌边。")
         ).narrate(self._context())
         self.assertEqual(plural_output.text, "你们正坐在旅店的桌边。")

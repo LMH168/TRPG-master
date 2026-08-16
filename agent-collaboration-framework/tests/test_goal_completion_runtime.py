@@ -301,15 +301,43 @@ async def test_checked_ai_death_persists_and_blocks_later_social_action() -> Non
         == 1
     )
 
+    # 真实模型曾把社交规则错误包装成 effects，并把已经满足的死亡状态当作
+    # completion。目标交互必须独立于 completion，因此仍要在创建检定前拒绝。
     social = {
         "semantic_focus": {"kind": "entity", "id": "melodias"},
-        "anchor_ref": None,
-        "method_family": "威胁",
+        "anchor_ref": {"kind": "entity", "id": "melodias"},
+        "target_interaction": "social",
+        "method_family": "intimidate",
         "method_description": "威胁守墓人回答问题",
-        "check_proposal": {"mode": "none", "candidates": []},
-        "success_effect_proposals": [{"type": "narrative_only"}],
+        "check_proposal": {
+            "mode": "required",
+            "candidates": [
+                {
+                    "candidate_id": "intimidate",
+                    "skill_id": "intimidate",
+                    "difficulty": "regular",
+                    "method_summary": "威胁守墓人回答问题",
+                    "player_safe_reason": "社交行动需要检定",
+                }
+            ],
+        },
+        "rule_ref": {
+            "rule_id": "intimidate_caretaker",
+            "option_id": "intimidate",
+        },
+        "success_effect_proposals": [],
         "failure_effect_proposals": [],
-        "completion": {"kind": "process", "interaction": "social"},
+        "completion": {
+            "kind": "effects",
+            "requirements": [
+                {
+                    "type": "change_entity_state",
+                    "entity_ref": {"kind": "entity", "id": "melodias"},
+                    "key": "consciousness",
+                    "value": "dead",
+                }
+            ],
+        },
     }
     event_count = len(store.inspect_domain_events(ROOM))
     with pytest.raises(AdjudicationValidationError) as raised:
@@ -398,6 +426,7 @@ async def test_rule_owned_hit_does_not_claim_death_goal() -> None:
             payload={
                 "semantic_focus": {"kind": "entity", "id": "melodias"},
                 "anchor_ref": {"kind": "entity", "id": HANDGUN},
+                "target_interaction": "physical",
                 "method_family": "射击",
                 "method_description": "用手枪进行致命射击",
                 "execution_means": {

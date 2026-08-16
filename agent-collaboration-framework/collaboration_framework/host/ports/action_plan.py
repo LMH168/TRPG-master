@@ -16,7 +16,6 @@ from collaboration_framework.contracts import (
     SubmitProposalRequest,
 )
 from collaboration_framework.host.schemas import ActionPlanRun, ActionPlanStepContext
-from collaboration_framework.host.ports.narration_model import NarrationModelPort
 
 
 class ActionPlanStoreError(RuntimeError):
@@ -42,7 +41,9 @@ class ActionPlanBusyError(ActionPlanStoreError):
 class ActionPlanRunStore(Protocol):
     async def create(self, run: ActionPlanRun) -> ActionPlanRun: ...
 
-    async def load(self, room_id: str, parent_action_id: str) -> ActionPlanRun | None: ...
+    async def load(
+        self, room_id: str, parent_action_id: str
+    ) -> ActionPlanRun | None: ...
 
     async def load_active_for_player(
         self,
@@ -73,7 +74,9 @@ class ActionPlanRunStore(Protocol):
 class ActionPlanStepAdjudicator(Protocol):
     """Generate one proposal from only the current step and latest PlayerView."""
 
-    async def adjudicate(self, context: ActionPlanStepContext) -> SingleActionProposal: ...
+    async def adjudicate(
+        self, context: ActionPlanStepContext
+    ) -> SingleActionProposal: ...
 
 
 @dataclass(frozen=True)
@@ -95,16 +98,14 @@ class ActionPlanStepFailure:
 class SingleAdjudicationExecutor(Protocol):
     """Host 可见的唯一动作写端口；可信字段由 Engine 在事务内绑定。"""
 
-    async def submit_proposal(self, request: SubmitProposalRequest) -> AdjudicationExecution: ...
+    async def submit_proposal(
+        self, request: SubmitProposalRequest
+    ) -> AdjudicationExecution: ...
 
     async def get_status(
         self,
         request: GetAdjudicationStatusRequest,
     ) -> AdjudicationStatusView: ...
-
-
-# PR1 保留旧端口名，生产依赖仍可无行为变化地导入同一协议。
-ActionPlanNarrationModelPort = NarrationModelPort
 
 
 ActionPlanProgressObserver = Callable[[ActionPlanProgressEvent], Awaitable[None]]

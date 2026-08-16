@@ -65,7 +65,7 @@ uv run python scripts/run_runtime_baseline.py --output /tmp/runtime-baseline.jso
 
 ## 执行与断言原则
 
-`InMemoryRuntimeAdapter` 通过当前生产使用的 `ActionPlanTurnApplication`、`AdjudicationEngineService`、`RuleEngineService` 和 `ActionPlanNarrator` 执行场景。每个场景都会从发布的《追书人》ModuleContent v3 重建独立状态。
+`InMemoryRuntimeAdapter` 通过当前生产使用的 `ActionPlanTurnApplication`、`AdjudicationEngineService`、`RuleEngineService` 和 `Narrator` 执行场景。每个场景都会从发布的《追书人》ModuleContent v3 重建独立状态。
 
 执行结果只保留稳定字段：阶段、事件类型、关键状态、证据引用以及按动作和序号规范化的事件/掷骰标识。时间戳、随机 UUID 和完整自然语言不进入快照。
 

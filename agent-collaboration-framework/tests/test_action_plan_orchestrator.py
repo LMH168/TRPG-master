@@ -4,7 +4,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-
 from collaboration_framework.contracts import (
     ActionAdjudication,
     ActionMethod,
@@ -16,8 +15,8 @@ from collaboration_framework.contracts import (
     AdjudicationValidationError,
     AdvanceWorldTimeEffect,
     CancelActionPlanRequest,
-    CheckDecisionRequest,
     ChangeEntityStateEffect,
+    CheckDecisionRequest,
     ContractError,
     EnterLocationEffect,
     GetAdjudicationStatusRequest,
@@ -48,11 +47,11 @@ from collaboration_framework.engine import (
 )
 from collaboration_framework.host.adapters import InMemoryActionPlanRunStore
 from collaboration_framework.host.application import (
-    ActionPlanNarrationValidationError,
-    ActionPlanNarrator,
     ActionPlanOrchestrator,
     HostTurnDecisionExecutor,
     HostTurnDecisionParser,
+    NarrationValidationError,
+    Narrator,
     PlayerViewProjector,
     TurnExecutionError,
 )
@@ -68,11 +67,11 @@ from collaboration_framework.host.schemas import (
     ActionPlanRun,
     ActionPlanStepContext,
     ActionPlanStepRun,
-    SingleActionClarificationResult,
-    SingleActionTurnResult,
     RecentHistoryBudget,
     RecentTurn,
     RecentTurnContext,
+    SingleActionClarificationResult,
+    SingleActionTurnResult,
     VisibleHistoryText,
 )
 
@@ -2648,8 +2647,8 @@ async def test_narrator_rejects_evidence_outside_committed_public_refs() -> None
     context = await service.build_narration_context(original)
 
     assert context.allowed_evidence_refs
-    with pytest.raises(ActionPlanNarrationValidationError) as raised:
-        await ActionPlanNarrator(OutOfScopeNarrationModel()).narrate(context)
+    with pytest.raises(NarrationValidationError) as raised:
+        await Narrator(OutOfScopeNarrationModel()).narrate(context)
 
     assert raised.value.reason == "evidence_scope"
 
@@ -2681,25 +2680,21 @@ async def test_narrator_rejects_missing_required_evidence() -> None:
         deep=True,
     )
 
-    with pytest.raises(ActionPlanNarrationValidationError) as raised:
-        await ActionPlanNarrator(MissingRequiredEvidenceNarrationModel()).narrate(
-            context
-        )
+    with pytest.raises(NarrationValidationError) as raised:
+        await Narrator(MissingRequiredEvidenceNarrationModel()).narrate(context)
 
     assert raised.value.reason == "required_evidence_missing"
 
-    with pytest.raises(ActionPlanNarrationValidationError) as claimed_but_omitted:
-        await ActionPlanNarrator(
-            ClaimsButOmitsRequiredEvidenceNarrationModel()
-        ).narrate(context)
+    with pytest.raises(NarrationValidationError) as claimed_but_omitted:
+        await Narrator(ClaimsButOmitsRequiredEvidenceNarrationModel()).narrate(context)
 
     assert claimed_but_omitted.value.reason == "required_evidence_missing"
 
     # A natural narration that clearly names a safe alias is authoritative
     # enough for the service to record the required public ref itself.
-    alias_output = await ActionPlanNarrator(
-        AliasRequiredEvidenceNarrationModel()
-    ).narrate(context)
+    alias_output = await Narrator(AliasRequiredEvidenceNarrationModel()).narrate(
+        context
+    )
     assert alias_output.claimed_evidence_refs == (required_ref,)
 
 
@@ -2710,7 +2705,7 @@ async def test_narrator_rejects_first_person_subject_in_prose() -> None:
     await service.start_or_resume(original, plan=plan(2))
     context = await service.build_narration_context(original)
 
-    with pytest.raises(ActionPlanNarrationValidationError) as raised:
-        await ActionPlanNarrator(FirstPersonNarrationModel()).narrate(context)
+    with pytest.raises(NarrationValidationError) as raised:
+        await Narrator(FirstPersonNarrationModel()).narrate(context)
 
     assert raised.value.reason == "subject_ownership"

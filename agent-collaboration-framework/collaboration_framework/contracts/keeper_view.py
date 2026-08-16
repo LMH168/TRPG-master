@@ -11,7 +11,7 @@ not in the current scene.
 Two boundaries make this safe to hand to a model:
 
 * it is **capability data, not narration input** — it goes to the planner and the
-  step adjudicator only. `ActionPlanNarrationContext` never carries it, and the
+  step adjudicator only. `NarrationContext` never carries it, and the
   Narrator still may cite nothing but committed evidence refs.
 * it never reaches the client. It is not part of `PlayerView` and no transport
   payload embeds it.
@@ -101,7 +101,9 @@ class KeeperRuleCandidate(ContractModel):
     question_kind: Literal["action_declaration", "method", "intent_relation"]
     semantic_hints: tuple[str, ...] = ()
     action_families: tuple[str, ...] = ()
-    target_kinds: tuple[Literal["information", "entity", "location", "actor", "world"], ...] = ()
+    target_kinds: tuple[
+        Literal["information", "entity", "location", "actor", "world"], ...
+    ] = ()
     target_ids: tuple[str, ...] = ()
     options: tuple[KeeperRuleOption, ...] = ()
 

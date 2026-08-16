@@ -251,6 +251,7 @@ class SingleActionProposal(ContractModel):
     semantic_goal: str = Field(min_length=1, max_length=2000)
     semantic_focus: ProposalRef
     anchor_ref: ProposalRef | None = None
+    target_interaction: Literal["observe", "social", "physical", "other"] | None = None
     method_family: str = Field(min_length=1, max_length=100)
     method_description: str = Field(min_length=1, max_length=1000)
     execution_means: ActionMeansProposal | None = None

@@ -12,7 +12,6 @@ from collaboration_framework.ports.adjudication_executor import (
     ProposalSubmissionExecutor,
 )
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -23,7 +22,9 @@ def _imported_names(path: Path) -> set[str]:
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+            names.update(
+                alias.asname or alias.name.split(".")[0] for alias in node.names
+            )
         elif isinstance(node, ast.ImportFrom):
             names.update(alias.asname or alias.name for alias in node.names)
     return names
@@ -35,7 +36,6 @@ def test_read_only_roles_do_not_import_authoritative_state_types() -> None:
     module_paths = (
         ROOT / "collaboration_framework/host/application/action_plan_orchestrator.py",
         ROOT / "collaboration_framework/host/application/narrator.py",
-        ROOT / "collaboration_framework/host/application/action_plan_narrator.py",
     )
     for path in module_paths:
         imported = _imported_names(path)
@@ -56,7 +56,9 @@ def test_engine_exposes_proposal_submission_only() -> None:
 
     public_methods = {
         name
-        for name, member in inspect.getmembers(AdjudicationEngineService, inspect.isfunction)
+        for name, member in inspect.getmembers(
+            AdjudicationEngineService, inspect.isfunction
+        )
         if not name.startswith("_")
     }
     assert "submit_proposal" in public_methods
