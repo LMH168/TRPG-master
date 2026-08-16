@@ -333,6 +333,23 @@ def test_rule_when_blocks_projection_equivalent_manual_submission() -> None:
     assert raised.value.result.code == "RULE_OUT_OF_SCOPE"
 
 
+def test_unmet_required_rule_cannot_fall_back_to_process_success() -> None:
+    """Host 省略隐藏候选时仍由 Engine 拒绝，不能写入普通成功事件。"""
+
+    with pytest.raises(AdjudicationValidationError) as raised:
+        ProposalCompiler().compile(
+            _runtime(slab_moved=False),
+            _request(
+                goal="我想进入地穴",
+                focus_id="crypt_entrance",
+                family="enter",
+                interaction="physical",
+            ),
+        )
+
+    assert raised.value.result.code == "RULE_PRECONDITION_UNMET"
+
+
 def test_rule_when_uses_same_state_for_candidate_projection() -> None:
     """未满足前置条件的规则不能只从 Prompt 隐藏一半，投影与提交必须一致。"""
 

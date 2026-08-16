@@ -295,12 +295,23 @@ class ProposalCompiler:
         requested_goal = request.requested_goal or proposal.semantic_goal
         if not runtime.is_v3:
             return proposal.rule_ref, proposal.check_proposal
-        matching = tuple(
+        scoped_required = tuple(
             rule
             for rule in runtime.v3.rules
             if isinstance(rule.trigger, AgentMatchTriggerSpec)
             and rule.trigger.required
             and agent_match_scope_admits(
+                rule,
+                location_id=runtime.game_state.scene_id,
+                action_family=proposal.method_family,
+                target_kind=focus.kind,
+                target_id=focus.id,
+            )
+        )
+        matching = tuple(
+            rule
+            for rule in scoped_required
+            if agent_match_scope_admits(
                 rule,
                 location_id=runtime.game_state.scene_id,
                 state=runtime.game_state,
@@ -312,6 +323,15 @@ class ProposalCompiler:
         )
         decision = proposal.rule_ref
         if decision is None:
+            if not matching and scoped_required:
+                # required Rule 的 when 是动作前置条件，不是可绕过的 Prompt 过滤器。
+                # 即使 Host 没看到或省略 rule_ref，也不能退化成普通过程成功。
+                self._reject(
+                    "RULE_PRECONDITION_UNMET",
+                    "当前条件尚不允许执行这项行动",
+                    repairability="requires_player_choice",
+                    fault="player",
+                )
             if len(matching) > 1:
                 self._reject(
                     "RULE_SELECTION_AMBIGUOUS",
