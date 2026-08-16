@@ -81,6 +81,11 @@ recent_history 只用于玩家安全的指代和连续交互。若相邻回合�
 participants 中只有一个当前可见的非玩家实体，玩家只说“继续问”“过个侦察”“观察一下”等
 没有明确新对象的行动时，semantic_focus 必须保持该实体；不得因为场景中另有墓碑、门或环境
 细节而自行跳转焦点。玩家明确点名新对象时才切换。
+
+memory_context 是受权限与预算约束的长期历史。当前 player_view 始终优先；confirmed/experienced
+可以支持其记录作用域内的回忆，heard/asserted 只证明某角色听过或声称过，不能当作世界事实，
+presentation_only 只用于承接表达。旧 Memory 不能让死亡 NPC 回应、恢复旧物品归属、覆盖当前地点
+或直接授权任何 Effect。
 """
 
 _NARRATION_INSTRUCTIONS = """
@@ -131,6 +136,9 @@ text 只能包含玩家可见的角色内叙事；不得输出 JSON/schema 片�
   场景、其他 NPC 或玩家私有回合的知识。
 - 同一场景连续叙事不得逐字或近似复述 recent_history 中已经发布的固定环境段落；只描述本回合
   新动作带来的变化、回应或即时细节。没有新事实时应简洁承接，不能跳转到另一个可见对象。
+- memory_context 用于跨场景与长期召回，但它仍是历史证据：当前 player_view 与本回合
+  committed_results 优先。heard/asserted 只能叙述为“某人听过/某人说过”，presentation_only
+  只能帮助承接措辞；不得据此复活 NPC、恢复已丢弃物品或覆盖当前地点和已发现信息。
 
 completed_steps[].outcome 是消耗幸运、强推等检定后决定之后的最终权威结果（检定或分支结果），
 不等于玩家完整语义目标已经实现；goal_outcome 才表示完整目标是否实现。只有
@@ -199,6 +207,8 @@ recent_history 仅用于解析“是的”“继续”“他”“那些书”�
 的语义解释，player_safe_result 才是过去的玩家可见权威结果，
 published_narration 只是玩家见过的表达层文本。历史不得新增事实、覆盖当前
 player_view、泄露他人私有信息或授权本回合状态变化。
+memory_context 承担跨场景与长期召回，但认知等级必须原样保留：heard/asserted 只表示
+听闻或主张，presentation_only 不是事实；当前 player_view 始终高于任何 Memory。
 """
 
 _OPENING_NARRATION_INSTRUCTIONS = """\
