@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, TypeAlias
 
-from pydantic import Field
+from pydantic import Field, JsonValue
 
 from collaboration_framework.contracts import (
     CheckpointOption,
@@ -12,7 +12,7 @@ from collaboration_framework.contracts import (
     NarrativeDetailView,
     ObservableStateView,
 )
-
+from collaboration_framework.memory import MemoryEpistemicStatus, MemoryKind
 
 ToolErrorCode: TypeAlias = Literal[
     "TOOL_NOT_FOUND",
@@ -53,6 +53,32 @@ class GetVisibleEntityResult(ContractModel):
     narrative_details: tuple[NarrativeDetailView, ...] = ()
     observable_state: tuple[ObservableStateView, ...] = ()
     checkpoint_options: tuple[CheckpointOption, ...] = ()
+
+
+class SearchMemoriesArgs(ContractModel):
+    """模型可提供的长期记忆筛选项，不包含任何可信身份字段。"""
+
+    query: str = Field(min_length=1, max_length=500)
+    kind: MemoryKind | None = None
+    entity_id: str | None = Field(default=None, min_length=1)
+    limit: int = Field(default=8, ge=1, le=8)
+
+
+class MemoryToolEntry(ContractModel):
+    """供 Host 使用的最小玩家安全记忆摘要。"""
+
+    memory_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    kind: MemoryKind
+    subject_id: str = Field(min_length=1)
+    object_id: str | None = Field(default=None, min_length=1)
+    location_id: str | None = Field(default=None, min_length=1)
+    epistemic_status: MemoryEpistemicStatus
+    content: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class SearchMemoriesResult(ContractModel):
+    entries: tuple[MemoryToolEntry, ...] = ()
+    truncated_count: int = Field(default=0, ge=0)
 
 
 class ToolError(ContractModel):

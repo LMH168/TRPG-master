@@ -14,7 +14,7 @@ from collaboration_framework.memory import (
     MemoryQuery,
     MemoryReadScope,
 )
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, case, delete, literal, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -257,16 +257,37 @@ class SqlAlchemyMemoryStore:
         if query.location_ids:
             conditions.append(MemoryEntryRecord.location_id.in_(query.location_ids))
 
+        subject_priority = (
+            case(
+                (MemoryEntryRecord.subject_id.in_(scope.visible_entity_ids), 0),
+                else_=1,
+            )
+            if scope.visible_entity_ids
+            else literal(1)
+        )
+        location_priority = (
+            case(
+                (MemoryEntryRecord.location_id == scope.current_location_id, 0),
+                else_=1,
+            )
+            if scope.current_location_id is not None
+            else literal(1)
+        )
         statement = (
             select(MemoryEntryRecord)
             .where(*conditions)
             .order_by(
+                subject_priority,
+                location_priority,
                 MemoryEntryRecord.source_sequence.desc().nullslast(),
                 MemoryEntryRecord.created_at.desc(),
                 MemoryEntryRecord.memory_id,
             )
-            .limit(_CANDIDATE_LIMIT)
         )
+        # 无文本的预载只需有限最新候选；显式搜索必须允许命中较旧记录，不能
+        # 先按时间截断后再在 Python 中匹配，否则长期记忆会退化成近期历史。
+        if query.text is None:
+            statement = statement.limit(_CANDIDATE_LIMIT)
         async with self._session_factory() as session:
             records = (await session.scalars(statement)).all()
 
@@ -278,6 +299,7 @@ class SqlAlchemyMemoryStore:
         ]
         candidates.sort(
             key=lambda item: (
+                item.subject_id not in scope.visible_entity_ids,
                 item.location_id != scope.current_location_id,
                 -(item.source_sequence or 0),
                 -item.created_at.timestamp(),

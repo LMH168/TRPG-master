@@ -23,7 +23,9 @@ def _normalize(value: str) -> str:
 
 
 def _entry_chars(entry: MemoryEntry) -> int:
-    return len(entry.search_text) + sum(len(str(value)) for value in entry.content.values())
+    return len(entry.search_text) + sum(
+        len(str(value)) for value in entry.content.values()
+    )
 
 
 class InMemoryMemoryStore:
@@ -109,7 +111,10 @@ class InMemoryMemoryStore:
                 replacement = staged.get(replacement_id)
                 if previous is None or replacement is None:
                     raise ContractError("Memory supersede 引用了不存在的记录")
-                if previous.room_id != current.room_id or replacement.room_id != current.room_id:
+                if (
+                    previous.room_id != current.room_id
+                    or replacement.room_id != current.room_id
+                ):
                     raise ContractError("Memory supersede 不得跨房间")
                 staged[previous_id] = previous.model_copy(
                     update={"superseded_by": replacement_id}
@@ -201,8 +206,7 @@ class InMemoryMemoryStore:
                 or entry.viewer_player_id == scope.viewer_player_id
             )
             and (
-                entry.scope != "player"
-                or entry.scope_owner_id == scope.viewer_actor_id
+                entry.scope != "player" or entry.scope_owner_id == scope.viewer_actor_id
             )
             and (
                 entry.scope != "entity"
@@ -216,6 +220,7 @@ class InMemoryMemoryStore:
         ]
         candidates.sort(
             key=lambda item: (
+                item.subject_id not in scope.visible_entity_ids,
                 item.location_id != scope.current_location_id,
                 -(item.source_sequence or 0),
                 -item.created_at.timestamp(),
@@ -226,7 +231,10 @@ class InMemoryMemoryStore:
         used_chars = 0
         for entry in candidates:
             chars = _entry_chars(entry)
-            if len(selected) >= budget.max_entries or used_chars + chars > budget.max_chars:
+            if (
+                len(selected) >= budget.max_entries
+                or used_chars + chars > budget.max_chars
+            ):
                 continue
             selected.append(entry)
             used_chars += chars
@@ -247,7 +255,9 @@ class InMemoryMemoryStore:
                 if entry.room_id != room_id
             }
             self._runs = {
-                turn_id: run for turn_id, run in self._runs.items() if run.room_id != room_id
+                turn_id: run
+                for turn_id, run in self._runs.items()
+                if run.room_id != room_id
             }
 
     def _required_run(self, turn_id: str) -> MemoryProjectionRun:
