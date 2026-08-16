@@ -11,6 +11,7 @@ from pydantic import JsonValue
 
 from collaboration_framework.contracts import (
     AdjudicatedCheckStep,
+    AdvanceWorldTimeEffect,
     AgendaContinuationCandidate,
     AgendaContinuationOptionView,
     AgendaContinuationProposal,
@@ -84,11 +85,19 @@ class RulesetActionRegistry:
 
     def __init__(
         self,
-        actions: dict[str, Literal["apply_condition"]] | None = None,
+        actions: dict[
+            str, Literal["apply_condition", "advance_to_condition_expiry"]
+        ]
+        | None = None,
     ) -> None:
-        self._actions = actions or {"coc7.apply_condition": "apply_condition"}
+        self._actions = actions or {
+            "coc7.apply_condition": "apply_condition",
+            "coc7.advance_to_condition_expiry": "advance_to_condition_expiry",
+        }
 
-    def require(self, action_id: str) -> Literal["apply_condition"]:
+    def require(
+        self, action_id: str
+    ) -> Literal["apply_condition", "advance_to_condition_expiry"]:
         try:
             return self._actions[action_id]
         except KeyError as exc:
@@ -526,6 +535,7 @@ class RuleAgendaExecutor:
             elif isinstance(step, InvokeRulesetActionStep):
                 kind = "ruleset_action"
                 state, action_events, action_result = self._invoke_ruleset_action(
+                    runtime,
                     state,
                     agenda=agenda,
                     step=step,
@@ -852,6 +862,7 @@ class RuleAgendaExecutor:
 
     def _invoke_ruleset_action(
         self,
+        runtime,
         state: GameState,
         *,
         agenda: RuleAgenda,
@@ -861,11 +872,19 @@ class RuleAgendaExecutor:
         """执行白名单 Ruleset Action；参数不能选择任意状态路径。"""
 
         action_kind = self._ruleset_actions.require(step.action_id)
-        if action_kind != "apply_condition" or step.actor_binding != "actor":
+        if step.actor_binding != "actor":
             raise ContractError("Ruleset Action actor binding 不受支持")
         condition = step.parameters.get("condition")
         if not isinstance(condition, str) or not condition.strip():
-            raise ContractError("coc7.apply_condition 缺少 condition")
+            raise ContractError(f"{step.action_id} 缺少 condition")
+        if action_kind == "advance_to_condition_expiry":
+            return self._advance_to_condition_expiry(
+                runtime,
+                state,
+                agenda=agenda,
+                condition=condition,
+                execution_id=execution_id,
+            )
         allowed = {"unconscious", "unconscious_until_night", "temporary_insanity"}
         if condition not in allowed:
             raise ContractError("coc7.apply_condition condition 未注册")
@@ -899,6 +918,55 @@ class RuleAgendaExecutor:
             payload={"condition": condition},
         )
         return state, (event,), {"condition": condition}
+
+    def _advance_to_condition_expiry(
+        self,
+        runtime,
+        state: GameState,
+        *,
+        agenda: RuleAgenda,
+        condition: str,
+        execution_id: str,
+    ) -> tuple[GameState, tuple[DomainEvent, ...], dict[str, JsonValue]]:
+        """按权威到期元数据推进时间，禁止模组任意指定目标时刻。"""
+
+        actor_id = agenda.actor_id or ""
+        actor = state.actors.get(actor_id)
+        if actor is None or condition not in actor.conditions:
+            raise ContractError("待恢复的临时 condition 不存在")
+        expirations = actor.state.get("condition_expirations")
+        target_hour = expirations.get(condition) if isinstance(expirations, dict) else None
+        if not isinstance(target_hour, int) or isinstance(target_hour, bool):
+            raise ContractError("临时 condition 缺少权威到期时间")
+        if target_hour <= state.world_time.current.absolute_hour:
+            raise ContractError("临时 condition 到期时间没有晚于当前时间")
+        target_hour_of_day = target_hour % 24
+        target_points = tuple(
+            point
+            for point in runtime.v3.time_policy.default_points
+            if point.hour_of_day == target_hour_of_day
+        )
+        if len(target_points) != 1:
+            raise ContractError("临时 condition 到期时间无法映射到唯一时间点")
+        # 复用 Engine 的时间 Effect，使逐点事件与 condition 清理保持同一事务。
+        advanced, events = self._engine._apply_effect(
+            runtime,
+            state,
+            AdvanceWorldTimeEffect(to_point_id=target_points[0].id),
+            room_id=agenda.room_id,
+            request_id=execution_id,
+            actor_id=actor_id,
+            offset=1,
+        )
+        if advanced.world_time.current.absolute_hour != target_hour:
+            raise ContractError("时间推进未到达临时 condition 的权威到期点")
+        if condition in advanced.actors[actor_id].conditions:
+            raise ContractError("临时 condition 到期后未被清除")
+        return advanced, events, {
+            "condition": condition,
+            "expired_at": target_hour,
+            "current_point_id": advanced.world_time.current_point_id,
+        }
 
     def _create_npc_opportunity(
         self,
