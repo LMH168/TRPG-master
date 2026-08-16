@@ -19,6 +19,7 @@ from sqlalchemy.pool import NullPool
 from app.adapters import (
     SqlAlchemyActionPlanRunStore,
     SqlAlchemyEngineStore,
+    SqlAlchemyMemoryStore,
     SqlAlchemyRecentHistorySource,
     SqlAlchemyTurnStore,
 )
@@ -157,6 +158,13 @@ def turn_store_factory() -> Callable[[], SqlAlchemyTurnStore]:
     """构造使用测试数据库的可靠回合 Store。"""
 
     return lambda: SqlAlchemyTurnStore(TestSessionLocal)
+
+
+@pytest.fixture
+def memory_store_factory() -> Callable[[], SqlAlchemyMemoryStore]:
+    """构造使用隔离测试数据库的 Memory 投影 Store。"""
+
+    return lambda: SqlAlchemyMemoryStore(TestSessionLocal)
 
 
 @pytest.fixture

@@ -27,6 +27,7 @@ from collaboration_framework.host.schemas import (
     RecentTurnContext,
     VisibleHistoryText,
 )
+from collaboration_framework.memory import MemoryContext
 
 from app.adapters.openai_models import PromptActionPlanStepAdjudicator, PromptHostTurnDecisionModel
 from app.core.config import Settings
@@ -118,6 +119,10 @@ async def test_real_model_keeps_terminal_action_in_compound_goal() -> None:
         HostAgentContext(
             player_input=step_context.player_input,
             player_view=step_context.player_view,
+            memory_context=MemoryContext.empty(
+                player_input=step_context.player_input,
+                player_view=step_context.player_view,
+            ),
             recent_history=RecentTurnContext.empty(
                 player_input=step_context.player_input,
                 player_view=step_context.player_view,

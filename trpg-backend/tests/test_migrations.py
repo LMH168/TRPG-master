@@ -9,7 +9,7 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 PREVIOUS_REVISION = "1a02058345ee"
 ENGINE_IDENTITY_PREVIOUS_REVISION = "9c4e7a2b1d6f"
-HEAD_REVISION = "e3f4a5b6c7d8"
+HEAD_REVISION = "f4a5b6c7d8e9"
 
 
 def _run_alembic(database: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -89,6 +89,8 @@ def test_migration_upgrades_empty_sqlite_and_round_trips(tmp_path: Path) -> None
         "room_turn_reservations",
         "turn_commit_receipts",
         "narration_outbox",
+        "memory_projection_runs",
+        "memory_entries",
     }.issubset(tables)
     assert "decision_schema_version" in _column_names(
         database,
@@ -156,6 +158,36 @@ def test_migration_upgrades_empty_sqlite_and_round_trips(tmp_path: Path) -> None
     assert "pending_decision_json" in _column_names(database, "turn_records")
     assert ("turn_id",) in _unique_column_sets(database, "room_turn_reservations")
     assert ("turn_id", "message_type") in _unique_column_sets(database, "narration_outbox")
+    assert {
+        "source_fingerprint",
+        "status",
+        "version",
+        "attempt_count",
+        "lease_owner",
+        "lease_expires_at",
+        "next_attempt_at",
+    }.issubset(_column_names(database, "memory_projection_runs"))
+    assert {
+        "source_turn_id",
+        "source_kind",
+        "scope",
+        "scope_owner_id",
+        "visibility",
+        "viewer_player_id",
+        "epistemic_status",
+        "superseded_by",
+    }.issubset(_column_names(database, "memory_entries"))
+    assert ("room_id", "memory_id") in _unique_column_sets(database, "memory_entries")
+    assert {
+        ("turn_id", "turn_records", "turn_id"),
+        ("room_id", "rooms", "id"),
+    }.issubset(_foreign_keys(database, "memory_projection_runs"))
+    assert {
+        ("source_turn_id", "memory_projection_runs", "turn_id"),
+        ("room_id", "rooms", "id"),
+        ("viewer_player_id", "players", "id"),
+        ("superseded_by", "memory_entries", "memory_id"),
+    }.issubset(_foreign_keys(database, "memory_entries"))
     assert ("turn_id", "turn_records", "turn_id") in _foreign_keys(database, "events")
     assert {
         "visibility",

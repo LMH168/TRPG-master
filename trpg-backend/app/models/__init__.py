@@ -32,6 +32,7 @@ from app.models.engine import (
     RoomActionReservation,
 )
 from app.models.event import CheckResult, Event
+from app.models.memory import MemoryEntryRecord, MemoryProjectionRunRecord
 from app.models.replay import ModuleImportJob, RoomSummary
 from app.models.room import Character, CharacterPortrait, Note, Player, Room
 from app.models.turn import (
@@ -60,6 +61,8 @@ __all__ = [
     "GameSession",
     "InventoryCommandExecution",
     "InventoryImportDraftRecord",
+    "MemoryEntryRecord",
+    "MemoryProjectionRunRecord",
     "GameSystem",
     "ModuleAsset",
     "ModuleCheckpoint",

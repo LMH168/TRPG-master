@@ -24,6 +24,7 @@ from collaboration_framework.host.schemas import (
     RecentTurnContext,
     VisibleHistoryText,
 )
+from collaboration_framework.memory import MemoryContext
 
 from app.core.config import Settings, secret_value
 
@@ -123,6 +124,10 @@ async def test_deepseek_resolves_reference_from_recent_history() -> None:
         HostAgentContext(
             player_input=player_input,
             player_view=player_view,
+            memory_context=MemoryContext.empty(
+                player_input=player_input,
+                player_view=player_view,
+            ),
             recent_history=recent_history,
         )
     )
@@ -189,6 +194,10 @@ async def test_deepseek_selects_checkpoint_declaration_by_semantics() -> None:
         HostAgentContext(
             player_input=player_input,
             player_view=player_view,
+            memory_context=MemoryContext.empty(
+                player_input=player_input,
+                player_view=player_view,
+            ),
             recent_history=RecentTurnContext.empty(
                 player_input=player_input,
                 player_view=player_view,

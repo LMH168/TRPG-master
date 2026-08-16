@@ -45,6 +45,7 @@ from collaboration_framework.host.schemas import (
     RecentTurnContext,
     VisibleHistoryText,
 )
+from collaboration_framework.memory import MemoryContext
 from pydantic import ValidationError
 
 from app.adapters.deepseek_models import DeepSeekChatCompletionsJsonClient
@@ -355,6 +356,10 @@ async def test_prompts_treat_scene_orientation_as_narration_not_form_validation(
         NarrationContext(
             background="禁酒令时期的密歇根州；叙事安静、克制。",
             player_input=player_input,
+            memory_context=MemoryContext.empty(
+                player_input=player_input,
+                player_view=player_view,
+            ),
             intent=intent,
             action_result=ActionResult(
                 request_id="where-am-i",
@@ -472,6 +477,10 @@ async def test_narration_receives_authoritative_default_check_result() -> None:
         NarrationContext(
             background="安静、克制的调查故事。",
             player_input=player_input,
+            memory_context=MemoryContext.empty(
+                player_input=player_input,
+                player_view=player_view,
+            ),
             intent=intent,
             action_result=action_result,
             player_view=player_view,
@@ -559,6 +568,10 @@ async def test_prompt_turn_decision_accepts_single_and_variable_plan_lengths(
         HostAgentContext(
             player_input=player_input,
             player_view=view,
+            memory_context=MemoryContext.empty(
+                player_input=player_input,
+                player_view=view,
+            ),
             recent_history=RecentTurnContext.empty(
                 player_input=player_input,
                 player_view=view,

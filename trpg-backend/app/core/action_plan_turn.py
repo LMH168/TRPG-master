@@ -79,6 +79,7 @@ from collaboration_framework.host.schemas import (
     SingleActionClarificationResult,
     SingleActionTurnResult,
 )
+from collaboration_framework.memory import MemoryContext
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -946,6 +947,10 @@ class ActionPlanTurnApplication:
                     player_input=player_input,
                     player_view=view,
                     recent_history=recent_history,
+                    memory_context=MemoryContext.empty(
+                        player_input=player_input,
+                        player_view=view,
+                    ),
                     # A single action is adjudicated right here in the planner call,
                     # so it needs the same Keeper vocabulary a plan step gets.
                     keeper_capabilities=keeper_capabilities,
@@ -1566,6 +1571,10 @@ class ActionPlanTurnApplication:
                 recent_history,
                 player_view=result.player_view,
             ),
+            memory_context=MemoryContext.empty(
+                player_input=player_input,
+                player_view=result.player_view,
+            ),
             focus_entity_ids=focus_entity_ids,
             opening_world_time=result.opening_world_time,
             allowed_evidence_refs=execution.public_event_refs,
@@ -1597,6 +1606,10 @@ class ActionPlanTurnApplication:
             player_view=result.player_view,
             recent_history=self._rebind_recent_history(
                 recent_history,
+                player_view=result.player_view,
+            ),
+            memory_context=MemoryContext.empty(
+                player_input=player_input,
                 player_view=result.player_view,
             ),
             opening_world_time=result.opening_world_time,

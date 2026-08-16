@@ -14,6 +14,7 @@ from collaboration_framework.contracts import (
     PlayerView,
 )
 from collaboration_framework.host.schemas.history import RecentTurnContext
+from collaboration_framework.memory import MemoryContext
 
 
 def _validate_keeper_scope(
@@ -61,6 +62,7 @@ class HostAgentContext(ContractModel):
     player_input: PlayerInput
     player_view: PlayerView
     recent_history: RecentTurnContext
+    memory_context: MemoryContext
     # Controlled Keeper-side capability list. Optional so offline/fake
     # compositions and older callers keep working; when absent the Agent can
     # still only name what the player-safe view exposes.
@@ -78,6 +80,10 @@ class HostAgentContext(ContractModel):
             raise ValueError("HostAgentContext scope 不一致: " + ", ".join(mismatches))
         _validate_keeper_scope(self.keeper_capabilities, self.player_view)
         self.recent_history.validate_for(
+            player_input=self.player_input,
+            player_view=self.player_view,
+        )
+        self.memory_context.validate_for(
             player_input=self.player_input,
             player_view=self.player_view,
         )

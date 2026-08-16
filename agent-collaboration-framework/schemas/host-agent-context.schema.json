@@ -944,6 +944,293 @@
       "title": "LocationContextView",
       "type": "object"
     },
+    "MemoryContext": {
+      "additionalProperties": false,
+      "description": "绑定当前 PlayerView revision 的有限玩家安全长期记忆。",
+      "properties": {
+        "room_id": {
+          "minLength": 1,
+          "title": "Room Id",
+          "type": "string"
+        },
+        "viewer_player_id": {
+          "minLength": 1,
+          "title": "Viewer Player Id",
+          "type": "string"
+        },
+        "viewer_actor_id": {
+          "minLength": 1,
+          "title": "Viewer Actor Id",
+          "type": "string"
+        },
+        "as_of_revision": {
+          "minLength": 1,
+          "title": "As Of Revision",
+          "type": "string"
+        },
+        "entries": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MemoryEntry"
+          },
+          "title": "Entries",
+          "type": "array"
+        },
+        "truncated_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Truncated Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "room_id",
+        "viewer_player_id",
+        "viewer_actor_id",
+        "as_of_revision"
+      ],
+      "title": "MemoryContext",
+      "type": "object"
+    },
+    "MemoryEntry": {
+      "additionalProperties": false,
+      "description": "一条有来源、作用域和认知等级的可重建长期记忆。",
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "projection_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Projection Version",
+          "type": "integer"
+        },
+        "memory_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Memory Id",
+          "type": "string"
+        },
+        "room_id": {
+          "minLength": 1,
+          "title": "Room Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "completed_action",
+            "location_visit",
+            "discovered_information",
+            "world_event",
+            "conversation",
+            "relationship_change",
+            "unresolved_goal"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "subject_id": {
+          "minLength": 1,
+          "title": "Subject Id",
+          "type": "string"
+        },
+        "object_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Object Id"
+        },
+        "location_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Location Id"
+        },
+        "source_turn_id": {
+          "minLength": 1,
+          "title": "Source Turn Id",
+          "type": "string"
+        },
+        "source_kind": {
+          "enum": [
+            "turn",
+            "game_event",
+            "action_execution",
+            "adjudication_execution",
+            "replay_event"
+          ],
+          "title": "Source Kind",
+          "type": "string"
+        },
+        "source_id": {
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_event_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Event Id"
+        },
+        "source_sequence": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Sequence"
+        },
+        "source_ordinal": {
+          "minimum": 0,
+          "title": "Source Ordinal",
+          "type": "integer"
+        },
+        "scope": {
+          "enum": [
+            "campaign",
+            "player",
+            "entity"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "scope_owner_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scope Owner Id"
+        },
+        "visibility": {
+          "enum": [
+            "public",
+            "player_scoped"
+          ],
+          "title": "Visibility",
+          "type": "string"
+        },
+        "viewer_player_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Viewer Player Id"
+        },
+        "epistemic_status": {
+          "enum": [
+            "confirmed",
+            "experienced",
+            "heard",
+            "asserted",
+            "presentation_only"
+          ],
+          "title": "Epistemic Status",
+          "type": "string"
+        },
+        "topic_key": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Topic Key"
+        },
+        "content": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Content",
+          "type": "object"
+        },
+        "search_text": {
+          "default": "",
+          "maxLength": 4000,
+          "title": "Search Text",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "superseded_by": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Superseded By"
+        }
+      },
+      "required": [
+        "memory_id",
+        "room_id",
+        "kind",
+        "subject_id",
+        "source_turn_id",
+        "source_kind",
+        "source_id",
+        "source_ordinal",
+        "scope",
+        "visibility",
+        "epistemic_status",
+        "created_at"
+      ],
+      "title": "MemoryEntry",
+      "type": "object"
+    },
     "NarrativeDetailView": {
       "additionalProperties": false,
       "properties": {
@@ -1883,6 +2170,9 @@
     "recent_history": {
       "$ref": "#/$defs/RecentTurnContext"
     },
+    "memory_context": {
+      "$ref": "#/$defs/MemoryContext"
+    },
     "keeper_capabilities": {
       "anyOf": [
         {
@@ -1898,7 +2188,8 @@
   "required": [
     "player_input",
     "player_view",
-    "recent_history"
+    "recent_history",
+    "memory_context"
   ],
   "title": "HostAgentContext",
   "type": "object"

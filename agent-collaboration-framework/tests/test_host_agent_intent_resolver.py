@@ -36,6 +36,7 @@ from collaboration_framework.host.schemas import (
     RecentTurnContext,
     VisibleHistoryText,
 )
+from collaboration_framework.memory import MemoryContext
 
 
 def context() -> HostAgentContext:
@@ -91,6 +92,10 @@ def context() -> HostAgentContext:
     return HostAgentContext(
         player_input=player_input,
         player_view=player_view,
+        memory_context=MemoryContext.empty(
+            player_input=player_input,
+            player_view=player_view,
+        ),
         recent_history=RecentTurnContext.empty(
             player_input=player_input,
             player_view=player_view,
