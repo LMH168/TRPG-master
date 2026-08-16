@@ -246,12 +246,26 @@ class Narrator:
         raw = await self._model.generate(context)
         if isinstance(raw, dict) and isinstance(raw.get("text"), str):
             raw = {**raw, "text": normalize_narration_text(raw["text"])}
+        if isinstance(raw, dict) and "claimed_evidence_refs" not in raw:
+            # PR1 读取旧 Adapter 的 fact 字段，但规范输出只保留 evidence refs。
+            legacy_claims = raw.get("claimed_fact_ids")
+            if isinstance(legacy_claims, (list, tuple)):
+                raw = {
+                    key: value
+                    for key, value in raw.items()
+                    if key != "claimed_fact_ids"
+                }
+                raw["claimed_evidence_refs"] = legacy_claims
         try:
             output = NarrationOutput.model_validate(raw)
         except (TypeError, ValueError) as exc:
             raise NarrationValidationError("outer_schema") from exc
-        allowed = {fact.id for fact in context.action_result.visible_facts}
-        if not set(output.claimed_fact_ids).issubset(allowed):
+        action_result = getattr(context, "action_result", None)
+        legacy_facts = getattr(action_result, "visible_facts", ())
+        allowed = set(getattr(context, "allowed_evidence_refs", ()))
+        if not allowed:
+            allowed = {fact.id for fact in legacy_facts}
+        if not set(output.claimed_evidence_refs).issubset(allowed):
             raise NarrationValidationError("fact_scope")
         rejection_reason = narration_text_rejection_reason(output.text)
         if rejection_reason is not None:
