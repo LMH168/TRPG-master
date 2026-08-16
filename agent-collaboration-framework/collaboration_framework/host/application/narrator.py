@@ -9,7 +9,10 @@ from collaboration_framework.contracts import ContractError
 from collaboration_framework.host.ports import NarrationModelPort
 from collaboration_framework.host.schemas import NarrationContext, NarrationOutput
 
-from .persistent_results import unsupported_persistent_claim
+from .persistent_results import (
+    unsupported_inventory_acquisition_claim,
+    unsupported_persistent_claim,
+)
 
 NarrationRejectionReason = Literal[
     "outer_schema",
@@ -18,6 +21,10 @@ NarrationRejectionReason = Literal[
     "schema_fragment",
     "subject_ownership",
     "persistent_claim_without_evidence",
+    "required_evidence_missing",
+    "focus_shift_without_evidence",
+    "visible_corpse_search_conflict",
+    "clarification_kind",
 ]
 
 _NARRATION_FIELD = (
@@ -29,7 +36,9 @@ _NARRATION_FIELD = (
 _QUOTED_NARRATION_FIELD = rf"""(?:"|')?{_NARRATION_FIELD}(?:"|')?"""
 _STRUCTURED_VALUE = r"(?:\[[\s\S]*?\]|\{[\s\S]*?\}|null)"
 _QUOTED_STRING_VALUE = r"""(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"""
-_NARRATION_FIELD_VALUE = rf"(?:{_STRUCTURED_VALUE}|{_QUOTED_STRING_VALUE}|narration|clarification)"
+_NARRATION_FIELD_VALUE = (
+    rf"(?:{_STRUCTURED_VALUE}|{_QUOTED_STRING_VALUE}|narration|clarification)"
+)
 
 _STANDALONE_NARRATION_FIELD_RE = re.compile(
     rf"""
@@ -109,6 +118,35 @@ _QUOTED_SPAN_DELIMITERS = {
     "《": "》",
 }
 _FIRST_PERSON_RE = re.compile(r"[我咱]")
+_CORPSE_SEARCH_QUESTION = re.compile(
+    r"(?:从哪里|哪里).{0,12}(?:找|搜)|(?:寻找|搜寻).{0,12}(?:尸体|遗体)"
+)
+
+
+def unsupported_focus_shift_claim(
+    text: str,
+    *,
+    focus_entity_ids: tuple[str, ...],
+    visible_entities: tuple[object, ...],
+    evidence_subject_ids: set[str],
+) -> str | None:
+    """检查叙事是否无证据切换到另一个可见实体。"""
+    if not focus_entity_ids:
+        return None
+    focused = set(focus_entity_ids)
+    normalized_text = text.replace("的", "")
+    for entity in visible_entities:
+        entity_id = getattr(entity, "id", None)
+        if entity_id in focused or entity_id in evidence_subject_ids:
+            continue
+        labels = (getattr(entity, "name", ""), *getattr(entity, "aliases", ()))
+        if any(
+            len(normalized) >= 2 and normalized in normalized_text
+            for label in labels
+            if (normalized := label.replace("的", ""))
+        ):
+            return entity_id
+    return None
 
 
 class NarrationValidationError(ContractError):
@@ -138,7 +176,9 @@ _NARRATION_PIECE_RE = re.compile(
 _MIN_CHUNK_CHARS = 6
 
 
-def split_narration_chunks(text: str, *, min_chars: int = _MIN_CHUNK_CHARS) -> tuple[str, ...]:
+def split_narration_chunks(
+    text: str, *, min_chars: int = _MIN_CHUNK_CHARS
+) -> tuple[str, ...]:
     """Split already-validated narration text at sentence boundaries.
 
     Only for progressive delivery of text that has *already* passed
@@ -266,7 +306,39 @@ class Narrator:
         if not allowed:
             allowed = {fact.id for fact in legacy_facts}
         if not set(output.claimed_evidence_refs).issubset(allowed):
-            raise NarrationValidationError("fact_scope")
+            reason = (
+                "evidence_scope"
+                if hasattr(context, "allowed_evidence_refs")
+                else "fact_scope"
+            )
+            raise NarrationValidationError(reason)
+        completed_steps = getattr(context, "completed_steps", ())
+        required = tuple(
+            item
+            for step in completed_steps
+            for item in getattr(step, "narration_evidence", ())
+            if item.required_in_narration
+        )
+        mentioned_required = tuple(
+            item
+            for item in required
+            if any(
+                label and label in output.text
+                for label in (item.subject_name, *item.subject_aliases)
+            )
+        )
+        if len(mentioned_required) != len(required):
+            raise NarrationValidationError("required_evidence_missing")
+        claimed = tuple(
+            dict.fromkeys(
+                (
+                    *output.claimed_evidence_refs,
+                    *(item.ref for item in mentioned_required),
+                )
+            )
+        )
+        if claimed != output.claimed_evidence_refs:
+            output = output.model_copy(update={"claimed_evidence_refs": claimed})
         rejection_reason = narration_text_rejection_reason(output.text)
         if rejection_reason is not None:
             raise NarrationValidationError(rejection_reason)
@@ -275,11 +347,68 @@ class Narrator:
             raise NarrationValidationError(subject_rejection)
         # 普通单动作叙事同样只能描述最终 PlayerView 已确认的持久状态，
         # 避免它绕过 ActionPlanNarrator 的证据边界自行补写 NPC 后果。
+        committed_results = tuple(
+            result
+            for step in completed_steps
+            for result in getattr(step, "committed_results", ())
+        )
         persistent_rejection = unsupported_persistent_claim(
             output.text,
-            (),
+            committed_results,
             getattr(context, "player_view", None),
         )
         if persistent_rejection is not None:
-            raise NarrationValidationError("persistent_claim_without_evidence")
+            raise NarrationValidationError(
+                f"persistent_claim_without_evidence:{persistent_rejection}"
+            )
+        inventory_rejection = unsupported_inventory_acquisition_claim(
+            output.text,
+            committed_results,
+            getattr(context, "player_view", None),
+        )
+        if inventory_rejection is not None:
+            raise NarrationValidationError(
+                f"persistent_claim_without_evidence:{inventory_rejection}"
+            )
+        player_view = getattr(context, "player_view", None)
+        scene = getattr(player_view, "scene", None)
+        shifted_entity_id = unsupported_focus_shift_claim(
+            output.text,
+            focus_entity_ids=getattr(context, "focus_entity_ids", ()),
+            visible_entities=tuple(
+                (
+                    *getattr(scene, "visible_entities", ()),
+                    *getattr(scene, "visible_actors", ()),
+                )
+            ),
+            evidence_subject_ids={
+                item.subject_id for item in getattr(context, "narration_evidence", ())
+            },
+        )
+        if shifted_entity_id is not None:
+            raise NarrationValidationError(
+                f"focus_shift_without_evidence:{shifted_entity_id}"
+            )
+        visible_dead = tuple(
+            entity
+            for entity in getattr(scene, "visible_entities", ())
+            if any(
+                state.key == "consciousness" and state.value == "dead"
+                for state in entity.observable_state
+            )
+        )
+        if (
+            visible_dead
+            and any(
+                word in getattr(getattr(context, "player_input", None), "utterance", "")
+                for word in ("尸体", "遗体")
+            )
+            and _CORPSE_SEARCH_QUESTION.search(output.text)
+        ):
+            raise NarrationValidationError("visible_corpse_search_conflict")
+        if (
+            getattr(context, "termination_status", None) == "needs_clarification"
+            and output.kind != "clarification"
+        ):
+            raise NarrationValidationError("clarification_kind")
         return output
