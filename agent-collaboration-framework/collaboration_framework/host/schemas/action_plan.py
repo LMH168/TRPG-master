@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, model_validator
 
 from collaboration_framework.contracts import (
     ActionAdjudication,
@@ -13,6 +13,7 @@ from collaboration_framework.contracts import (
     ActionPlanPolicy,
     ActionPlanStep,
     AdjudicationExecution,
+    ActionResult,
     CommittedResult,
     ContractModel,
     JsonObject,
@@ -21,6 +22,7 @@ from collaboration_framework.contracts import (
     PlayerInput,
     PlayerView,
     SingleActionProposal,
+    Intent,
     ValidationFeedback,
     WorldClockView,
 )
@@ -406,8 +408,8 @@ class SingleActionClarificationResult(ContractModel):
     opening_world_time: WorldClockView | None = None
 
 
-class ActionPlanNarrationContext(ContractModel):
-    """Player-safe evidence for one final or partial ActionPlan narration."""
+class NarrationContext(ContractModel):
+    """单动作与行动计划共用的玩家安全最终叙事上下文。"""
 
     background: str = Field(min_length=1)
     player_input: PlayerInput
@@ -440,14 +442,41 @@ class ActionPlanNarrationContext(ContractModel):
     # hidden data, just the player-safe requirement the first output missed.
     narration_retry_hint: str | None = Field(default=None, max_length=500)
 
+    # PR1 期间接收旧 Prompt 调用方的输入，但不把旧字段加入公开 schema。
+    # PR2 切换完成后删除这段适配，所有生产调用统一走上面的完成步骤证据。
+    _legacy_intent: Intent | None = PrivateAttr(default=None)
+    _legacy_action_result: ActionResult | None = PrivateAttr(default=None)
+
+    def __init__(self, **data: Any) -> None:
+        legacy_intent = data.pop("intent", None)
+        legacy_action_result = data.pop("action_result", None)
+        if legacy_intent is not None or legacy_action_result is not None:
+            player_input = data.get("player_input")
+            if not isinstance(player_input, PlayerInput):
+                raise TypeError("兼容 NarrationContext 必须提供 player_input")
+            data.setdefault("plan_goal", player_input.utterance)
+            data.setdefault("termination_status", "resolved")
+        super().__init__(**data)
+        object.__setattr__(self, "_legacy_intent", legacy_intent)
+        object.__setattr__(self, "_legacy_action_result", legacy_action_result)
+
+    def to_json_dict(self) -> dict[str, Any]:
+        """序列化规范上下文，并暂时保留旧 Prompt 的兼容输入字段。"""
+        payload = super().to_json_dict()
+        if self._legacy_intent is not None:
+            payload["intent"] = self._legacy_intent.to_json_dict()
+        if self._legacy_action_result is not None:
+            payload["action_result"] = self._legacy_action_result.to_json_dict()
+        return payload
+
     @model_validator(mode="after")
-    def validate_narration_scope(self) -> ActionPlanNarrationContext:
+    def validate_narration_scope(self) -> NarrationContext:
         if (
             self.player_input.room_id != self.player_view.room_id
             or self.player_input.player_id != self.player_view.player_id
             or self.player_input.actor_id != self.player_view.actor_id
         ):
-            raise ValueError("ActionPlanNarrationContext identity scope 不一致")
+            raise ValueError("NarrationContext identity scope 不一致")
         if self.recent_history is not None:
             self.recent_history.validate_for(
                 player_input=self.player_input,
@@ -455,7 +484,7 @@ class ActionPlanNarrationContext(ContractModel):
             )
         visible_entity_ids = {
             entity.id for entity in self.player_view.scene.visible_entities
-        }
+        } | {actor.id for actor in self.player_view.scene.visible_actors}
         if not set(self.focus_entity_ids).issubset(visible_entity_ids):
             raise ValueError("叙事焦点必须属于最终 PlayerView 的可见实体")
         evidence = tuple(
@@ -478,8 +507,15 @@ class ActionPlanNarrationContext(ContractModel):
         return self
 
 
-class ActionPlanNarrationOutput(ContractModel):
+class NarrationOutput(ContractModel):
+    """最终叙事的内部结构化输出；公开载荷仍由应用层显式构造。"""
+
     kind: Literal["narration", "clarification"] = "narration"
     text: str = Field(min_length=1)
     claimed_evidence_refs: tuple[str, ...] = ()
     suggested_actions: tuple[str, ...] = Field(default=(), max_length=3)
+
+
+# PR1 只统一规范名称，旧名称保留为临时导入兼容；PR2 切换完成后删除。
+ActionPlanNarrationContext = NarrationContext
+ActionPlanNarrationOutput = NarrationOutput

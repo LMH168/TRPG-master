@@ -33,6 +33,7 @@ from collaboration_framework.contracts import (
     GetAdjudicationStatusRequest,
     HideInformationEffect,
     HostDecisionProposal,
+    JsonObject,
     KeeperCapabilityView,
     MarkCoreResolvedEffect,
     MoveEntityEffect,
@@ -792,7 +793,7 @@ def _best_label_overlap(text: str, labels: tuple[str, ...]) -> str | None:
 
 
 class DeterministicActionPlanNarrationModel:
-    async def generate(self, context: ActionPlanNarrationContext) -> object:
+    async def generate(self, context: ActionPlanNarrationContext) -> JsonObject:
         completed = "；".join(
             _quote_action_summary(step.semantic_goal) for step in context.completed_steps
         )

@@ -68,3 +68,7 @@ class TurnOutput(ContractModel):
                 player_view=self.player_view,
             ),
         )
+
+
+# PR1 保留旧的 Python 名称；PR2 切换完成后再删除兼容导出。
+OpeningNarrationOutput = NarrationOutput

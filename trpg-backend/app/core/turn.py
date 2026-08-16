@@ -35,7 +35,7 @@ from collaboration_framework.host.ports import (
     OpeningNarrationModelPort,
 )
 from collaboration_framework.host.schemas import (
-    NarrationOutput,
+    OpeningNarrationOutput,
     RecentHistoryBudget,
     RecentTurnContext,
 )
@@ -82,7 +82,7 @@ class HostModelMetadata:
 
 @dataclass(frozen=True)
 class OpeningGenerationResult:
-    narration: NarrationOutput
+    narration: OpeningNarrationOutput
     result: Literal["model", "template", "fallback"]
     failure_category: str | None = None
 

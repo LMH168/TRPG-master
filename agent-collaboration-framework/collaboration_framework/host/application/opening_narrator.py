@@ -7,8 +7,8 @@ from typing import Literal
 from collaboration_framework.contracts import ContractError
 from collaboration_framework.host.ports import OpeningNarrationModelPort
 from collaboration_framework.host.schemas import (
+    OpeningNarrationOutput,
     OpeningNarrationContext,
-    NarrationOutput,
 )
 
 from .narrator import narration_text_rejection_reason, normalize_narration_text
@@ -36,14 +36,14 @@ class OpeningNarrator:
     def __init__(self, model: OpeningNarrationModelPort) -> None:
         self._model = model
 
-    async def narrate(self, context: OpeningNarrationContext) -> NarrationOutput:
+    async def narrate(self, context: OpeningNarrationContext) -> OpeningNarrationOutput:
         """Require a narration-only result that names every public participant."""
 
         raw = await self._model.generate(context)
         if isinstance(raw, dict) and isinstance(raw.get("text"), str):
             raw = {**raw, "text": normalize_narration_text(raw["text"])}
         try:
-            output = NarrationOutput.model_validate(raw)
+            output = OpeningNarrationOutput.model_validate(raw)
         except (TypeError, ValueError) as exc:
             raise OpeningNarrationValidationError("outer_schema") from exc
         if (
@@ -64,7 +64,7 @@ class OpeningNarrator:
 
 def deterministic_opening_narration(
     context: OpeningNarrationContext,
-) -> NarrationOutput:
+) -> OpeningNarrationOutput:
     """Build a public, deterministic opening without exposing private actor data."""
 
     scene_lines = [
@@ -87,7 +87,7 @@ def deterministic_opening_narration(
         scene_lines.append(f"{participant_labels[0]}此刻就在这里。")
     else:
         scene_lines.append(f"共同在场的调查员有：{'、'.join(participant_labels)}。")
-    return NarrationOutput(
+    return OpeningNarrationOutput(
         kind="narration",
         text="\n".join(scene_lines),
         claimed_fact_ids=(),

@@ -11,6 +11,8 @@ from .action_plan import (
     ActionPlanStepContext,
     ActionPlanStepRun,
     CompletedPlanStepSummary,
+    NarrationContext,
+    NarrationOutput,
     PlanRunStatus,
     PlanStepStatus,
     reservation_is_expired,
@@ -33,7 +35,6 @@ from .agent import (
 )
 from .context import (
     IntentContext,
-    NarrationContext,
     OpeningNarrationContext,
     OpeningParticipant,
     OpeningSceneContext,
@@ -47,7 +48,7 @@ from .history import (
     VisibleHistoryText,
 )
 from .output import (
-    NarrationOutput,
+    OpeningNarrationOutput,
     PlayerTurnPayload,
     TurnOutput,
     WebSocketOutput,
@@ -91,6 +92,7 @@ __all__ = [
     "HistoryVisibility",
     "NarrationContext",
     "NarrationOutput",
+    "OpeningNarrationOutput",
     "OpeningNarrationContext",
     "OpeningParticipant",
     "OpeningSceneContext",

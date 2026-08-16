@@ -45,11 +45,11 @@ from collaboration_framework.host.ports import (
 from collaboration_framework.host.schemas import (
     TERMINAL_PLAN_STATUSES,
     ActionPlanAdvanceResult,
-    ActionPlanNarrationContext,
     ActionPlanRun,
     ActionPlanStepContext,
     ActionPlanStepRun,
     CompletedPlanStepSummary,
+    NarrationContext,
     RecentHistoryBudget,
     RecentTurnContext,
     SingleActionClarificationResult,
@@ -58,6 +58,7 @@ from collaboration_framework.host.schemas import (
 from collaboration_framework.runtime_context import current_turn_id
 
 from .host_agent_intent_resolver import TurnExecutionError
+from .context_assembler import ContextAssembler
 from .player_view_projector import PlayerViewProjector
 
 logger = logging.getLogger(__name__)
@@ -881,7 +882,7 @@ class ActionPlanOrchestrator:
         player_input: PlayerInput,
         *,
         verify_fingerprint: bool = True,
-    ) -> ActionPlanNarrationContext:
+    ) -> NarrationContext:
         run = await self._store.load(
             player_input.room_id,
             player_input.client_action_id,
@@ -917,11 +918,9 @@ class ActionPlanOrchestrator:
             )
         view = await self._player_view_projector.project(player_input)
         summaries = self._narration_summaries(run)
-        evidence = tuple(ref for step in summaries for ref in step.event_refs)
-        narration_evidence = tuple(
-            item for step in summaries for item in step.narration_evidence
-        )
-        visible_entity_ids = {item.id for item in view.scene.visible_entities}
+        visible_entity_ids = {
+            item.id for item in view.scene.visible_entities
+        } | {item.id for item in view.scene.visible_actors}
         focus_entity_ids = tuple(
             dict.fromkeys(
                 step.proposal.semantic_focus.id
@@ -931,8 +930,12 @@ class ActionPlanOrchestrator:
                 and step.proposal.semantic_focus.id in visible_entity_ids
             )
         )
-        return ActionPlanNarrationContext(
-            background=view.background,
+        current_step = (
+            run.steps[run.current_step_index]
+            if run.current_step_index < len(run.steps)
+            else None
+        )
+        return ContextAssembler().for_narration(
             player_input=player_input,
             plan_id=run.plan_id,
             plan_goal=run.plan.goal,
@@ -942,12 +945,9 @@ class ActionPlanOrchestrator:
             recent_history=await self._recent_history(player_input, view),
             focus_entity_ids=focus_entity_ids,
             opening_world_time=run.opening_world_time,
-            allowed_evidence_refs=evidence,
-            narration_evidence=narration_evidence,
             blocked_step_goal=(
-                run.steps[run.current_step_index].step.semantic_goal
-                if run.current_step_index < len(run.steps)
-                and run.steps[run.current_step_index].status == "stopped"
+                current_step.step.semantic_goal
+                if current_step is not None and current_step.status == "stopped"
                 else None
             ),
             remaining_step_goals=tuple(
@@ -956,9 +956,7 @@ class ActionPlanOrchestrator:
                 if item.status == "pending"
             ),
             player_safe_failure_reason=(
-                run.steps[run.current_step_index].last_validation_message
-                if run.current_step_index < len(run.steps)
-                else None
+                current_step.last_validation_message if current_step is not None else None
             ),
         )
 

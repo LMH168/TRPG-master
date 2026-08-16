@@ -34,6 +34,7 @@ from collaboration_framework.host.schemas import (
     NarrationContext,
     NarrationOutput,
     OpeningNarrationContext,
+    OpeningNarrationOutput,
 )
 from pydantic import TypeAdapter, ValidationError
 
@@ -101,6 +102,14 @@ text 只能包含自然的角色内叙事，不得把 claimed_evidence_refs、su
 JSON/schema 字段和值重复写入正文。
 如果输入中提供 narration_retry_hint，说明上一版叙事漏报了一个已提交结果；本次必须
 在自然叙事中明确写出该结果，并准确 claim 对应 ref，然后再返回完整 JSON。
+
+场景定位或感知请求必须根据 PlayerView 直接给出当前可见场景描述，不得凭空补写对象。
+check_result 不为空时必须遵守已提交检定结果；普通检定不能代替或补触发模组规则。
+场景定位应给出一段场景描述，不要要求玩家先指定目标或先做检定；不得借此创造门窗、出口、人物、物品、路线。
+无动作的对话承接应自然回应，不要追问玩家要对哪个对象做什么。这项限制同样适用于角色对白；
+检定失败时尤其不得用对白补发新事实。
+text 只能包含玩家可见的角色内叙事；不得输出 JSON/schema 片段或 Markdown JSON 代码块。
+兼容旧公开结果时，claimed_fact_ids 只能引用 action_result.visible_facts 的精确 id。
 
 【叙事主体】
 - 你是守秘人，不是玩家角色。player_input、plan_goal 或 semantic_goal 中玩家使用的
@@ -196,6 +205,8 @@ _NARRATION_INSTRUCTIONS = """\
 你是克制而有画面感的 TRPG 守秘人。只返回所要求的 JSON。默认使用与玩家相同的
 语言；玩家使用中文时，用自然、简洁的简体中文和“你”来叙述，不使用客服敬语。
 
+场景定位或感知请求必须根据 PlayerView 直接给出当前可见场景描述，不得凭空补写对象。
+
 【叙事主体】
 - 你是守秘人，不是玩家角色。player_input 中玩家使用的“我”始终指
   player_view.self_actor；叙述该角色的行动时使用“你”或角色名，不得把玩家第一人称
@@ -235,8 +246,8 @@ _NARRATION_INSTRUCTIONS = """\
    PlayerView 和不产生玩法信息的即时感受；失败不得声称发现隐藏信息、获得线索或
    取得依赖该检定的额外效果。普通检定不能代替或补触发模组 checkpoint。
 3. “我在哪里”“描述周围”“观察环境”“我能看到什么”等场景定位/感知请求：
-   即使 action_result.resolution 是 unrecognized，也要根据 PlayerView 直接给出
-   一段场景描述，kind 使用 narration。忽略“没有找到对应目标”之类仅供引擎诊断
+   即使 action_result.resolution 是 unrecognized，也要根据 PlayerView 直接给出一段场景描述，
+   kind 使用 narration。忽略“没有找到对应目标”之类仅供引擎诊断
    的 visible_fact，claimed_fact_ids 留空；不要要求玩家先指定目标或先做检定。
 4. 玩家尝试接触一个当前素材中没有、或不能唯一确定的地点/物体（例如未出现的花园
    或未指明的门）：不要编造行动成功。先用一句角色内的即时反馈维持画面，再只问
@@ -381,7 +392,7 @@ class PromptNarrationModel:
         return await self._client.generate(
             schema_name="trpg_narration",
             schema=NarrationOutput.model_json_schema(mode="serialization"),
-            instructions=_NARRATION_INSTRUCTIONS,
+            instructions=_ACTION_PLAN_NARRATION_INSTRUCTIONS,
             input_payload=context.to_json_dict(),
         )
 
@@ -395,7 +406,7 @@ class PromptOpeningNarrationModel:
     async def generate(self, context: OpeningNarrationContext) -> JsonObject:
         return await self._client.generate(
             schema_name="trpg_opening_narration",
-            schema=NarrationOutput.model_json_schema(mode="serialization"),
+            schema=OpeningNarrationOutput.model_json_schema(mode="serialization"),
             instructions=_OPENING_NARRATION_INSTRUCTIONS,
             input_payload=context.to_json_dict(),
         )
