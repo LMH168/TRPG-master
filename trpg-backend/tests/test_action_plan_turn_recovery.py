@@ -241,6 +241,23 @@ def test_success_fallback_includes_authoritative_scene_and_time() -> None:
     assert "守墓人" in output.text
 
 
+def test_narration_fallback_failure_still_returns_safe_result(monkeypatch) -> None:
+    """历史上下文异常时，叙事兜底失败也不能让已提交回合进入内部错误。"""
+
+    def fail(_context):
+        raise ValueError("malformed historical context")
+
+    monkeypatch.setattr(
+        ActionPlanTurnApplication,
+        "_deterministic_narration_fallback",
+        staticmethod(fail),
+    )
+
+    output = ActionPlanTurnApplication._safe_narration_fallback(cast(Any, object()))
+
+    assert output.text == "行动结果已经保存，当前状态已更新。"
+
+
 def test_stopped_plan_clarification_requires_a_new_action() -> None:
     """计划停止后应明确后续未执行，并要求玩家重新提交新行动。"""
 

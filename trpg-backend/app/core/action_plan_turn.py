@@ -1647,7 +1647,7 @@ class ActionPlanTurnApplication:
             for step in context.completed_steps
         ):
             # 未完成持久目标时不让自由文本从检定成功外推伤势、死亡或物品变化。
-            return self._deterministic_narration_fallback(context)
+            return self._safe_narration_fallback(context)
         for attempt in range(2):
             try:
                 return await self._narrator.narrate(context)
@@ -1687,8 +1687,8 @@ class ActionPlanTurnApplication:
                                 if item.required_in_narration
                             ],
                         )
-                        return self._required_evidence_fallback(context)
-                    return self._deterministic_narration_fallback(context)
+                        return self._safe_narration_fallback(context, prefer_evidence=True)
+                    return self._safe_narration_fallback(context)
             except Exception as exc:
                 # 传输层的瞬态失败已经由 StructuredJsonClient 自己重试过了
                 # （见 adapters/structured_http.py）。在这里再整体重试一轮，两层
@@ -1704,9 +1704,36 @@ class ActionPlanTurnApplication:
                     item for item in context.narration_evidence if item.required_in_narration
                 )
                 if required and context.termination_status != "needs_clarification":
-                    return self._required_evidence_fallback(context)
-                return self._deterministic_narration_fallback(context)
+                    return self._safe_narration_fallback(context, prefer_evidence=True)
+                return self._safe_narration_fallback(context)
         raise AssertionError("unreachable")
+
+    @staticmethod
+    def _safe_narration_fallback(
+        context: NarrationContext,
+        *,
+        prefer_evidence: bool = False,
+    ) -> NarrationOutput:
+        """保证叙事阶段始终能落出玩家安全文本，绝不让已提交回合卡死。"""
+
+        try:
+            if prefer_evidence:
+                return ActionPlanTurnApplication._required_evidence_fallback(context)
+            return ActionPlanTurnApplication._deterministic_narration_fallback(context)
+        except Exception as exc:
+            # fallback 本身也可能因历史数据版本或模型上下文异常失败；此时不能
+            # 再把异常抛回 Engine。receipt 已证明状态提交，返回最小安全结果即可。
+            logger.exception(
+                "action_plan_narration_fallback_failed",
+                action=getattr(
+                    getattr(context, "player_input", None), "client_action_id", "unknown"
+                ),
+                error_type=type(exc).__name__,
+            )
+            return NarrationOutput(
+                text="行动结果已经保存，当前状态已更新。",
+                claimed_evidence_refs=(),
+            )
 
     @staticmethod
     def _required_evidence_fallback(
