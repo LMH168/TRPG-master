@@ -726,7 +726,8 @@ def _rule_candidates(
                         id=option.id,
                         semantic_hints=option.semantic_hints,
                         # 分支里有没有检定步，是 Agent 必须知道的；后果仍然不出服务端。
-                        requires_check=pending_check_for(rule, option.id)[0] is not None,
+                        requires_check=pending_check_for(rule, option.id)[0]
+                        is not None,
                     )
                     for option in trigger.options
                 ),

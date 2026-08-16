@@ -381,9 +381,7 @@ def _rule_issues(
             )
     elif isinstance(rule.trigger, AgentMatchTriggerSpec):
         if rule.trigger.when is not None:
-            issues.extend(
-                _condition_issues(rule.trigger.when, f"{path}.trigger.when")
-            )
+            issues.extend(_condition_issues(rule.trigger.when, f"{path}.trigger.when"))
             issues.extend(
                 _plot_thread_predicate_issues(
                     rule.trigger.when,

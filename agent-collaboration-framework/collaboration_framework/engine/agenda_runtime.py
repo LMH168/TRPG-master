@@ -85,9 +85,7 @@ class RulesetActionRegistry:
 
     def __init__(
         self,
-        actions: dict[
-            str, Literal["apply_condition", "advance_to_condition_expiry"]
-        ]
+        actions: dict[str, Literal["apply_condition", "advance_to_condition_expiry"]]
         | None = None,
     ) -> None:
         self._actions = actions or {
@@ -935,7 +933,9 @@ class RuleAgendaExecutor:
         if actor is None or condition not in actor.conditions:
             raise ContractError("待恢复的临时 condition 不存在")
         expirations = actor.state.get("condition_expirations")
-        target_hour = expirations.get(condition) if isinstance(expirations, dict) else None
+        target_hour = (
+            expirations.get(condition) if isinstance(expirations, dict) else None
+        )
         if not isinstance(target_hour, int) or isinstance(target_hour, bool):
             raise ContractError("临时 condition 缺少权威到期时间")
         if target_hour <= state.world_time.current.absolute_hour:
@@ -962,11 +962,15 @@ class RuleAgendaExecutor:
             raise ContractError("时间推进未到达临时 condition 的权威到期点")
         if condition in advanced.actors[actor_id].conditions:
             raise ContractError("临时 condition 到期后未被清除")
-        return advanced, events, {
-            "condition": condition,
-            "expired_at": target_hour,
-            "current_point_id": advanced.world_time.current_point_id,
-        }
+        return (
+            advanced,
+            events,
+            {
+                "condition": condition,
+                "expired_at": target_hour,
+                "current_point_id": advanced.world_time.current_point_id,
+            },
+        )
 
     def _create_npc_opportunity(
         self,
