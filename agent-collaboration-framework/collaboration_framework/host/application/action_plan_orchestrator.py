@@ -55,10 +55,17 @@ from collaboration_framework.host.schemas import (
     SingleActionClarificationResult,
     SingleActionTurnResult,
 )
+from collaboration_framework.memory import (
+    MemoryBudget,
+    MemoryContext,
+    MemoryQuery,
+    MemoryReadScope,
+    MemoryStore,
+)
 from collaboration_framework.runtime_context import current_turn_id
 
-from .host_agent_intent_resolver import TurnExecutionError
 from .context_assembler import ContextAssembler
+from .host_agent_intent_resolver import TurnExecutionError
 from .player_view_projector import PlayerViewProjector
 
 logger = logging.getLogger(__name__)
@@ -117,6 +124,8 @@ class ActionPlanOrchestrator:
         on_step_failure: ActionPlanStepFailureObserver | None = None,
         recent_history_source: RecentHistorySource | None = None,
         recent_history_budget: RecentHistoryBudget | None = None,
+        memory_store: MemoryStore | None = None,
+        memory_budget: MemoryBudget | None = None,
     ) -> None:
         if lease_seconds < 1:
             raise ValueError("lease_seconds 必须大于 0")
@@ -129,6 +138,8 @@ class ActionPlanOrchestrator:
         self._on_step_failure = on_step_failure
         self._recent_history_source = recent_history_source
         self._recent_history_budget = recent_history_budget or RecentHistoryBudget()
+        self._memory_store = memory_store
+        self._memory_budget = memory_budget or MemoryBudget()
 
     @property
     def policy(self) -> ActionPlanPolicy:
@@ -918,9 +929,9 @@ class ActionPlanOrchestrator:
             )
         view = await self._player_view_projector.project(player_input)
         summaries = self._narration_summaries(run)
-        visible_entity_ids = {
-            item.id for item in view.scene.visible_entities
-        } | {item.id for item in view.scene.visible_actors}
+        visible_entity_ids = {item.id for item in view.scene.visible_entities} | {
+            item.id for item in view.scene.visible_actors
+        }
         focus_entity_ids = tuple(
             dict.fromkeys(
                 step.proposal.semantic_focus.id
@@ -943,6 +954,7 @@ class ActionPlanOrchestrator:
             completed_steps=summaries,
             player_view=view,
             recent_history=await self._recent_history(player_input, view),
+            memory_context=await self._memory_context(player_input, view),
             focus_entity_ids=focus_entity_ids,
             opening_world_time=run.opening_world_time,
             blocked_step_goal=(
@@ -956,7 +968,9 @@ class ActionPlanOrchestrator:
                 if item.status == "pending"
             ),
             player_safe_failure_reason=(
-                current_step.last_validation_message if current_step is not None else None
+                current_step.last_validation_message
+                if current_step is not None
+                else None
             ),
         )
 
@@ -1065,6 +1079,35 @@ class ActionPlanOrchestrator:
                 extra={"error_type": type(exc).__name__},
             )
             return None
+
+    async def _memory_context(
+        self,
+        player_input: PlayerInput,
+        view: PlayerView,
+    ) -> MemoryContext:
+        """读取玩家安全长期记忆；投影缺失不能阻断权威回合。"""
+
+        empty = MemoryContext.empty(player_input=player_input, player_view=view)
+        if self._memory_store is None:
+            return empty
+        try:
+            context = await self._memory_store.read_context(
+                scope=MemoryReadScope.from_view(
+                    player_input=player_input,
+                    player_view=view,
+                ),
+                query=MemoryQuery(),
+                budget=self._memory_budget,
+            )
+            return context.validate_for(player_input=player_input, player_view=view)
+        except Exception as exc:  # noqa: BLE001 - 任意 Store 故障都必须安全降级
+            # Memory 是异步派生读模型；任何读取或校验故障都只能降级为空，
+            # 不能回滚已提交步骤，也不能让 Narrator 重跑 Engine。
+            logger.warning(
+                "action_plan_memory_context_degraded",
+                extra={"error_type": type(exc).__name__},
+            )
+            return empty
 
     async def _freeze_current_adjudication(
         self,

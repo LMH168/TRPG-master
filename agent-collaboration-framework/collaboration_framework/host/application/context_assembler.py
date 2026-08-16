@@ -83,6 +83,7 @@ class ContextAssembler:
         completed_steps: tuple[CompletedPlanStepSummary, ...],
         player_view: PlayerView,
         recent_history: RecentTurnContext | None = None,
+        memory_context: MemoryContext | None = None,
         focus_entity_ids: tuple[str, ...] = (),
         plan_id: str | None = None,
         opening_world_time: WorldClockView | None = None,
@@ -93,17 +94,13 @@ class ContextAssembler:
     ) -> NarrationContext:
         """从最终安全视图和已提交步骤构造统一 NarrationContext。"""
 
-        visible_actor_ids = {
-            actor.id for actor in player_view.scene.visible_actors
-        }
+        visible_actor_ids = {actor.id for actor in player_view.scene.visible_actors}
         visible_ids = visible_actor_ids | {
             entity.id for entity in player_view.scene.visible_entities
         }
         current_focus = tuple(
             dict.fromkeys(
-                entity_id
-                for entity_id in focus_entity_ids
-                if entity_id in visible_ids
+                entity_id for entity_id in focus_entity_ids if entity_id in visible_ids
             )
         )
         if not current_focus and recent_history is not None:
@@ -133,9 +130,13 @@ class ContextAssembler:
             completed_steps=completed_steps,
             player_view=player_view,
             recent_history=recent_history,
-            memory_context=MemoryContext.empty(
-                player_input=player_input,
-                player_view=player_view,
+            memory_context=(
+                memory_context
+                if memory_context is not None
+                else MemoryContext.empty(
+                    player_input=player_input,
+                    player_view=player_view,
+                )
             ),
             focus_entity_ids=current_focus,
             opening_world_time=opening_world_time,
