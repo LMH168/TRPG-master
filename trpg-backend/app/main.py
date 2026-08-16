@@ -33,6 +33,7 @@ from app.service.portrait_generation import (
     build_portrait_generation_service,
 )
 from app.service.reliable_turn_runtime import turn_runtime_supervisor
+from app.service.rule_agenda_runtime import rule_agenda_supervisor
 
 # 模块被导入时就把 structlog 配好（只需要配一次），后面直接用 structlog.get_logger()。
 configure_logging()
@@ -72,6 +73,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 可靠回合是唯一生产入口；启动时恢复租约过期的 Turn，并继续投递已持久化
     # Outbox。已提交回合只能按原 payload 重投，绝不能退回执行链重做。
     await turn_runtime_supervisor.start()
+    # Agenda 恢复只能唤醒已有 Turn；必须排在 Turn lease/Outbox 恢复之后。
+    await rule_agenda_supervisor.start()
     # Memory 是可重建读模型，独立扫描终态 Turn，不进入 Engine/Outbox 提交链。
     await memory_projection_supervisor.start()
     logger.info("app_started")
@@ -79,6 +82,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         yield
     finally:
         await memory_projection_supervisor.shutdown()
+        await rule_agenda_supervisor.shutdown()
         await turn_runtime_supervisor.shutdown()
         await portrait_service.shutdown()
         logger.info("app_stopped")

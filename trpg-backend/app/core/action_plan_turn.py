@@ -21,6 +21,7 @@ from collaboration_framework.contracts import (
     ActionTarget,
     AdjudicationExecution,
     AdvanceWorldTimeEffect,
+    AgendaContinuationProposal,
     CancelActionPlanRequest,
     CancelCheckChoice,
     ChangeEntityStateEffect,
@@ -51,7 +52,12 @@ from collaboration_framework.contracts import (
     SkillCheckCandidate,
     WorldClockView,
 )
-from collaboration_framework.engine import AdjudicationEngineService, EngineStore, RuleEngineService
+from collaboration_framework.engine import (
+    AdjudicationEngineService,
+    EngineStore,
+    RuleAgendaExecutor,
+    RuleEngineService,
+)
 from collaboration_framework.host.adapters import InMemoryActionPlanRunStore
 from collaboration_framework.host.application import (
     ActionPlanOrchestrator,
@@ -86,6 +92,7 @@ from collaboration_framework.memory import (
     MemoryReadScope,
     MemoryStore,
 )
+from collaboration_framework.runtime_context import current_turn_id
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -362,6 +369,19 @@ class DeterministicHostTurnDecisionModel:
 
     async def generate(self, context: HostAgentContext) -> HostDecisionProposal:
         utterance = context.player_input.utterance
+        continuation_matches = [
+            (candidate, option)
+            for candidate in context.agenda_continuation_candidates
+            for option in candidate.options
+            if any(hint in utterance for hint in option.semantic_hints)
+        ]
+        if len(continuation_matches) == 1:
+            candidate, option = continuation_matches[0]
+            return AgendaContinuationProposal(
+                agenda_id=candidate.agenda_id,
+                boundary_id=candidate.boundary_id,
+                option_id=option.option_id,
+            )
         separators = ("然后", "接着", "随后", "再去", "，再", ";", "；")
         pieces = [utterance]
         for separator in separators:
@@ -854,6 +874,7 @@ class ActionPlanTurnApplication:
         recent_history_source: RecentHistorySource,
         recent_history_budget: RecentHistoryBudget,
         recent_history_enabled: bool,
+        agenda_executor: RuleAgendaExecutor | None = None,
         memory_store: MemoryStore | None = None,
         memory_budget: MemoryBudget | None = None,
     ) -> None:
@@ -867,6 +888,7 @@ class ActionPlanTurnApplication:
         self._recent_history_enabled = recent_history_enabled
         self._memory_store = memory_store
         self._memory_budget = memory_budget or MemoryBudget()
+        self._agenda_executor = agenda_executor
         self._narrator = narrator
         self._projector = PlayerViewProjector(engine)
         self._dispatcher = HostTurnDecisionExecutor(
@@ -955,6 +977,15 @@ class ActionPlanTurnApplication:
             player_input=player_input,
             player_view=view,
         )
+        agenda_candidates = (
+            await self._agenda_executor.continuation_candidates(
+                room_id=room_id,
+                player_id=player_id,
+                actor_id=actor_id,
+            )
+            if self._agenda_executor is not None
+            else ()
+        )
         try:
             decision = await self._planner.generate(
                 HostAgentContext(
@@ -962,6 +993,7 @@ class ActionPlanTurnApplication:
                     player_view=view,
                     recent_history=recent_history,
                     memory_context=memory_context,
+                    agenda_continuation_candidates=agenda_candidates,
                     # A single action is adjudicated right here in the planner call,
                     # so it needs the same Keeper vocabulary a plan step gets.
                     keeper_capabilities=keeper_capabilities,
@@ -984,6 +1016,38 @@ class ActionPlanTurnApplication:
                 player_view=view,
             )
         await _emit_phase(on_phase, "executing_action")
+        if isinstance(decision, AgendaContinuationProposal):
+            if self._agenda_executor is None:
+                raise TurnExecutionError(
+                    "AGENDA_CONTINUATION_UNAVAILABLE",
+                    "当前等待选择暂时无法恢复",
+                    retryable=True,
+                )
+            turn_id = current_turn_id()
+            if turn_id is None:
+                raise TurnExecutionError(
+                    "AGENDA_CONTINUATION_UNAVAILABLE",
+                    "当前等待选择缺少可靠回合身份",
+                    retryable=True,
+                )
+            await self._agenda_executor.resume_continuation(
+                decision,
+                room_id=room_id,
+                player_id=player_id,
+                actor_id=actor_id,
+                turn_id=turn_id,
+                source_revision=view.revision,
+            )
+            await self._agenda_executor.drain(room_id=room_id, turn_id=turn_id)
+            final_view = await self._projector.project(player_input)
+            await _emit_phase(on_phase, "refreshing_player_view")
+            await _emit_phase(on_phase, "generating_narration")
+            return ActionPlanTurnResult(
+                player_input=player_input,
+                player_view=final_view,
+                status="completed",
+                narration=NarrationOutput(text="你的选择已经生效，当前局面已按规则结果更新。"),
+            )
         result = await self._dispatcher.execute(
             player_input,
             decision,
@@ -1510,6 +1574,7 @@ class ActionPlanTurnApplication:
                 "行动计划尚未到达可返回状态",
                 retryable=True,
             )
+        await self._drain_rule_agendas(player_input)
         context = await self._orchestrator.build_narration_context(
             player_input,
             verify_fingerprint=verify_fingerprint,
@@ -1560,6 +1625,14 @@ class ActionPlanTurnApplication:
                 "行动目标状态尚未完成，请重试",
                 retryable=True,
             )
+        await self._drain_rule_agendas(player_input)
+        # Agenda 可能提交 SAN、condition 或规则 Effect；Narrator 只能读取 drain
+        # 后的最终视图，不能继续使用裁决返回时的旧快照。
+        final_view = await self._projector.project(player_input)
+        result = SingleActionTurnResult(
+            execution=result.execution,
+            player_view=final_view,
+        )
         completed_summary = CompletedPlanStepSummary(
             step_index=0,
             semantic_goal=summary,
@@ -1597,6 +1670,17 @@ class ActionPlanTurnApplication:
             status="completed",
             execution=execution,
             narration=await self._narrate(context),
+        )
+
+    async def _drain_rule_agendas(self, player_input: PlayerInput) -> None:
+        """在 Narrator 前推进当前可靠 Turn 的全部自动 Agenda。"""
+
+        turn_id = current_turn_id()
+        if self._agenda_executor is None or turn_id is None:
+            return
+        await self._agenda_executor.drain(
+            room_id=player_input.room_id,
+            turn_id=turn_id,
         )
 
     async def _from_single_clarification(
@@ -2023,6 +2107,7 @@ def build_action_plan_turn_application(
     client=None,
     recent_history_source: RecentHistorySource | None = None,
     memory_store: MemoryStore | None = None,
+    agenda_executor: RuleAgendaExecutor | None = None,
 ) -> ActionPlanTurnApplication:
     """Compose the finite-plan path without changing the single-intent Engine."""
 
@@ -2092,6 +2177,24 @@ def build_action_plan_turn_application(
     )
     memory_budget = MemoryBudget(max_entries=8, max_chars=4000)
     history_source = recent_history_source or _EmptyRecentHistorySource()
+
+    async def drain_committed_step(player_input: PlayerInput) -> str | None:
+        """在 ActionPlan 两个步骤之间推进当前可靠 Turn 的自动 Agenda。"""
+
+        turn_id = current_turn_id()
+        if agenda_executor is None or turn_id is None:
+            return None
+        executions = await agenda_executor.drain(
+            room_id=player_input.room_id,
+            turn_id=turn_id,
+        )
+        statuses = {item.result.get("agenda_status") for item in executions}
+        if "failed" in statuses:
+            return "failed"
+        if "awaiting_player_input" in statuses:
+            return "awaiting_player_input"
+        return None
+
     orchestrator = ActionPlanOrchestrator(
         store=plan_store,
         adjudicator=adjudicator,
@@ -2103,6 +2206,7 @@ def build_action_plan_turn_application(
         recent_history_budget=recent_history_budget,
         memory_store=memory_store,
         memory_budget=memory_budget,
+        on_step_committed=drain_committed_step,
     )
     return ActionPlanTurnApplication(
         store=store,
@@ -2114,6 +2218,7 @@ def build_action_plan_turn_application(
         recent_history_source=history_source,
         recent_history_budget=recent_history_budget,
         recent_history_enabled=resolved.recent_history_enabled,
+        agenda_executor=agenda_executor,
         memory_store=memory_store,
         memory_budget=memory_budget,
     )
@@ -2498,6 +2603,7 @@ def _production_application() -> ActionPlanTurnApplication:
         action_plan_store,
         adjudication_engine_service,
         engine_store,
+        rule_agenda_executor,
         rule_engine_service,
     )
 
@@ -2508,6 +2614,7 @@ def _production_application() -> ActionPlanTurnApplication:
         plan_store=action_plan_store,
         recent_history_source=SqlAlchemyRecentHistorySource(async_session_factory),
         memory_store=SqlAlchemyMemoryStore(async_session_factory),
+        agenda_executor=rule_agenda_executor,
     )
 
 

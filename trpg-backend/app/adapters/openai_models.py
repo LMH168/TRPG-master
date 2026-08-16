@@ -55,6 +55,10 @@ source_revision、authority、骰点结果、提交状态、状态路径或 pers
 ProposalRef 引用；当前视图对象使用其实际 kind/id，本次新建对象使用 runtime_location 或
 runtime_entity 的逻辑别名，并先 ensure 再引用。
 
+若 agenda_continuation_candidates 中的某一有限选项明确匹配玩家本轮回答，输出
+AgendaContinuationProposal，只能原样选择其中的 agenda_id、boundary_id 和 option_id。
+若玩家没有在回答这些候选，按普通新行动处理；不得猜测、不得自行指定下一步骤或 Effect。
+
 单动作固定输出 schema_version=2，必须逐字保留输入中冻结的 semantic_goal，并给出
 semantic_focus、可选 anchor_ref、开放字符串 method_family/method_description、
 target_interaction、execution_means、check_proposal 及有序的成功/失败 Effect Proposal。
