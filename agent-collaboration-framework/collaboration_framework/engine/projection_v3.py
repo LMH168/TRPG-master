@@ -23,6 +23,8 @@ from collaboration_framework.contracts import (
     AgentMatchTriggerSpec,
     ContractError,
     EntitySpecV3,
+    InventoryItemView,
+    ItemInstance,
     KeeperCapabilityView,
     KeeperEndingCapability,
     KeeperEntityCapability,
@@ -31,8 +33,6 @@ from collaboration_framework.contracts import (
     KeeperRuleCandidate,
     KeeperRuleOption,
     KeeperTimeCapability,
-    InventoryItemView,
-    ItemInstance,
     LocationKnowledge,
     LocationSpecV3,
     ModuleContentV3,
@@ -57,8 +57,8 @@ from collaboration_framework.contracts import (
 from .models import EngineRuntimeSnapshot, GameState
 from .navigation import effective_location_knowledge, runtime_location_edges
 from .persistent_results import PUBLIC_STATE_KEYS
-from .timeline import next_point_after, ordered_points, time_advance_block_reason
 from .rules_v3 import agent_match_scope_admits, evaluate_condition, pending_check_for
+from .timeline import next_point_after, ordered_points, time_advance_block_reason
 
 # Visibility levels an authored node may carry, ordered from most to least open.
 _PLAYER_VISIBLE = {"public", "party"}
@@ -687,7 +687,11 @@ def _optional_text(value) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
-def _rule_candidates(module, location_id: str) -> tuple[KeeperRuleCandidate, ...]:
+def _rule_candidates(
+    module,
+    state: GameState,
+    actor_id: str,
+) -> tuple[KeeperRuleCandidate, ...]:
     """agent_match Rules whose scope covers where the actor is standing.
 
     Scope filtering is the Engine's job so the Agent never sees rules for places
@@ -701,7 +705,12 @@ def _rule_candidates(module, location_id: str) -> tuple[KeeperRuleCandidate, ...
         if not isinstance(trigger, AgentMatchTriggerSpec):
             continue
         # 同一个谓词也用在提交侧，两边不会各自漂移。
-        if not agent_match_scope_admits(rule, location_id=location_id):
+        if not agent_match_scope_admits(
+            rule,
+            location_id=state.scene_id,
+            state=state,
+            actor_id=actor_id,
+        ):
             continue
         scope = trigger.scope
         candidates.append(
@@ -838,7 +847,7 @@ def keeper_capabilities_v3(
             )
             for anchor in module.ending_anchors
         ),
-        rule_candidates=_rule_candidates(module, state.scene_id),
+        rule_candidates=_rule_candidates(module, state, actor_id),
         time=_time_capability(module, state),
         core_resolved=state.core_resolved,
         ending_available=state.ending_available,

@@ -443,6 +443,8 @@ def agent_match_scope_admits(
     rule: RuleSpecV3,
     *,
     location_id: str,
+    state: GameState | None = None,
+    actor_id: str | None = None,
     action_family: str | None = None,
     target_kind: str | None = None,
     target_id: str | None = None,
@@ -460,6 +462,12 @@ def agent_match_scope_admits(
 
     trigger = rule.trigger
     if not isinstance(trigger, AgentMatchTriggerSpec):
+        return False
+    if state is not None and not evaluate_condition(
+        trigger.when,
+        state=state,
+        actor_id=actor_id or "",
+    ):
         return False
     scope = trigger.scope
     if scope.location_ids and location_id not in scope.location_ids:

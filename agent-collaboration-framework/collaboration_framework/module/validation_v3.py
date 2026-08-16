@@ -380,6 +380,17 @@ def _rule_issues(
                 )
             )
     elif isinstance(rule.trigger, AgentMatchTriggerSpec):
+        if rule.trigger.when is not None:
+            issues.extend(
+                _condition_issues(rule.trigger.when, f"{path}.trigger.when")
+            )
+            issues.extend(
+                _plot_thread_predicate_issues(
+                    rule.trigger.when,
+                    f"{path}.trigger.when",
+                    plot_thread_ids,
+                )
+            )
         for index, location_id in enumerate(rule.trigger.scope.location_ids):
             require(
                 location_id,
@@ -593,7 +604,10 @@ def _all_continuations_reach_presentation(
     blocking_step = steps[blocking_step_id]
 
     def reaches_presentation(step_id: str, visiting: frozenset[str]) -> bool:
-        step = steps[step_id]
+        step = steps.get(step_id)
+        if step is None:
+            # 悬空游标由步骤引用校验报告；这里仍返回不安全，避免坏模组使校验器崩溃。
+            return False
         if isinstance(step, PresentationStep):
             return True
         if step_id in visiting:
