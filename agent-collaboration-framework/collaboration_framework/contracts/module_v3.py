@@ -781,6 +781,8 @@ class PlotThreadSpec(ContractModel):
     def validate_visibility_and_dependencies(self) -> PlotThreadSpec:
         if self.visibility == "player" and not self.player_safe_summary.strip():
             raise ValueError("玩家可见 PlotThread 必须包含 player_safe_summary")
+        if self.dependency_thread_ids and self.initial_status != "locked":
+            raise ValueError("存在依赖的 PlotThread 必须以 locked 状态开始")
         if self.id in self.dependency_thread_ids:
             raise ValueError("PlotThread 不能依赖自身")
         if len(self.dependency_thread_ids) != len(set(self.dependency_thread_ids)):

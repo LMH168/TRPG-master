@@ -14,6 +14,7 @@ from collaboration_framework.contracts import (
     ContractError,
     EffectProposal,
     EffectStep,
+    HostDecisionProposal,
     ModuleContentV3,
     PlotThreadSpec,
     PredicateCondition,
@@ -288,6 +289,12 @@ def test_waiting_input_v2_has_finite_options_and_legacy_step_still_reads() -> No
     )
     assert "next_step_id" not in continuation.model_dump(mode="json")
 
+    # PR1 只发布恢复契约，不提前扩大生产 Host 输出联合。
+    with pytest.raises(ValidationError):
+        TypeAdapter(HostDecisionProposal).validate_python(
+            continuation.model_dump(mode="json")
+        )
+
 
 def test_plot_thread_initialization_and_terminal_transition_are_authoritative() -> None:
     module = _module().model_copy(
@@ -316,27 +323,116 @@ def test_plot_thread_initialization_and_terminal_transition_are_authoritative() 
         },
     )
     started = transition_plot_thread(
-        state.plot_threads["crypt_entry"],
+        module,
+        state,
+        thread_id="crypt_entry",
         to_status="in_progress",
         event_id="event-start",
     )
+    state = state.model_copy(
+        update={"plot_threads": {"crypt_entry": started}}, deep=True
+    )
     resolved = transition_plot_thread(
-        started,
+        module,
+        state,
+        thread_id="crypt_entry",
         to_status="resolved",
         event_id="event-resolved",
     )
+    state = state.model_copy(
+        update={"plot_threads": {"crypt_entry": resolved}}, deep=True
+    )
     assert (
         transition_plot_thread(
-            resolved, to_status="resolved", event_id="event-resolved"
+            module,
+            state,
+            thread_id="crypt_entry",
+            to_status="resolved",
+            event_id="event-resolved",
         )
         == resolved
     )
     with pytest.raises(ValueError, match="非法迁移"):
         transition_plot_thread(
-            resolved,
+            module,
+            state,
+            thread_id="crypt_entry",
             to_status="in_progress",
             event_id="event-reopen",
         )
+
+
+def test_plot_thread_dependencies_gate_initialization_and_unlock() -> None:
+    with pytest.raises(ValidationError, match="必须以 locked 状态开始"):
+        PlotThreadSpec(
+            id="dependent",
+            initial_status="available",
+            dependency_thread_ids=("foundation",),
+        )
+
+    module = _module().model_copy(
+        update={
+            "plot_threads": (
+                PlotThreadSpec(id="foundation", initial_status="available"),
+                PlotThreadSpec(
+                    id="dependent",
+                    dependency_thread_ids=("foundation",),
+                ),
+            )
+        },
+        deep=True,
+    )
+    state = create_initial_game_state(
+        module,
+        room_id="room-1",
+        actors={
+            "actor-1": ActorState(
+                player_id="player-1",
+                name="调查员",
+                source_character_id="character-1",
+                source_character_version=1,
+            )
+        },
+    )
+    with pytest.raises(ContractError, match="依赖尚未完成"):
+        transition_plot_thread(
+            module,
+            state,
+            thread_id="dependent",
+            to_status="available",
+            event_id="event-unlock-early",
+        )
+
+    foundation = transition_plot_thread(
+        module,
+        state,
+        thread_id="foundation",
+        to_status="in_progress",
+        event_id="event-foundation-start",
+    )
+    state = state.model_copy(
+        update={"plot_threads": {**state.plot_threads, "foundation": foundation}},
+        deep=True,
+    )
+    foundation = transition_plot_thread(
+        module,
+        state,
+        thread_id="foundation",
+        to_status="resolved",
+        event_id="event-foundation-resolved",
+    )
+    state = state.model_copy(
+        update={"plot_threads": {**state.plot_threads, "foundation": foundation}},
+        deep=True,
+    )
+    unlocked = transition_plot_thread(
+        module,
+        state,
+        thread_id="dependent",
+        to_status="available",
+        event_id="event-unlock",
+    )
+    assert unlocked.status == "available"
 
 
 def test_host_effect_union_cannot_construct_plot_thread_transition() -> None:

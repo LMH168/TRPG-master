@@ -1964,7 +1964,9 @@ class AdjudicationEngineService:
                 )
             try:
                 transition_plot_thread(
-                    current_thread,
+                    runtime.v3,
+                    state,
+                    thread_id=effect.thread_id,
                     to_status=effect.to_status,
                     event_id="validation",
                 )
@@ -2993,7 +2995,9 @@ class AdjudicationEngineService:
             # 事件 ID 与状态快照一起生成并提交，恢复时可识别同一次迁移。
             effect_event_id = self._new_id("evt")
             transitioned = transition_plot_thread(
-                current_thread,
+                runtime.v3,
+                state,
+                thread_id=effect.thread_id,
                 to_status=effect.to_status,
                 event_id=effect_event_id,
             )

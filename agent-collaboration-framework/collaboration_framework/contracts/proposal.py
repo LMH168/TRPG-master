@@ -348,9 +348,6 @@ class AgendaContinuationCandidate(ContractModel):
 
 
 HostDecisionProposal: TypeAlias = Annotated[
-    ClarificationProposal
-    | SingleActionProposal
-    | ActionPlanProposal
-    | AgendaContinuationProposal,
+    ClarificationProposal | SingleActionProposal | ActionPlanProposal,
     Field(discriminator="kind"),
 ]
