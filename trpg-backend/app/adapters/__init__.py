@@ -12,6 +12,9 @@ from app.adapters.openai_models import (
 from app.adapters.qwen_models import QwenChatCompletionsJsonClient
 from app.adapters.sqlalchemy_action_plan_store import SqlAlchemyActionPlanRunStore
 from app.adapters.sqlalchemy_engine_store import SqlAlchemyEngineStore
+from app.adapters.sqlalchemy_memory_projection_source import (
+    SqlAlchemyMemoryProjectionSource,
+)
 from app.adapters.sqlalchemy_memory_store import SqlAlchemyMemoryStore
 from app.adapters.sqlalchemy_recent_history import SqlAlchemyRecentHistorySource
 from app.adapters.sqlalchemy_turn_store import SqlAlchemyTurnStore
@@ -27,6 +30,7 @@ __all__ = [
     "QwenChatCompletionsJsonClient",
     "SqlAlchemyEngineStore",
     "SqlAlchemyMemoryStore",
+    "SqlAlchemyMemoryProjectionSource",
     "SqlAlchemyActionPlanRunStore",
     "SqlAlchemyRecentHistorySource",
     "SqlAlchemyTurnStore",

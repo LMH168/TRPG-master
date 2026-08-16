@@ -320,6 +320,9 @@ def _adapt_action_result(result: ActionPlanTurnResult) -> TurnExecutionOutcome:
         source = execution.pending_decision or execution.check_run
         if source is not None:
             pending = _safe_json(source)
+            # Turn 保存的是“下一条玩家命令”的恢复快照，必须使用本次 Engine
+            # 执行完成后的 revision；内部 decision/check 自带的是上一条命令的输入 revision。
+            pending["source_revision"] = execution.view_revision
     narration = None
     visibility = "public"
     if result.narration is not None:

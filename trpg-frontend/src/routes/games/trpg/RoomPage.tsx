@@ -1595,7 +1595,10 @@ export default function RoomPage() {
         locator.clientActionId,
         reconnectToken,
       )
-    } else {
+    }
+    if (!turn) {
+      // 新请求可能在服务端创建 Turn 前就被房间占用拒绝，此时它写入的本地定位
+      // 找不到任何记录。必须回退到房间的权威活动 Turn，才能恢复原检定或决定。
       const active = await sdk.turns.listTurns(roomId, reconnectToken, {
         activeOnly: true,
         limit: 1,
@@ -1604,13 +1607,24 @@ export default function RoomPage() {
     }
     if (!turn) return
 
-    const utterance = locator?.utterance ?? ''
+    const utterance = locator?.clientActionId === turn.clientActionId
+      ? locator.utterance
+      : ''
     writeTurnLocator(roomId, playerId, {
       clientActionId: turn.clientActionId,
       utterance,
       turnId: turn.turnId,
     })
     if (turn.playerView) setPlayerView(turn.playerView as unknown as AgentPlayerView)
+    if (!turn.error) {
+      // REST 已找回可继续的权威回合后，清除触发恢复的 ACTION_IN_PROGRESS，
+      // 避免错误卡片与待决检定同时出现，让玩家误以为房间仍不可操作。
+      setActionError('')
+      setActionErrorRetryable(false)
+      setActionErrorIsGuidance(false)
+      setActionErrorCode(null)
+      setActionErrorCorrelationId(null)
+    }
 
     if (turn.status === 'completed') {
       const text = turn.narration?.text
@@ -1970,6 +1984,7 @@ export default function RoomPage() {
 
   const submitPlayerAction = (action: { clientActionId: string; utterance: string }) => {
     if (!playerId || suspended) return
+    const previousLocator = roomId ? readTurnLocator(roomId, playerId) : null
     if (roomId) writeTurnLocator(roomId, playerId, action)
     pendingNarrationActionIdRef.current = action.clientActionId
     setPendingAction(action)
@@ -1993,6 +2008,10 @@ export default function RoomPage() {
         if (roomId) clearTurnLocator(roomId, playerId)
       })
       .catch((error: unknown) => {
+        const errorCode =
+          error instanceof TurnFailedError || error instanceof RoomSocketServerError
+            ? error.code
+            : 'CLIENT_TRANSPORT_ERROR'
         setTyping(false)
         setProgressLabel(null)
         setSecondaryProgressLabel(null)
@@ -2007,18 +2026,22 @@ export default function RoomPage() {
         setActionErrorIsGuidance(
           error instanceof TurnFailedError && error.code === 'HOST_AGENT_INVALID_OUTPUT'
         )
-        setActionErrorCode(
-          error instanceof TurnFailedError || error instanceof RoomSocketServerError
-            ? error.code
-            : 'CLIENT_TRANSPORT_ERROR'
-        )
+        setActionErrorCode(errorCode)
         setActionErrorCorrelationId(
           error instanceof TurnFailedError || error instanceof RoomSocketServerError
             ? error.correlationId
             : action.clientActionId
         )
         pendingNarrationActionIdRef.current = null
-        // 传输错误后保留定位信息，刷新或重连将通过 REST 查询权威 Turn。
+        if (roomId && errorCode === 'ACTION_IN_PROGRESS') {
+          // 被房间占用拒绝的新请求没有对应 Turn，不能让它覆盖原活动回合的定位。
+          // 恢复旧定位后立即从 REST 权威状态重建等待面板，无需玩家再次刷新。
+          if (previousLocator) writeTurnLocator(roomId, playerId, previousLocator)
+          else clearTurnLocator(roomId, playerId)
+          void restorePersistedTurn()
+          return
+        }
+        // 其他传输错误后保留定位信息，刷新或重连将通过 REST 查询权威 Turn。
       })
   }
 

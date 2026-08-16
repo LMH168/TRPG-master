@@ -19,6 +19,13 @@ from .contracts import (
 )
 from .in_memory_store import InMemoryMemoryStore
 from .ports import MemoryStore
+from .projection import (
+    MemoryProjectionEvent,
+    MemoryProjectionNarration,
+    MemoryProjectionSource,
+    MemoryProjectionStep,
+    project_memory_entries,
+)
 
 __all__ = [
     "MEMORY_PROJECTION_VERSION",
@@ -28,8 +35,12 @@ __all__ = [
     "MemoryEntry",
     "MemoryEpistemicStatus",
     "MemoryKind",
+    "MemoryProjectionEvent",
+    "MemoryProjectionNarration",
     "MemoryProjectionRun",
+    "MemoryProjectionSource",
     "MemoryProjectionStatus",
+    "MemoryProjectionStep",
     "MemoryQuery",
     "MemoryReadScope",
     "MemoryScope",
@@ -37,5 +48,6 @@ __all__ = [
     "MemoryStore",
     "MemoryVisibility",
     "new_memory_projection_run",
+    "project_memory_entries",
     "stable_memory_id",
 ]

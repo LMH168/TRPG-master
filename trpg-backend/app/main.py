@@ -27,6 +27,7 @@ from app.core.seed import ensure_seed_content
 from app.dto.common import ApiResponse
 from app.service.character_background import build_character_background_service
 from app.service.host_speech import build_host_speech_service
+from app.service.memory_projection import memory_projection_supervisor
 from app.service.portrait_generation import (
     PortraitGenerationService,
     build_portrait_generation_service,
@@ -71,10 +72,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 可靠回合是唯一生产入口；启动时恢复租约过期的 Turn，并继续投递已持久化
     # Outbox。已提交回合只能按原 payload 重投，绝不能退回执行链重做。
     await turn_runtime_supervisor.start()
+    # Memory 是可重建读模型，独立扫描终态 Turn，不进入 Engine/Outbox 提交链。
+    await memory_projection_supervisor.start()
     logger.info("app_started")
     try:
         yield
     finally:
+        await memory_projection_supervisor.shutdown()
         await turn_runtime_supervisor.shutdown()
         await portrait_service.shutdown()
         logger.info("app_stopped")

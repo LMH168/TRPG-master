@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.turn_runtime import TERMINAL_TURN_STATUSES, TurnRecord
 from app.dto.turn import TurnErrorRead, TurnRead
+from app.models.engine import AdjudicationCommandExecution
 from app.models.turn import TurnRecordModel
 
 
@@ -30,7 +31,7 @@ async def get_turn(
         raise TurnReadNotFoundError("回合不存在")
     if record.player_id != player_id:
         raise TurnReadAuthorizationError("不能查看其他玩家的回合")
-    return _safe_turn_read(record)
+    return await _safe_turn_read(db, record)
 
 
 async def list_turns(
@@ -58,7 +59,7 @@ async def list_turns(
         TurnRecordModel.created_at.desc(), TurnRecordModel.turn_id.desc()
     ).limit(limit)
     result = await db.execute(statement)
-    return [_safe_turn_read(record) for record in result.scalars()]
+    return [await _safe_turn_read(db, record) for record in result.scalars()]
 
 
 async def resume_turn(
@@ -77,10 +78,15 @@ async def resume_turn(
     turn = await resume_turn_by_id(turn_id)
     if turn.room_id != room_id or turn.player_id != player_id:
         raise TurnReadAuthorizationError("不能恢复其他玩家的回合")
-    return _safe_turn_projection(turn)
+    revision = await _pending_command_revision(
+        db,
+        room_id=turn.room_id,
+        pending_decision=turn.pending_decision,
+    )
+    return _safe_turn_projection(turn, pending_source_revision=revision)
 
 
-def _safe_turn_read(record: TurnRecordModel) -> TurnRead:
+async def _safe_turn_read(db: AsyncSession, record: TurnRecordModel) -> TurnRead:
     """复用核心模型校验数据库记录，同时只投影玩家可见字段。"""
 
     turn = TurnRecord.model_validate(
@@ -108,10 +114,19 @@ def _safe_turn_read(record: TurnRecordModel) -> TurnRead:
             "completed_at": record.completed_at,
         }
     )
-    return _safe_turn_projection(turn)
+    revision = await _pending_command_revision(
+        db,
+        room_id=turn.room_id,
+        pending_decision=turn.pending_decision,
+    )
+    return _safe_turn_projection(turn, pending_source_revision=revision)
 
 
-def _safe_turn_projection(turn: TurnRecord) -> TurnRead:
+def _safe_turn_projection(
+    turn: TurnRecord,
+    *,
+    pending_source_revision: str | None = None,
+) -> TurnRead:
     """从经过核心契约校验的 TurnRecord 生成玩家安全 DTO。"""
 
     error = None
@@ -124,6 +139,11 @@ def _safe_turn_projection(turn: TurnRecord) -> TurnRead:
             occurred_at=turn.last_error.occurred_at,
         )
     result = turn.result
+    pending_decision = turn.pending_decision
+    if pending_decision is not None and pending_source_revision is not None:
+        # 历史 Turn 可能只保存了内部 decision/check；查询时用同一 action 最新
+        # execution 的输出 revision 补齐，不重新执行 Engine 或重新掷骰。
+        pending_decision = {**pending_decision, "source_revision": pending_source_revision}
     return TurnRead(
         turn_id=turn.turn_id,
         room_id=turn.room_id,
@@ -135,7 +155,7 @@ def _safe_turn_projection(turn: TurnRecord) -> TurnRead:
         recovery_action=turn.recovery_action,
         phase_version=turn.phase_version,
         error=error,
-        pending_decision=turn.pending_decision,
+        pending_decision=pending_decision,
         narration=result.narration if result else None,
         message_id=result.message_id if result else None,
         player_view=result.player_view if result else None,
@@ -144,3 +164,38 @@ def _safe_turn_projection(turn: TurnRecord) -> TurnRead:
         updated_at=turn.updated_at,
         completed_at=turn.completed_at,
     )
+
+
+async def _pending_command_revision(
+    db: AsyncSession,
+    *,
+    room_id: str,
+    pending_decision: dict | None,
+) -> str | None:
+    """从同一动作最新 execution 恢复下一条选择命令必须携带的 revision。"""
+
+    if pending_decision is None:
+        return None
+    action_request_id = pending_decision.get("action_request_id")
+    if not isinstance(action_request_id, str) or not action_request_id:
+        return None
+    records = await db.scalars(
+        select(AdjudicationCommandExecution)
+        .where(
+            AdjudicationCommandExecution.room_id == room_id,
+            AdjudicationCommandExecution.action_request_id == action_request_id,
+        )
+        .order_by(
+            AdjudicationCommandExecution.committed_state_version.desc(),
+            AdjudicationCommandExecution.created_at.desc(),
+            AdjudicationCommandExecution.request_id.desc(),
+        )
+    )
+    for record in records:
+        execution = record.result_json.get("execution")
+        if not isinstance(execution, dict):
+            continue
+        revision = execution.get("view_revision")
+        if isinstance(revision, str) and revision:
+            return revision
+    return None

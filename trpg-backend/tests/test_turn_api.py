@@ -19,6 +19,7 @@ from app.core.turn_runtime import (
     new_turn_record,
     transition_turn,
 )
+from app.models.engine import AdjudicationCommandExecution
 from app.models.room import Player, Room
 
 
@@ -233,3 +234,68 @@ async def test_get_turn_returns_persisted_player_safe_pending_decision(
         "decision_id": "decision-safe",
         "options": [{"candidate_id": "spot-hidden", "label": "侦查"}],
     }
+
+
+@pytest.mark.asyncio
+async def test_get_turn_recovers_next_revision_for_persisted_post_roll_decision(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    turn_store_factory,
+) -> None:
+    """刷新后必须用最新 execution revision 恢复已掷出的骰点，不得卡住房间。"""
+
+    room_id, owner, _ = await _members(db_session)
+    store: SqlAlchemyTurnStore = turn_store_factory()
+    current, _ = await store.create_or_get(_new_turn(room_id, owner.id, "action-post-roll"))
+    planning = transition_turn(
+        current,
+        status=TurnStatus.PLANNING,
+        resume_point=TurnResumePoint.PLANNING,
+        recovery_action=TurnRecoveryAction.WAIT,
+    )
+    await store.compare_and_swap(expected_phase_version=current.phase_version, updated=planning)
+    waiting = transition_turn(
+        planning,
+        status=TurnStatus.ADJUDICATING,
+        resume_point=TurnResumePoint.AWAITING_PLAYER,
+        waiting_reason=TurnWaitingReason.POST_ROLL_DECISION,
+        recovery_action=TurnRecoveryAction.CHOOSE_POST_ROLL,
+        pending_decision={
+            "check_id": "check-restored",
+            "action_request_id": "action-post-roll",
+            "status": "awaiting_post_roll_decision",
+            "version": 1,
+            "roll": {"value": 44, "degree": "failure", "passed": False},
+            "post_roll_options": [{"option_id": "accept-current", "kind": "accept_result"}],
+        },
+    )
+    await store.compare_and_swap(expected_phase_version=planning.phase_version, updated=waiting)
+    db_session.add(
+        AdjudicationCommandExecution(
+            room_id=room_id,
+            request_id="select-skill-request",
+            action_request_id="action-post-roll",
+            request_schema_version=3,
+            request_json={"source_revision": "25"},
+            result_schema_version=5,
+            result_json={
+                "execution": {
+                    "status": "awaiting_post_roll_decision",
+                    "view_revision": "26",
+                }
+            },
+            committed_state_version=26,
+        )
+    )
+    await db_session.commit()
+
+    response = await client.get(
+        f"/api/v1/rooms/{room_id}/turns/{waiting.turn_id}",
+        headers={"X-Reconnect-Token": owner.reconnect_token},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["recoveryAction"] == "choose_post_roll"
+    assert data["pendingDecision"]["source_revision"] == "26"
+    assert data["pendingDecision"]["roll"]["value"] == 44
