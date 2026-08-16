@@ -3,7 +3,6 @@
 from app.adapters.deepseek_models import DeepSeekChatCompletionsJsonClient
 from app.adapters.openai_models import (
     OpenAIResponsesJsonClient,
-    PromptActionPlanNarrationModel,
     PromptActionPlanStepAdjudicator,
     PromptHostTurnDecisionModel,
     PromptIntentModel,
@@ -18,7 +17,6 @@ from app.adapters.sqlalchemy_turn_store import SqlAlchemyTurnStore
 
 __all__ = [
     "OpenAIResponsesJsonClient",
-    "PromptActionPlanNarrationModel",
     "PromptActionPlanStepAdjudicator",
     "PromptHostTurnDecisionModel",
     "DeepSeekChatCompletionsJsonClient",

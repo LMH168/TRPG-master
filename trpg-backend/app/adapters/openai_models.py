@@ -26,8 +26,6 @@ from collaboration_framework.host.application.intent_parser import (
     coerce_intent_payload,
 )
 from collaboration_framework.host.schemas import (
-    ActionPlanNarrationContext,
-    ActionPlanNarrationOutput,
     ActionPlanStepContext,
     HostAgentContext,
     IntentContext,
@@ -535,22 +533,6 @@ class PromptActionPlanStepAdjudicator:
                 "主持模型返回了无法解读的结果，当前步骤未生效，请重试",
                 retryable=True,
             ) from exc
-
-
-class PromptActionPlanNarrationModel:
-    def __init__(self, client: StructuredJsonClient) -> None:
-        self._client = client
-
-    async def generate(
-        self,
-        context: ActionPlanNarrationContext,
-    ) -> JsonObject:
-        return await self._client.generate(
-            schema_name="trpg_action_plan_narration",
-            schema=ActionPlanNarrationOutput.model_json_schema(mode="serialization"),
-            instructions=_ACTION_PLAN_NARRATION_INSTRUCTIONS,
-            input_payload=context.to_json_dict(),
-        )
 
 
 def _log_structured_usage(

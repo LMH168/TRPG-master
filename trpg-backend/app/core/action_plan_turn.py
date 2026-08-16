@@ -54,10 +54,10 @@ from collaboration_framework.contracts import (
 from collaboration_framework.engine import AdjudicationEngineService, EngineStore, RuleEngineService
 from collaboration_framework.host.adapters import InMemoryActionPlanRunStore
 from collaboration_framework.host.application import (
-    ActionPlanNarrationValidationError,
-    ActionPlanNarrator,
     ActionPlanOrchestrator,
     HostTurnDecisionExecutor,
+    NarrationValidationError,
+    Narrator,
     PlayerViewProjector,
     TurnExecutionError,
 )
@@ -840,7 +840,7 @@ class ActionPlanTurnApplication:
         adjudication_engine: AdjudicationEngineService,
         planner: HostTurnDecisionModel,
         orchestrator: ActionPlanOrchestrator,
-        narrator: ActionPlanNarrator,
+        narrator: Narrator,
         recent_history_source: RecentHistorySource,
         recent_history_budget: RecentHistoryBudget,
         recent_history_enabled: bool,
@@ -1635,7 +1635,7 @@ class ActionPlanTurnApplication:
         for attempt in range(2):
             try:
                 return await self._narrator.narrate(context)
-            except ActionPlanNarrationValidationError as exc:
+            except NarrationValidationError as exc:
                 # 只记录校验类别和权威结果，不记录模型正文或其他敏感上下文。
                 logger.warning(
                     "action_plan_narration_rejected",
@@ -1911,9 +1911,9 @@ def build_action_plan_turn_application(
     from app.adapters import (
         DeepSeekChatCompletionsJsonClient,
         OpenAIResponsesJsonClient,
-        PromptActionPlanNarrationModel,
         PromptActionPlanStepAdjudicator,
         PromptHostTurnDecisionModel,
+        PromptNarrationModel,
         QwenChatCompletionsJsonClient,
     )
     from app.core.config import get_settings, model_client_retry_policy, secret_value
@@ -1964,7 +1964,7 @@ def build_action_plan_turn_application(
         adjudicator = _RuleFirstStepAdjudicator(
             PromptActionPlanStepAdjudicator(client),
         )
-        narration_model = PromptActionPlanNarrationModel(client)
+        narration_model = PromptNarrationModel(client)
 
     plan_store = plan_store or InMemoryActionPlanRunStore()
     projector = PlayerViewProjector(engine)
@@ -1989,7 +1989,7 @@ def build_action_plan_turn_application(
         adjudication_engine=adjudication_engine,
         planner=planner,
         orchestrator=orchestrator,
-        narrator=ActionPlanNarrator(narration_model),
+        narrator=Narrator(narration_model),
         recent_history_source=history_source,
         recent_history_budget=recent_history_budget,
         recent_history_enabled=resolved.recent_history_enabled,
