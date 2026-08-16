@@ -152,26 +152,32 @@ def test_application_injects_plan_repair_dependencies_into_single_action_path() 
             ("failure",),
             ("legacy_unknown",),
             "resolved",
-            "这次行动未能成功，局面没有产生当前可确认的新结果。",
+            "这次检定或行动未能成功，当前局面没有产生新的确认变化。",
         ),
         (
             ("success", "failure"),
             ("legacy_unknown", "legacy_unknown"),
             "stopped",
-            "当前步骤未能成功；此前已经完成的步骤仍然保留。",
+            "当前检定或行动未能成功；此前已经确认的结果仍然保留。",
         ),
         (("cancelled",), ("cancelled",), "cancelled", "这次行动已经取消。"),
         (
             ("success",),
             ("legacy_unknown",),
             "resolved",
-            "这次行动已经按当前可确认的结果完成。",
+            "这次行动已经完成，当前状态已按确认结果更新。",
         ),
         (
             ("success",),
             ("not_achieved",),
             "stopped",
-            "检定或过程已经结束，但玩家声明的完整目标没有形成可确认的权威结果。",
+            "检定或过程已经完成，但完整目标尚未形成结果。",
+        ),
+        (
+            ("failure",),
+            ("not_achieved",),
+            "resolved",
+            "这次检定或行动未能成功，当前局面没有产生新的确认变化。",
         ),
     ),
 )
@@ -202,6 +208,54 @@ def test_deterministic_narration_fallback_preserves_action_outcome(
     output = ActionPlanTurnApplication._deterministic_narration_fallback(cast(Any, context))
 
     assert output.text == expected
+
+
+def test_success_fallback_includes_authoritative_scene_and_time() -> None:
+    """无提交结果时，兜底也必须反馈最终 PlayerView，而不是只返回模板。"""
+
+    context = SimpleNamespace(
+        termination_status="resolved",
+        player_input=SimpleNamespace(client_action_id="action-context-fallback"),
+        completed_steps=(
+            SimpleNamespace(
+                outcome="success",
+                goal_outcome="achieved",
+                committed_results=(),
+            ),
+        ),
+        player_view=SimpleNamespace(
+            scene=SimpleNamespace(
+                name="阿诺兹堡公共墓地",
+                visible_entities=(),
+                visible_actors=(SimpleNamespace(name="守墓人"),),
+            ),
+            world=SimpleNamespace(day_index=1, hour_of_day=6, time_of_day="day"),
+        ),
+    )
+
+    output = ActionPlanTurnApplication._deterministic_narration_fallback(cast(Any, context))
+
+    assert "这次行动已经完成" not in output.text
+    assert "阿诺兹堡公共墓地" in output.text
+    assert "第2天06:00" in output.text
+    assert "守墓人" in output.text
+
+
+def test_narration_fallback_failure_still_returns_safe_result(monkeypatch) -> None:
+    """历史上下文异常时，叙事兜底失败也不能让已提交回合进入内部错误。"""
+
+    def fail(_context):
+        raise ValueError("malformed historical context")
+
+    monkeypatch.setattr(
+        ActionPlanTurnApplication,
+        "_deterministic_narration_fallback",
+        staticmethod(fail),
+    )
+
+    output = ActionPlanTurnApplication._safe_narration_fallback(cast(Any, object()))
+
+    assert output.text == "行动结果已经保存，当前状态已更新。"
 
 
 def test_stopped_plan_clarification_requires_a_new_action() -> None:

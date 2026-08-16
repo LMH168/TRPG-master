@@ -15,13 +15,19 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from collaboration_framework.contracts import ContractError, ModuleContentV3, TimePointSpec
+from collaboration_framework.contracts import (
+    ContractError,
+    ModuleContentV3,
+    TimePointSpec,
+)
 
 from .models import WorldTimePoint, WorldTimeState
 
 
 def ordered_points(module_content: ModuleContentV3) -> tuple[TimePointSpec, ...]:
-    return tuple(sorted(module_content.time_policy.default_points, key=lambda item: item.order))
+    return tuple(
+        sorted(module_content.time_policy.default_points, key=lambda item: item.order)
+    )
 
 
 def next_point_after(
@@ -69,6 +75,26 @@ def advanced_to_next(
 
     target, moment = next_point_after(module_content, world_time)
     return WorldTimeState(current=moment, current_point_id=target.id)
+
+
+def advance_to_target(
+    module_content: ModuleContentV3,
+    world_time: WorldTimeState,
+    target_point_id: str,
+) -> tuple[WorldTimeState, ...]:
+    """按离散时间线逐点推进到目标，保留每个中间时间点。"""
+
+    current = world_time
+    advanced: list[WorldTimeState] = []
+    # 一个完整时间周期内必然能遇到目标；超过周期说明目标不存在。
+    for _ in ordered_points(module_content):
+        current = advanced_to_next(module_content, current)
+        advanced.append(current)
+        if current.current_point_id == target_point_id:
+            return tuple(advanced)
+    raise ContractError(
+        f"time_target_not_reachable: 当前时间线无法到达目标时间点: {target_point_id}"
+    )
 
 
 def time_advance_block_reason(actor_ids: Sequence[str]) -> str | None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
 from collaboration_framework.contracts import (
     AdjudicationValidationError,
     CheckDecisionRequest,
@@ -12,6 +13,7 @@ from collaboration_framework.contracts import (
     GetAdjudicationStatusRequest,
     ItemCustody,
     ModuleContentV3,
+    NarrativeOnlyEffect,
     PlayerViewScope,
     PostRollDecisionRequest,
     SelectCheckChoice,
@@ -26,7 +28,9 @@ from collaboration_framework.engine import (
     RuleEngineService,
     SequenceDiceSource,
 )
+from collaboration_framework.engine.adjudication import GoalCompletionEvaluationError
 from collaboration_framework.engine.initialization import create_initial_game_state
+from collaboration_framework.engine.timeline import advance_to_target
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = (
@@ -502,6 +506,70 @@ async def test_rule_owned_hit_does_not_claim_death_goal() -> None:
         )
         for event in store.inspect_domain_events(ROOM)
     )
+
+
+@pytest.mark.asyncio
+async def test_advance_world_time_satisfies_effect_completion() -> None:
+    """时间推进提交后，完成条件必须读取最终时间点而不是默认失败。"""
+
+    store = _runtime_store()
+    engine = AdjudicationEngineService(store)
+    request = _submission(
+        request_id="advance-time",
+        revision="0",
+        goal="等待到晚上",
+        payload={
+            "semantic_focus": {"kind": "location", "id": "cemetery"},
+            "target_interaction": "observe",
+            "method_family": "等待",
+            "method_description": "等待时间推进到晚上",
+            "check_proposal": {"mode": "none"},
+            "success_effect_proposals": [
+                {"type": "advance_world_time", "to_point_id": "hour_18"}
+            ],
+            "failure_effect_proposals": [{"type": "narrative_only"}],
+            "completion": {
+                "kind": "effects",
+                "requirements": [
+                    {"type": "advance_world_time", "to_point_id": "hour_18"}
+                ],
+            },
+        },
+    )
+
+    result = await engine.submit_proposal(request)
+
+    assert result.outcome == "success"
+    assert result.goal_outcome == "achieved"
+    assert store.inspect_state(ROOM).world_time.current_point_id == "hour_18"
+
+
+def test_narrative_only_cannot_silently_complete_persistent_goal() -> None:
+    """叙事支撑效果误入持久完成条件时必须显式失败。"""
+
+    state = _runtime_store().inspect_state(ROOM)
+    with pytest.raises(GoalCompletionEvaluationError, match="NarrativeOnlyEffect"):
+        AdjudicationEngineService._requirement_is_satisfied(
+            NarrativeOnlyEffect(),
+            state,
+            committed_events=(),
+            actor_id=ACTOR,
+        )
+
+
+def test_advance_world_time_preserves_intermediate_points() -> None:
+    """跨夜推进必须逐点产生时间状态，不能直接跳过中间剧情触发点。"""
+
+    module = ModuleContentV3.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    state = create_initial_game_state(module, room_id=ROOM, actors={})
+    points = advance_to_target(module, state.world_time, "hour_06")
+
+    assert [item.current_point_id for item in points] == [
+        "hour_18",
+        "hour_20",
+        "hour_00",
+        "hour_06",
+    ]
 
 
 @pytest.mark.asyncio
