@@ -8,6 +8,7 @@ import pytest
 
 from collaboration_framework.contracts import (
     AdjudicationValidationError,
+    AgentMatchTriggerSpec,
     ModuleContentV3,
     NoAdjudicationCheck,
     RequiredAdjudicationCheck,
@@ -80,6 +81,7 @@ def _synthetic_runtime() -> EngineRuntimeSnapshot:
     runtime = _runtime()
     module = runtime.v3
     source_rule = next(rule for rule in module.rules if rule.id == "observe_caretaker")
+    assert isinstance(source_rule.trigger, AgentMatchTriggerSpec)
     source_entity = next(
         entity for entity in module.entities if entity.id == "crypt_entrance"
     )
@@ -444,7 +446,10 @@ async def test_direct_entry_reaches_awake_stable_boundary_once() -> None:
     assert sum(event.type == "actor.condition_applied" for event in events) == 1
     assert sum(event.type == "actor.condition_expired" for event in events) == 1
     assert sum(event.type == "rule.presentation" for event in events) == 1
-    assert await executor.drain(
-        room_id="room-rule-binding",
-        turn_id="turn-enter",
-    ) == ()
+    assert (
+        await executor.drain(
+            room_id="room-rule-binding",
+            turn_id="turn-enter",
+        )
+        == ()
+    )

@@ -43,6 +43,7 @@ from collaboration_framework.contracts.module_v3 import (
     AdjudicatedCheckStep,
     AgentMatchTriggerSpec,
     CheckStep,
+    RuleSpecV3,
 )
 from collaboration_framework.contracts.proposal import (
     AdvanceWorldTimeEffectProposal,
@@ -291,6 +292,7 @@ class ProposalCompiler:
         """绑定唯一必选 Rule，并从固定规则图编译权威检定。"""
 
         proposal = request.proposal
+        requested_goal = request.requested_goal or proposal.semantic_goal
         if not runtime.is_v3:
             return proposal.rule_ref, proposal.check_proposal
         matching = tuple(
@@ -319,7 +321,9 @@ class ProposalCompiler:
                 )
             if len(matching) == 1:
                 rule = matching[0]
-                options = rule.trigger.options
+                trigger = rule.trigger
+                assert isinstance(trigger, AgentMatchTriggerSpec)
+                options = trigger.options
                 if len(options) == 1:
                     decision = RuleDecisionRef(
                         rule_id=rule.id,
@@ -327,14 +331,16 @@ class ProposalCompiler:
                     )
                 else:
                     decision = self._decision_from_player_words(
-                        request.requested_goal,
+                        requested_goal,
                         rule,
                     )
                     if decision is None:
                         self._reject(
                             "RULE_OPTION_REQUIRED",
                             "请明确选择一种处理方式："
-                            + " / ".join(option.semantic_hints[0] for option in options),
+                            + " / ".join(
+                                option.semantic_hints[0] for option in options
+                            ),
                             repairability="requires_player_choice",
                             fault="player",
                         )
@@ -345,6 +351,9 @@ class ProposalCompiler:
             rule_id=decision.rule_id,
             option_id=decision.option_id,
         )
+        trigger = rule.trigger
+        if not isinstance(trigger, AgentMatchTriggerSpec):
+            self._reject("RULE_OUT_OF_SCOPE", "当前行动不能使用该规则选项")
         if not agent_match_scope_admits(
             rule,
             location_id=runtime.game_state.scene_id,
@@ -360,16 +369,18 @@ class ProposalCompiler:
                 repairability="auto_repairable",
                 fault="agent",
             )
-        if len(rule.trigger.options) > 1 and self._decision_from_player_words(
-            request.requested_goal,
-            rule,
-        ) != decision:
+        if (
+            len(trigger.options) > 1
+            and self._decision_from_player_words(
+                requested_goal,
+                rule,
+            )
+            != decision
+        ):
             self._reject(
                 "RULE_OPTION_UNCONFIRMED",
                 "请明确选择一种处理方式："
-                + " / ".join(
-                    option.semantic_hints[0] for option in rule.trigger.options
-                ),
+                + " / ".join(option.semantic_hints[0] for option in trigger.options),
                 repairability="requires_player_choice",
                 fault="player",
             )
@@ -389,7 +400,7 @@ class ProposalCompiler:
                             candidate_id=option_id,
                             skill_id=skill_id,
                             difficulty=check_step.check.difficulty,
-                            method_summary=request.requested_goal,
+                            method_summary=requested_goal,
                             player_safe_reason="使用模组规则声明的检定方式",
                         ),
                     )
@@ -408,13 +419,18 @@ class ProposalCompiler:
         return decision, canonical_check
 
     @staticmethod
-    def _decision_from_player_words(goal: str, rule) -> RuleDecisionRef | None:
+    def _decision_from_player_words(
+        goal: str, rule: RuleSpecV3
+    ) -> RuleDecisionRef | None:
         """只用模组作者发布的提示确认多分支选择，不解释任意动作词表。"""
 
+        trigger = rule.trigger
+        if not isinstance(trigger, AgentMatchTriggerSpec):
+            return None
         normalized = "".join(goal.casefold().split())
         matched = [
             option
-            for option in rule.trigger.options
+            for option in trigger.options
             if any(
                 "".join(hint.casefold().split()) in normalized
                 for hint in option.semantic_hints
