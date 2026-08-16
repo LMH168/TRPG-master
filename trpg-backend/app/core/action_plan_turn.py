@@ -2184,16 +2184,16 @@ def build_action_plan_turn_application(
         turn_id = current_turn_id()
         if agenda_executor is None or turn_id is None:
             return None
-        executions = await agenda_executor.drain(
+        await agenda_executor.drain(
             room_id=player_input.room_id,
             turn_id=turn_id,
         )
-        statuses = {item.result.get("agenda_status") for item in executions}
-        if "failed" in statuses:
-            return "failed"
-        if "awaiting_player_input" in statuses:
-            return "awaiting_player_input"
-        return None
+        # 进程可能在 Agenda 已提交边界、ActionPlan 尚未保存状态时退出；恢复时
+        # 本次 drain 不会再次返回旧 execution，因此必须重新读取持久化边界。
+        return await agenda_executor.boundary_for_turn(
+            room_id=player_input.room_id,
+            turn_id=turn_id,
+        )
 
     orchestrator = ActionPlanOrchestrator(
         store=plan_store,

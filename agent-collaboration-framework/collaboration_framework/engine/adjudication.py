@@ -101,6 +101,7 @@ from .rules_v3 import (
     effects_after_degree,
     entity_state,
     matching_event_rules,
+    ordered_agenda_items,
     pending_check_for,
     resolve_rule_option,
     walk_rule,
@@ -2548,6 +2549,30 @@ class AdjudicationEngineService:
                 )
                 suspended = True
                 break
+
+        if suspended and cursor < len(events):
+            # 阻塞前 Effect 已经产生的事件也属于同一权威提交。当前 Rule 不能继续
+            # 执行时，仍要把这些事件匹配成排队项，交给 Agenda 在阻塞解除后处理。
+            # 否则它们既不会被本循环扫描，也不会出现在 Executor 的后续事件集中。
+            for source_event in tuple(events[cursor:]):
+                if source_event.type in {"rule.triggered", "rule.check_resolved"}:
+                    continue
+                pending_rules = []
+                for rule in matching_event_rules(
+                    runtime.v3,
+                    event_type=source_event.type,
+                    state=state,
+                    actor_id=actor_id,
+                ):
+                    fire_key = (rule.id, source_event.event_id)
+                    if fire_key in fired:
+                        continue
+                    fired.add(fire_key)
+                    pending_rules.append(rule)
+                    queue.append(agenda_item_for_event(rule, source_event))
+                if pending_rules and source_event.event_id not in source_event_ids:
+                    source_event_ids.append(source_event.event_id)
+            queue = list(ordered_agenda_items(tuple(queue)))
 
         if not queue:
             return state, events

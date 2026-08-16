@@ -5,6 +5,7 @@ from collaboration_framework.runtime_context import current_turn_id, engine_turn
 from .adapters import InMemoryEngineStore
 from .adjudication import AdjudicationEngineService
 from .agenda_runtime import (
+    AgendaRetryScheduledError,
     RuleAgendaExecutor,
     RuleCheckProfileRegistry,
     RulesetActionRegistry,
@@ -64,6 +65,7 @@ __all__ = [
     "ActorState",
     "AdjudicationEngineService",
     "AgendaItem",
+    "AgendaRetryScheduledError",
     "AgendaSource",
     "AgendaStepExecution",
     "CheckRun",

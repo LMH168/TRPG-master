@@ -28,6 +28,7 @@ from collaboration_framework.engine import (
     ActorState,
     AdjudicationEngineService,
     AgendaItem,
+    AgendaRetryScheduledError,
     AgendaSource,
     DiceRoller,
     InMemoryEngineStore,
@@ -207,6 +208,10 @@ async def test_player_input_boundary_only_accepts_published_option() -> None:
         room_id="room-1", player_id="player-1", actor_id="actor-1"
     )
     assert candidates[0].options[0].option_id == "hold_breath"
+    assert (
+        await executor.boundary_for_turn(room_id="room-1", turn_id="turn-1")
+        == "awaiting_player_input"
+    )
     with pytest.raises(ContractError, match="option"):
         await executor.resume_continuation(
             AgendaContinuationProposal(
@@ -236,6 +241,165 @@ async def test_player_input_boundary_only_accepts_published_option() -> None:
     executions = await executor.drain(room_id="room-1", turn_id="turn-2")
     assert len(executions) == 1
     assert store.inspect_state("room-1").rule_agendas["agenda-wait"].status == "stable"
+
+
+@pytest.mark.asyncio
+async def test_transient_agenda_failure_uses_its_own_retry_budget() -> None:
+    """未提交步骤保存退避点后必须通知 Turn 层保留原恢复链。"""
+
+    module = ModuleContentV3.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    commits = 0
+
+    def fail_first_agenda_commit(_room_id: str) -> None:
+        nonlocal commits
+        commits += 1
+        if commits == 2:
+            raise OSError("injected transient failure")
+
+    store = InMemoryEngineStore(before_commit=fail_first_agenda_commit)
+    state = create_initial_game_state(
+        module,
+        room_id="room-1",
+        actors={
+            "actor-1": ActorState(
+                player_id="player-1",
+                name="调查员",
+                source_character_id="character-1",
+                source_character_version=1,
+                resources=ActorResources(san=60),
+                state={"skills": {"spot_hidden": 50}},
+            )
+        },
+    )
+    store.register_room(module_content=module, initial_state=state)
+    engine = AdjudicationEngineService(store)
+    with engine_turn_context("turn-1"):
+        await engine._submit_internal_adjudication(
+            SubmitAdjudicationRequest(
+                room_id="room-1",
+                player_id="player-1",
+                adjudication=ActionAdjudication(
+                    request_id="see-ghoul",
+                    source_revision="0",
+                    actor_id="actor-1",
+                    summary="看清墓地里的人影",
+                    target=ActionTarget(kind="entity", id="cemetery_figure"),
+                    method=ActionMethod(family="observe", description="仔细观察"),
+                    check=NoAdjudicationCheck(),
+                    success_effects=(
+                        ChangeEntityStateEffect(
+                            entity_id="cemetery_figure",
+                            key="true_form_seen",
+                            value=True,
+                        ),
+                    ),
+                ),
+            )
+        )
+
+    executor = RuleAgendaExecutor(
+        store,
+        engine=engine,
+        dice=DiceRoller(SequenceDiceSource([50])),
+    )
+    with pytest.raises(AgendaRetryScheduledError):
+        await executor.drain(room_id="room-1", turn_id="turn-1")
+
+    agenda = next(iter(store.inspect_state("room-1").rule_agendas.values()))
+    assert agenda.attempt_count == 1
+    assert agenda.next_attempt_at is not None
+    assert agenda.status == "awaiting_passive_check"
+
+
+@pytest.mark.asyncio
+async def test_effect_event_before_blocking_step_is_queued() -> None:
+    """阻塞前 Effect 产生的事件必须进入同一 Agenda，不能在恢复时丢失。"""
+
+    payload = ModuleContentV3.model_validate_json(
+        FIXTURE.read_text(encoding="utf-8")
+    ).to_json_dict()
+    payload["rules"].append(
+        {
+            "id": "follow_first_sight_marker",
+            "priority": 10,
+            "trigger": {
+                "kind": "event",
+                "event_type": "entity.state_changed",
+                "when": {
+                    "op": "predicate",
+                    "predicate": "entity_state_is",
+                    "args": {
+                        "entity_id": "case_tracker",
+                        "key": "first_ghoul_sight_resolved",
+                        "value": True,
+                    },
+                },
+                "entry_branch_id": "default",
+            },
+            "execution": {
+                "branches": [{"id": "default", "entry_step_id": "mark_followed"}],
+                "steps": [
+                    {
+                        "id": "mark_followed",
+                        "kind": "effect",
+                        "effect": {
+                            "type": "change_entity_state",
+                            "entity_id": "case_tracker",
+                            "key": "surveillance_available",
+                            "value": True,
+                        },
+                        "next_step_id": "finish",
+                    },
+                    {"id": "finish", "kind": "finish"},
+                ],
+            },
+        }
+    )
+    module = ModuleContentV3.model_validate(payload)
+    store = InMemoryEngineStore()
+    state = create_initial_game_state(
+        module,
+        room_id="room-1",
+        actors={
+            "actor-1": ActorState(
+                player_id="player-1",
+                name="调查员",
+                source_character_id="character-1",
+                source_character_version=1,
+                resources=ActorResources(san=60),
+            )
+        },
+    )
+    store.register_room(module_content=module, initial_state=state)
+    engine = AdjudicationEngineService(store)
+    with engine_turn_context("turn-1"):
+        await engine._submit_internal_adjudication(
+            SubmitAdjudicationRequest(
+                room_id="room-1",
+                player_id="player-1",
+                adjudication=ActionAdjudication(
+                    request_id="see-ghoul",
+                    source_revision="0",
+                    actor_id="actor-1",
+                    summary="看清墓地里的人影",
+                    target=ActionTarget(kind="entity", id="cemetery_figure"),
+                    method=ActionMethod(family="observe", description="仔细观察"),
+                    check=NoAdjudicationCheck(),
+                    success_effects=(
+                        ChangeEntityStateEffect(
+                            entity_id="cemetery_figure",
+                            key="true_form_seen",
+                            value=True,
+                        ),
+                    ),
+                ),
+            )
+        )
+
+    agenda = next(iter(store.inspect_state("room-1").rule_agendas.values()))
+    queued_rules = {item.rule_id: item.status for item in agenda.queue}
+    assert queued_rules["first_sight_of_douglas"] == "running"
+    assert queued_rules["follow_first_sight_marker"] == "queued"
 
 
 @pytest.mark.asyncio

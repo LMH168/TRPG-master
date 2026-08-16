@@ -49,6 +49,15 @@ AgendaExecutionKind = Literal[
 ]
 
 
+class AgendaRetryScheduledError(RuntimeError):
+    """Agenda 已保存下一次重试点，可靠 Turn 必须保留原提交链。"""
+
+    code = "AGENDA_RETRY_SCHEDULED"
+    retryable = True
+    allows_committed_retry = True
+    manages_own_retry_budget = True
+
+
 class RuleCheckProfileRegistry:
     """Engine 内部被动检定注册表；模组不能调用未注册 profile。"""
 
@@ -274,6 +283,10 @@ class RuleAgendaExecutor:
             try:
                 committed.append(await self._execute_claimed(agenda, turn_id=turn_id))
             except RevisionConflictError as exc:
+                recovered = await self._find_committed_execution(agenda)
+                if recovered is not None:
+                    committed.append(recovered)
+                    continue
                 retrying = await self._record_execution_failure(
                     agenda,
                     worker_id=owner,
@@ -281,7 +294,7 @@ class RuleAgendaExecutor:
                     retryable=True,
                 )
                 if retrying:
-                    raise
+                    raise AgendaRetryScheduledError() from exc
                 break
             except ContractError as exc:
                 # 固定模组、参数或权限错误重试不会改变结果，立即转为可审计失败。
@@ -293,6 +306,12 @@ class RuleAgendaExecutor:
                 )
                 break
             except Exception as exc:
+                # 数据库已经提交、调用方却在 after-commit 边界收到异常时，必须按
+                # execution 证明前移，不能拿旧 lease 再写失败状态或重新掷骰。
+                recovered = await self._find_committed_execution(agenda)
+                if recovered is not None:
+                    committed.append(recovered)
+                    continue
                 retrying = await self._record_execution_failure(
                     agenda,
                     worker_id=owner,
@@ -300,11 +319,58 @@ class RuleAgendaExecutor:
                     retryable=True,
                 )
                 if retrying:
-                    raise
+                    raise AgendaRetryScheduledError() from exc
                 break
         else:
             raise ContractError("RuleAgenda 单次 drain 超出确定性段预算")
         return tuple(committed)
+
+    async def boundary_for_turn(
+        self,
+        *,
+        room_id: str,
+        turn_id: str,
+    ) -> Literal["awaiting_player_input", "failed"] | None:
+        """从持久状态读取当前 Turn 的阻塞边界，恢复时不依赖瞬时返回值。"""
+
+        async with self._store.transaction(room_id) as tx:
+            runtime = await tx.load_runtime()
+            statuses = {
+                agenda.status
+                for agenda in runtime.game_state.rule_agendas.values()
+                if agenda.schema_version == 2
+                and (
+                    agenda.active_turn_id == turn_id or agenda.origin_turn_id == turn_id
+                )
+            }
+        if "failed" in statuses:
+            return "failed"
+        if "awaiting_player_input" in statuses:
+            return "awaiting_player_input"
+        return None
+
+    async def _find_committed_execution(
+        self,
+        agenda: RuleAgenda,
+    ) -> AgendaStepExecution | None:
+        """按 claim 时冻结的 cursor 查询提交证明，用于收束模糊提交边界。"""
+
+        if agenda.current_rule_id is None or agenda.current_step_id is None:
+            return None
+        execution_id = agenda_step_execution_id(
+            schema_version=agenda.schema_version,
+            module_id=agenda.module_id,
+            module_version=agenda.module_version,
+            agenda_id=agenda.agenda_id,
+            source_event_id=agenda.current_source_event_id or agenda.root_source.id,
+            rule_id=agenda.current_rule_id,
+            branch_id=agenda.current_branch_id or "default",
+            step_id=agenda.current_step_id,
+        )
+        return await self._store.find_agenda_step_execution(
+            room_id=agenda.room_id,
+            execution_id=execution_id,
+        )
 
     async def _record_execution_failure(
         self,

@@ -37,8 +37,8 @@ from app.core.turn_runtime import (
 
 TurnPhaseObserver = Callable[[TurnPhase], Awaitable[None]]
 
-# Narrator 或模型持续失败时最多自动恢复三次；耗尽后结束当前 Turn，避免一个
-# 永远无法生成叙事的回合永久占用房间。Engine receipt 已存在时只恢复叙事，绝不重做提交。
+# Narrator 或模型持续失败时最多自动恢复三次；Agenda 使用自己的五次确定性预算，
+# 并通过异常契约显式声明。耗尽后结束当前 Turn，避免永久占用房间。
 MAX_TURN_RECOVERY_ATTEMPTS = 3
 logger = structlog.get_logger()
 
@@ -388,18 +388,24 @@ class TurnCoordinator:
             commit_state = TurnCommitState.PARTIALLY_COMMITTED
         attempt_count = previous_attempts + 1
         stage, resume_point = self._error_location(current)
-        # 执行阶段已经部分提交时，继续占用原 Turn 会阻止玩家用新行动接管，
-        # 还可能把复合计划未执行步骤误当成可无限恢复。保留 receipt 和已提交
-        # 状态后立即终止 Turn；只有 Narrator/投递阶段允许沿原 Turn 重试。
-        partial_execution_failure = bool(receipts) and stage in {
-            TurnErrorStage.PLANNING,
-            TurnErrorStage.VALIDATION,
-            TurnErrorStage.ADJUDICATION,
-            TurnErrorStage.EXECUTION,
-        }
+        # 执行阶段已经部分提交时通常应立即终止 Turn；只有拥有独立、有限重试
+        # 预算的 Agenda 可以显式保留原 Turn，普通异常不能借此无限占住房间。
+        allows_committed_retry = bool(getattr(exc, "allows_committed_retry", False))
+        manages_own_retry_budget = bool(getattr(exc, "manages_own_retry_budget", False))
+        partial_execution_failure = (
+            bool(receipts)
+            and not allows_committed_retry
+            and stage
+            in {
+                TurnErrorStage.PLANNING,
+                TurnErrorStage.VALIDATION,
+                TurnErrorStage.ADJUDICATION,
+                TurnErrorStage.EXECUTION,
+            }
+        )
         retryable = (
             bool(getattr(exc, "retryable", True))
-            and attempt_count < MAX_TURN_RECOVERY_ATTEMPTS
+            and (manages_own_retry_budget or attempt_count < MAX_TURN_RECOVERY_ATTEMPTS)
             and not partial_execution_failure
         )
         # 协调器会把异常转换成玩家安全快照；这里仅记录类型和稳定阶段，
