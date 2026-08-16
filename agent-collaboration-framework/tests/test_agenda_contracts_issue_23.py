@@ -483,6 +483,42 @@ def test_blocking_agent_rule_requires_player_safe_presentation() -> None:
     }
 
 
+def test_blocking_agent_rule_rejects_presentation_on_unrelated_branch() -> None:
+    """其他分支存在 Presentation，也不能掩盖阻塞结果路径缺少安全证据。"""
+
+    module = _module()
+    rule = next(item for item in module.rules if item.id == "crypt_stench_on_entry")
+    steps = tuple(
+        step.model_copy(update={"next_step_id": "present_faint"}, deep=True)
+        if step.id == "enter_safely"
+        else step.model_copy(update={"next_step_id": "crypt_finish"}, deep=True)
+        if step.id == "faint_willing"
+        else step
+        for step in rule.execution.steps
+    )
+    changed_rule = rule.model_copy(
+        update={
+            "execution": rule.execution.model_copy(update={"steps": steps}, deep=True)
+        },
+        deep=True,
+    )
+    changed = module.model_copy(
+        update={
+            "rules": tuple(
+                changed_rule if item.id == changed_rule.id else item
+                for item in module.rules
+            )
+        },
+        deep=True,
+    )
+
+    report = validate_module_v3(changed)
+
+    assert "MODULE_V3_AGENDA_PRESENTATION_REQUIRED" in {
+        issue.code for issue in report.errors
+    }
+
+
 def test_module_validation_checks_plot_dependencies_and_transition_targets() -> None:
     module = _module()
     missing_dependency = module.model_copy(

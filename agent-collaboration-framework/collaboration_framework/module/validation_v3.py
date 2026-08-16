@@ -401,18 +401,20 @@ def _rule_issues(
                 and step.check.initiation_kind == "passive_rule"
             )
         )
-        presentation_steps = tuple(
-            step for step in rule.execution.steps if isinstance(step, PresentationStep)
+        unsafe_blocking_steps = tuple(
+            step
+            for step in blocking_steps
+            if not _all_continuations_reach_presentation(rule, step.id)
         )
-        if blocking_steps and (rule.presentation is None or not presentation_steps):
-            # 阻塞步骤的结果会在初始裁决之后提交；没有显式安全展示时，
-            # Narrator 只能看到旧动作结果并退回场景模板。发布阶段必须阻止它。
+        if blocking_steps and (rule.presentation is None or unsafe_blocking_steps):
+            # 阻塞步骤的结果会在初始裁决之后提交；每条可能的后续路径都必须先
+            # 发布安全证据，不能仅靠规则中某个无关分支存在 PresentationStep。
             issues.append(
                 ValidationIssue(
                     severity="error",
                     code="MODULE_V3_AGENDA_PRESENTATION_REQUIRED",
                     path=f"{path}.presentation",
-                    message="含阻塞步骤的玩家规则必须提供可达的安全 PresentationStep",
+                    message="含阻塞步骤的玩家规则必须在每条后续路径提供安全 PresentationStep",
                 )
             )
 
@@ -577,6 +579,37 @@ def _reachable_steps(rule: RuleSpecV3) -> set[str]:
         reachable.add(current)
         frontier.extend(_step_targets(steps[current]))
     return reachable
+
+
+def _all_continuations_reach_presentation(
+    rule: RuleSpecV3,
+    blocking_step_id: str,
+) -> bool:
+    """确认阻塞步骤的每条结果路径都先发布玩家安全证据。"""
+
+    from collaboration_framework.contracts.module_v3 import _step_targets
+
+    steps = {step.id: step for step in rule.execution.steps}
+    blocking_step = steps[blocking_step_id]
+
+    def reaches_presentation(step_id: str, visiting: frozenset[str]) -> bool:
+        step = steps[step_id]
+        if isinstance(step, PresentationStep):
+            return True
+        if step_id in visiting:
+            # 没经过 Presentation 的环无法形成可叙述的稳定结果。
+            return False
+        targets = _step_targets(step)
+        if not targets:
+            return False
+        next_visiting = visiting | {step_id}
+        return all(reaches_presentation(target, next_visiting) for target in targets)
+
+    targets = _step_targets(blocking_step)
+    return bool(targets) and all(
+        reaches_presentation(target, frozenset({blocking_step_id}))
+        for target in targets
+    )
 
 
 def _effect_issues(
