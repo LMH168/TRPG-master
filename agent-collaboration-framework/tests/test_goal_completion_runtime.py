@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
 from collaboration_framework.contracts import (
     AdjudicationValidationError,
     CheckDecisionRequest,
@@ -12,6 +13,7 @@ from collaboration_framework.contracts import (
     GetAdjudicationStatusRequest,
     ItemCustody,
     ModuleContentV3,
+    NarrativeOnlyEffect,
     PlayerViewScope,
     PostRollDecisionRequest,
     SelectCheckChoice,
@@ -26,6 +28,7 @@ from collaboration_framework.engine import (
     RuleEngineService,
     SequenceDiceSource,
 )
+from collaboration_framework.engine.adjudication import GoalCompletionEvaluationError
 from collaboration_framework.engine.initialization import create_initial_game_state
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -538,6 +541,19 @@ async def test_advance_world_time_satisfies_effect_completion() -> None:
     assert result.outcome == "success"
     assert result.goal_outcome == "achieved"
     assert store.inspect_state(ROOM).world_time.current_point_id == "hour_18"
+
+
+def test_narrative_only_cannot_silently_complete_persistent_goal() -> None:
+    """叙事支撑效果误入持久完成条件时必须显式失败。"""
+
+    state = _runtime_store().inspect_state(ROOM)
+    with pytest.raises(GoalCompletionEvaluationError, match="NarrativeOnlyEffect"):
+        AdjudicationEngineService._requirement_is_satisfied(
+            NarrativeOnlyEffect(),
+            state,
+            committed_events=(),
+            actor_id=ACTOR,
+        )
 
 
 @pytest.mark.asyncio

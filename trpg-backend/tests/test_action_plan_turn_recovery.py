@@ -149,10 +149,10 @@ def test_application_injects_plan_repair_dependencies_into_single_action_path() 
     ("outcomes", "goal_outcomes", "termination_status", "expected"),
     (
         (
-                ("failure",),
-                ("legacy_unknown",),
-                "resolved",
-                "这次检定或行动未能成功，当前局面没有产生新的确认变化。",
+            ("failure",),
+            ("legacy_unknown",),
+            "resolved",
+            "这次检定或行动未能成功，当前局面没有产生新的确认变化。",
         ),
         (
             ("success", "failure"),
@@ -162,10 +162,10 @@ def test_application_injects_plan_repair_dependencies_into_single_action_path() 
         ),
         (("cancelled",), ("cancelled",), "cancelled", "这次行动已经取消。"),
         (
-                ("success",),
-                ("legacy_unknown",),
-                "resolved",
-                "这次行动已经完成，当前状态已按确认结果更新。",
+            ("success",),
+            ("legacy_unknown",),
+            "resolved",
+            "这次行动已经完成，当前状态已按确认结果更新。",
         ),
         (
             ("success",),
