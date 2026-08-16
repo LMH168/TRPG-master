@@ -45,13 +45,10 @@ from collaboration_framework.contracts import (
     PlayerInput,
     PlayerView,
     PostRollDecisionRequest,
-    RequiredAdjudicationCheck,
     RevealInformationEffect,
-    RuleDecisionRef,
     SetEndingAvailabilityEffect,
     SetVisibilityEffect,
     SingleActionProposal,
-    SkillCheckCandidate,
     WorldClockView,
 )
 from collaboration_framework.engine import (
@@ -2463,65 +2460,6 @@ def _deterministic_step_adjudication(
         "",
     ).strip(" ，,。")
     target = _match_visible_entity(context.player_view, action_text)
-    candidate, option = _match_rule_candidate(
-        context.keeper_capabilities,
-        action_text,
-        target.id if target is not None else None,
-    )
-    if candidate is not None and option is not None:
-        target_kind = (
-            candidate.target_kinds[0]
-            if candidate.target_kinds
-            else "entity"
-            if target is not None
-            else "location"
-        )
-        # 不掷骰的分支（例如 proceed）不能为了凑格式编一个技能出来：option id
-        # 不是技能名，`proceed` / `STR` 提交上去会被 Ruleset 快照拒绝。带检定的
-        # 分支才沿用 option id 作技能，Engine 仍会再校验一次。
-        check = (
-            RequiredAdjudicationCheck(
-                candidates=(
-                    SkillCheckCandidate(
-                        candidate_id=option.id,
-                        skill_id=option.id,
-                        difficulty="regular",
-                        method_summary=context.step.semantic_goal,
-                        player_safe_reason="使用当前地点公开的检定方式",
-                    ),
-                )
-            )
-            if option.requires_check
-            else NoAdjudicationCheck()
-        )
-        return ActionAdjudication(
-            request_id=context.step_request_id,
-            source_revision=context.player_view.revision,
-            actor_id=context.player_input.actor_id,
-            summary=context.step.semantic_goal,
-            target=ActionTarget(
-                kind=target_kind,
-                id=(
-                    candidate.target_ids[0]
-                    if candidate.target_ids
-                    else target.id
-                    if target is not None
-                    else context.player_view.scene.id
-                ),
-            ),
-            method=ActionMethod(
-                family=(
-                    candidate.action_families[0] if candidate.action_families else context.step.kind
-                ),
-                description=context.step.semantic_goal,
-            ),
-            rule_decision=RuleDecisionRef(rule_id=candidate.rule_id, option_id=option.id),
-            check=check,
-            # Effects belong to the rule (#226 §5), not to this stand-in.
-            success_effects=(),
-            failure_effects=(),
-        )
-
     # Once the planner has identified a visible conversation partner, ordinary
     # dialogue needs no second model call to invent an adjudication.  Keeping
     # this path narrative-only is also an information boundary: authored rules
@@ -2608,77 +2546,6 @@ def _requested_companions(
         if any(label and label in combined for label in labels):
             requested.append(entity)
     return tuple(requested)
-
-
-def _match_rule_candidate(capabilities, text: str, target_id: str | None):
-    """Pick at most one v3 Rule the player's words clearly mean.
-
-    The Fake stands in for the Agent's semantic judgement, so it only matches on
-    the player-safe hints the Match View published — it never reads the module.
-    Ambiguity yields nothing: guessing between two rules is exactly the mistake
-    a real Agent would be asked not to make.
-
-    Option hints have to participate in that judgement, not just candidate hints.
-    In the published fixture every rule aimed at the same NPC carries that NPC's
-    name as its candidate hint, and the word that actually tells them apart
-    （"侦查" / "贿赂" / "威吓"）lives on the options. Scoring candidate hints alone
-    therefore made all four caretaker rules tie on every utterance, and the tie
-    was resolved as "no match" — the Fake could never reach a rule at all.
-    """
-
-    if capabilities is None:
-        return None, None
-    scored = []
-    for candidate in capabilities.rule_candidates:
-        if target_id is not None and candidate.target_ids and target_id not in candidate.target_ids:
-            continue
-        family_hits = [
-            hint
-            for family in candidate.action_families
-            for hint in _ACTION_FAMILY_HINTS.get(family, ())
-            if hint in text
-        ]
-        candidate_hits = [hint for hint in candidate.semantic_hints if hint and hint in text]
-        best_option = None
-        best_option_hit = 0
-        for option in candidate.options:
-            hits = [hint for hint in option.semantic_hints if hint and hint in text]
-            if hits and max(len(hint) for hint in hits) > best_option_hit:
-                best_option = option
-                best_option_hit = max(len(hint) for hint in hits)
-        if not family_hits and not candidate_hits and best_option is None:
-            continue
-        # Option evidence outranks candidate evidence: sibling rules share the
-        # target's name, so only the option words carry discriminating power.
-        score = (
-            best_option_hit,
-            max((len(hint) for hint in family_hits), default=0),
-            max((len(hint) for hint in candidate_hits), default=0),
-        )
-        scored.append((score, candidate, best_option))
-    if not scored:
-        return None, None
-    best = max(score for score, _, _ in scored)
-    finalists = [(candidate, option) for score, candidate, option in scored if score == best]
-    if len(finalists) != 1:
-        return None, None
-    candidate, option = finalists[0]
-    if option is not None:
-        return candidate, option
-    return candidate, candidate.options[0] if candidate.options else None
-
-
-# Match View action families are stable contract identifiers. These localized
-# words merely recognize the player's explicit verb; they do not add a rule or
-# reveal module-only facts. Ties still yield no match below.
-_ACTION_FAMILY_HINTS: dict[str, tuple[str, ...]] = {
-    "observe": ("仔细观察", "观察", "察看", "查看"),
-    "search": ("搜索", "搜查", "查找", "找线索", "寻找"),
-    "research": ("研究", "查阅", "检索", "翻阅", "查旧报"),
-    "social": ("留下好印象", "博取信任", "说服"),
-    "intimidate": ("恐吓", "威吓"),
-    "bribe": ("贿赂", "收买"),
-}
 
 
 __all__ = [

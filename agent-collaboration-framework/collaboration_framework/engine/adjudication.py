@@ -26,6 +26,7 @@ from collaboration_framework.contracts import (
     ChangeEntityStateEffect,
     ChangeItemConditionEffect,
     CheckDecisionRequest,
+    CheckStep,
     CommitTerminalEndingEffect,
     ConsumeEntityEffect,
     ContractError,
@@ -1594,6 +1595,8 @@ class AdjudicationEngineService:
             if not agent_match_scope_admits(
                 rule,
                 location_id=state.scene_id,
+                state=state,
+                actor_id=adjudication.actor_id,
                 action_family=adjudication.method.family,
                 target_kind=adjudication.target.kind,
                 target_id=adjudication.target.id,
@@ -2115,8 +2118,14 @@ class AdjudicationEngineService:
             rule_id=decision.rule_id,
             option_id=decision.option_id,
         )
-        step, _ = pending_check_for(rule, branch_id)
+        step, prefix_effects = pending_check_for(rule, branch_id)
         if step is not None:
+            if (
+                isinstance(step, CheckStep)
+                and step.check.initiation_kind == "passive_rule"
+            ):
+                # 被动检定由 Agenda 拥有骰点；初始动作只提交阻塞前的确定性 Effect。
+                return tuple(prefix_effects)
             if check_run is None:
                 # 分支要求掷骰，裁决却没带检定：拒绝提交后果，而不是当作成功。
                 return ()
@@ -2302,7 +2311,13 @@ class AdjudicationEngineService:
             option_id=decision.option_id,
         )
         check_step, _ = pending_check_for(rule, branch_id)
-        if check_step is not None:
+        if (
+            isinstance(check_step, CheckStep)
+            and check_step.check.initiation_kind == "passive_rule"
+        ):
+            # 被动检定必须保留在 Agenda 内，由 execution receipt 保证只掷一次。
+            walk = walk_rule(rule, branch_id=branch_id)
+        elif check_step is not None:
             if check_run is None:
                 return state
             degree = (check_run.final_result or check_run.roll).degree
