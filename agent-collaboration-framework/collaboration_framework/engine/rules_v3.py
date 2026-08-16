@@ -26,6 +26,7 @@ from collaboration_framework.contracts import (
     ModuleContentV3,
     NotCondition,
     PredicateCondition,
+    RuleEffect,
     RuleSpecV3,
 )
 
@@ -40,7 +41,7 @@ _UNKNOWN_PREDICATE_IS_FALSE = False
 class RuleWalk:
     """What one rule's step chain produced."""
 
-    effects: list[object] = field(default_factory=list)
+    effects: list[RuleEffect] = field(default_factory=list)
     suspended_at: str | None = None
     suspended_kind: str | None = None
     step_count: int = 0
@@ -124,6 +125,13 @@ def _evaluate_predicate(
         )
     if condition.predicate == "core_resolved":
         return state.core_resolved is bool(args.get("value", True))
+    if condition.predicate == "plot_thread_status_is":
+        thread_id = args.get("thread_id")
+        expected = args.get("status")
+        if not isinstance(thread_id, str) or not isinstance(expected, str):
+            return False
+        current = state.plot_threads.get(thread_id)
+        return current is not None and current.status == expected
     return _UNKNOWN_PREDICATE_IS_FALSE
 
 
@@ -439,16 +447,21 @@ def agent_match_scope_admits(
     scope = trigger.scope
     if scope.location_ids and location_id not in scope.location_ids:
         return False
-    if action_family is not None and scope.action_families:
-        if action_family not in scope.action_families:
-            return False
-    if target_kind is not None and scope.target_kinds:
-        if target_kind not in scope.target_kinds:
-            return False
-    if target_id is not None and scope.target_ids:
-        if target_id not in scope.target_ids:
-            return False
-    return True
+    if (
+        action_family is not None
+        and scope.action_families
+        and action_family not in scope.action_families
+    ):
+        return False
+    if (
+        target_kind is not None
+        and scope.target_kinds
+        and target_kind not in scope.target_kinds
+    ):
+        return False
+    return not (
+        target_id is not None and scope.target_ids and target_id not in scope.target_ids
+    )
 
 
 def pending_check_for(rule: RuleSpecV3, branch_id: str):
@@ -471,7 +484,9 @@ def pending_check_for(rule: RuleSpecV3, branch_id: str):
     return step, walk.effects
 
 
-def effects_after_degree(rule: RuleSpecV3, step_id: str, degree: str) -> list:
+def effects_after_degree(
+    rule: RuleSpecV3, step_id: str, degree: str
+) -> list[RuleEffect]:
     """Continue the rule from where the roll routed it (#226 §4)."""
 
     step = next((item for item in rule.execution.steps if item.id == step_id), None)
@@ -483,7 +498,7 @@ def effects_after_degree(rule: RuleSpecV3, step_id: str, degree: str) -> list:
     return walk_rule_from(rule, resume_id).effects
 
 
-def effects_after_cancel(rule: RuleSpecV3, step_id: str) -> list:
+def effects_after_cancel(rule: RuleSpecV3, step_id: str) -> list[RuleEffect]:
     step = next((item for item in rule.execution.steps if item.id == step_id), None)
     if not isinstance(step, AdjudicatedCheckStep):
         return []

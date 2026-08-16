@@ -26,6 +26,7 @@ from .models import (
     GameState,
     LocationKnowledge,
     PendingCheckDecision,
+    PlotThreadState,
     RuleAgenda,
     StateModifiedEvent,
     ValidatedActionCommand,
@@ -40,6 +41,7 @@ from .persistent_results import (
     committed_results_from_events,
     validate_persistent_effects,
 )
+from .plot_threads import transition_plot_thread
 from .ports import EngineStore, EngineTransaction, RevisionConflictError
 from .proposal_compiler import (
     ProposalCompiler,
@@ -72,6 +74,7 @@ __all__ = [
     "InMemoryEngineStore",
     "LocationKnowledge",
     "PendingCheckDecision",
+    "PlotThreadState",
     "ProposalCompiler",
     "ProposalShadowComparison",
     "ProposalShadowCompiler",
@@ -94,5 +97,6 @@ __all__ = [
     "engine_turn_context",
     "require_runtime_capabilities",
     "resolve_location_target",
+    "transition_plot_thread",
     "validate_persistent_effects",
 ]

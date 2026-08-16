@@ -275,17 +275,70 @@
           "title": "Kind",
           "type": "string"
         },
+        "schema_version": {
+          "default": 1,
+          "enum": [
+            1,
+            2
+          ],
+          "title": "Schema Version",
+          "type": "integer"
+        },
         "resume_step_id": {
-          "maxLength": 100,
-          "minLength": 1,
-          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$",
-          "title": "Resume Step Id",
-          "type": "string"
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resume Step Id"
+        },
+        "boundary_id": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Boundary Id"
+        },
+        "player_safe_prompt": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Player Safe Prompt"
+        },
+        "options": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RuleInputOption"
+          },
+          "title": "Options",
+          "type": "array"
         }
       },
       "required": [
-        "id",
-        "resume_step_id"
+        "id"
       ],
       "title": "AwaitPlayerInputStep",
       "type": "object"
@@ -698,71 +751,78 @@
           "type": "string"
         },
         "effect": {
-          "discriminator": {
-            "mapping": {
-              "advance_world_time": "#/$defs/AdvanceWorldTimeEffect",
-              "change_entity_state": "#/$defs/ChangeEntityStateEffect",
-              "change_item_condition": "#/$defs/ChangeItemConditionEffect",
-              "commit_terminal_ending": "#/$defs/CommitTerminalEndingEffect",
-              "consume_entity": "#/$defs/ConsumeEntityEffect",
-              "ensure_runtime_entity": "#/$defs/EnsureRuntimeEntityEffect",
-              "ensure_runtime_location": "#/$defs/EnsureRuntimeLocationEffect",
-              "enter_location": "#/$defs/EnterLocationEffect",
-              "hide_information": "#/$defs/HideInformationEffect",
-              "mark_core_resolved": "#/$defs/MarkCoreResolvedEffect",
-              "move_entity": "#/$defs/MoveEntityEffect",
-              "narrative_only": "#/$defs/NarrativeOnlyEffect",
-              "reveal_information": "#/$defs/RevealInformationEffect",
-              "set_ending_availability": "#/$defs/SetEndingAvailabilityEffect",
-              "set_visibility": "#/$defs/SetVisibilityEffect"
-            },
-            "propertyName": "type"
-          },
-          "oneOf": [
+          "anyOf": [
             {
-              "$ref": "#/$defs/RevealInformationEffect"
+              "discriminator": {
+                "mapping": {
+                  "advance_world_time": "#/$defs/AdvanceWorldTimeEffect",
+                  "change_entity_state": "#/$defs/ChangeEntityStateEffect",
+                  "change_item_condition": "#/$defs/ChangeItemConditionEffect",
+                  "commit_terminal_ending": "#/$defs/CommitTerminalEndingEffect",
+                  "consume_entity": "#/$defs/ConsumeEntityEffect",
+                  "ensure_runtime_entity": "#/$defs/EnsureRuntimeEntityEffect",
+                  "ensure_runtime_location": "#/$defs/EnsureRuntimeLocationEffect",
+                  "enter_location": "#/$defs/EnterLocationEffect",
+                  "hide_information": "#/$defs/HideInformationEffect",
+                  "mark_core_resolved": "#/$defs/MarkCoreResolvedEffect",
+                  "move_entity": "#/$defs/MoveEntityEffect",
+                  "narrative_only": "#/$defs/NarrativeOnlyEffect",
+                  "reveal_information": "#/$defs/RevealInformationEffect",
+                  "set_ending_availability": "#/$defs/SetEndingAvailabilityEffect",
+                  "set_visibility": "#/$defs/SetVisibilityEffect"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/RevealInformationEffect"
+                },
+                {
+                  "$ref": "#/$defs/HideInformationEffect"
+                },
+                {
+                  "$ref": "#/$defs/SetVisibilityEffect"
+                },
+                {
+                  "$ref": "#/$defs/EnterLocationEffect"
+                },
+                {
+                  "$ref": "#/$defs/EnsureRuntimeLocationEffect"
+                },
+                {
+                  "$ref": "#/$defs/EnsureRuntimeEntityEffect"
+                },
+                {
+                  "$ref": "#/$defs/MoveEntityEffect"
+                },
+                {
+                  "$ref": "#/$defs/ChangeEntityStateEffect"
+                },
+                {
+                  "$ref": "#/$defs/ChangeItemConditionEffect"
+                },
+                {
+                  "$ref": "#/$defs/ConsumeEntityEffect"
+                },
+                {
+                  "$ref": "#/$defs/MarkCoreResolvedEffect"
+                },
+                {
+                  "$ref": "#/$defs/SetEndingAvailabilityEffect"
+                },
+                {
+                  "$ref": "#/$defs/CommitTerminalEndingEffect"
+                },
+                {
+                  "$ref": "#/$defs/AdvanceWorldTimeEffect"
+                },
+                {
+                  "$ref": "#/$defs/NarrativeOnlyEffect"
+                }
+              ]
             },
             {
-              "$ref": "#/$defs/HideInformationEffect"
-            },
-            {
-              "$ref": "#/$defs/SetVisibilityEffect"
-            },
-            {
-              "$ref": "#/$defs/EnterLocationEffect"
-            },
-            {
-              "$ref": "#/$defs/EnsureRuntimeLocationEffect"
-            },
-            {
-              "$ref": "#/$defs/EnsureRuntimeEntityEffect"
-            },
-            {
-              "$ref": "#/$defs/MoveEntityEffect"
-            },
-            {
-              "$ref": "#/$defs/ChangeEntityStateEffect"
-            },
-            {
-              "$ref": "#/$defs/ChangeItemConditionEffect"
-            },
-            {
-              "$ref": "#/$defs/ConsumeEntityEffect"
-            },
-            {
-              "$ref": "#/$defs/MarkCoreResolvedEffect"
-            },
-            {
-              "$ref": "#/$defs/SetEndingAvailabilityEffect"
-            },
-            {
-              "$ref": "#/$defs/CommitTerminalEndingEffect"
-            },
-            {
-              "$ref": "#/$defs/AdvanceWorldTimeEffect"
-            },
-            {
-              "$ref": "#/$defs/NarrativeOnlyEffect"
+              "$ref": "#/$defs/TransitionPlotThreadEffect"
             }
           ],
           "title": "Effect"
@@ -2308,6 +2368,59 @@
       "title": "NotCondition",
       "type": "object"
     },
+    "PlotThreadSpec": {
+      "additionalProperties": false,
+      "description": "模组声明的剧情线程；只有 Rule Effect 可以改变其运行时状态。",
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "initial_status": {
+          "default": "locked",
+          "enum": [
+            "locked",
+            "available"
+          ],
+          "title": "Initial Status",
+          "type": "string"
+        },
+        "visibility": {
+          "default": "hidden",
+          "enum": [
+            "hidden",
+            "player"
+          ],
+          "title": "Visibility",
+          "type": "string"
+        },
+        "player_safe_summary": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Player Safe Summary",
+          "type": "string"
+        },
+        "dependency_thread_ids": {
+          "default": [],
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$",
+            "type": "string"
+          },
+          "title": "Dependency Thread Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "PlotThreadSpec",
+      "type": "object"
+    },
     "PredicateCondition": {
       "additionalProperties": false,
       "description": "A registered predicate, never a script.\n\n#226 §1 forbids scripts, database paths and arbitrary event payloads in\nrules; the predicate name must resolve to something the Engine registered.",
@@ -2563,6 +2676,42 @@
       "title": "RuleExecutionSpec",
       "type": "object"
     },
+    "RuleInputOption": {
+      "additionalProperties": false,
+      "description": "模组发布的有限恢复选项；next_step_id 永远不进入玩家输入。",
+      "properties": {
+        "id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "semantic_hints": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Semantic Hints",
+          "type": "array"
+        },
+        "next_step_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$",
+          "title": "Next Step Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "semantic_hints",
+        "next_step_id"
+      ],
+      "title": "RuleInputOption",
+      "type": "object"
+    },
     "RuleLimitsSpec": {
       "additionalProperties": false,
       "properties": {
@@ -2772,6 +2921,41 @@
       "title": "TimePointSpec",
       "type": "object"
     },
+    "TransitionPlotThreadEffect": {
+      "additionalProperties": false,
+      "description": "仅允许已发布 Rule 推进剧情线程，Host Proposal 不暴露该能力。",
+      "properties": {
+        "type": {
+          "const": "transition_plot_thread",
+          "default": "transition_plot_thread",
+          "title": "Type",
+          "type": "string"
+        },
+        "thread_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$",
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "to_status": {
+          "enum": [
+            "available",
+            "in_progress",
+            "resolved",
+            "failed"
+          ],
+          "title": "To Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "thread_id",
+        "to_status"
+      ],
+      "title": "TransitionPlotThreadEffect",
+      "type": "object"
+    },
     "TravelCostSpec": {
       "additionalProperties": false,
       "properties": {
@@ -2906,6 +3090,14 @@
         "$ref": "#/$defs/RuleSpecV3"
       },
       "title": "Rules",
+      "type": "array"
+    },
+    "plot_threads": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PlotThreadSpec"
+      },
+      "title": "Plot Threads",
       "type": "array"
     },
     "core_resolution": {

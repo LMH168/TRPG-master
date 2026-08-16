@@ -15,7 +15,13 @@ from collaboration_framework.contracts import (
     ModuleContentV3,
 )
 
-from .models import ActorState, GameState, WorldTimePoint, WorldTimeState
+from .models import (
+    ActorState,
+    GameState,
+    PlotThreadState,
+    WorldTimePoint,
+    WorldTimeState,
+)
 
 
 def create_initial_game_state(
@@ -52,6 +58,13 @@ def create_initial_game_state(
                 and entity.visibility in {"public", "party"}
             },
             actor_item_knowledge=carried_knowledge,
+            plot_threads={
+                thread.id: PlotThreadState(
+                    thread_id=thread.id,
+                    status=thread.initial_status,
+                )
+                for thread in module_content.plot_threads
+            },
         )
     return GameState(
         room_id=room_id,

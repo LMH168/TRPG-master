@@ -31,7 +31,9 @@ from collaboration_framework.contracts.module_v3 import (
     ModuleContentV3,
     NotCondition,
     PredicateCondition,
+    PresentationStep,
     RuleSpecV3,
+    TransitionPlotThreadEffect,
 )
 
 from .validation import ValidationIssue, ValidationReport
@@ -77,7 +79,9 @@ def _schema_failure(error: ValidationError) -> ValidationReport:
             path=".".join(str(part) for part in issue.get("loc", ())) or "$",
             message=str(issue.get("msg", "schema validation failed")),
         )
-        for issue in error.errors(include_url=False, include_context=False, include_input=False)
+        for issue in error.errors(
+            include_url=False, include_context=False, include_input=False
+        )
     )
     return ValidationReport(status="blocked", errors=issues)
 
@@ -89,6 +93,7 @@ def _semantic_issues(content: ModuleContentV3) -> list[ValidationIssue]:
     goal_ids = {item.id for item in content.knowledge_goals}
     anchor_ids = {item.id for item in content.ending_anchors}
     time_point_ids = {point.id for point in content.time_policy.default_points}
+    plot_thread_ids = {thread.id for thread in content.plot_threads}
     known = {
         "information": information_ids,
         "entities": entity_ids,
@@ -184,10 +189,42 @@ def _semantic_issues(content: ModuleContentV3) -> list[ValidationIssue]:
                     f"location_edges.{index}.conditions.{condition_index}",
                 )
             )
+            issues.extend(
+                _plot_thread_predicate_issues(
+                    condition,
+                    f"location_edges.{index}.conditions.{condition_index}",
+                    plot_thread_ids,
+                )
+            )
 
     # --- rules ------------------------------------------------------------- #
     for index, rule in enumerate(content.rules):
-        issues.extend(_rule_issues(rule, f"rules.{index}", known, require))
+        issues.extend(
+            _rule_issues(
+                rule,
+                f"rules.{index}",
+                known,
+                require,
+                plot_thread_ids=plot_thread_ids,
+            )
+        )
+
+    # --- plot threads ----------------------------------------------------- #
+    for index, thread in enumerate(content.plot_threads):
+        for dependency_index, dependency_id in enumerate(thread.dependency_thread_ids):
+            if dependency_id not in plot_thread_ids:
+                issues.append(
+                    ValidationIssue(
+                        severity="error",
+                        code="MODULE_V3_PLOT_THREAD_NOT_FOUND",
+                        path=(
+                            f"plot_threads.{index}.dependency_thread_ids."
+                            f"{dependency_index}"
+                        ),
+                        message=f"引用了不存在的 PlotThread: {dependency_id}",
+                    )
+                )
+    issues.extend(_plot_thread_cycle_issues(content))
 
     # --- resolution and endings -------------------------------------------- #
     for index, goal_id in enumerate(content.core_resolution.required_goal_ids):
@@ -235,7 +272,9 @@ def _semantic_issues(content: ModuleContentV3) -> list[ValidationIssue]:
             "MODULE_V3_LOCATION_NOT_FOUND",
             "initial_state.default_actor_placement.location_id",
         )
-    for index, information_id in enumerate(content.initial_state.revealed_information_ids):
+    for index, information_id in enumerate(
+        content.initial_state.revealed_information_ids
+    ):
         require(
             information_id,
             "information",
@@ -323,12 +362,21 @@ def _rule_issues(
     path: str,
     known: dict[str, set[str]],
     require,
+    *,
+    plot_thread_ids: set[str],
 ) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
 
     if isinstance(rule.trigger, EventTriggerSpec):
         if rule.trigger.when is not None:
             issues.extend(_condition_issues(rule.trigger.when, f"{path}.trigger.when"))
+            issues.extend(
+                _plot_thread_predicate_issues(
+                    rule.trigger.when,
+                    f"{path}.trigger.when",
+                    plot_thread_ids,
+                )
+            )
     elif isinstance(rule.trigger, AgentMatchTriggerSpec):
         for index, location_id in enumerate(rule.trigger.scope.location_ids):
             require(
@@ -352,6 +400,19 @@ def _rule_issues(
             )
         if isinstance(step, EffectStep):
             issues.extend(_effect_issues(step, f"{step_path}.effect", known))
+            effect = step.effect
+            if (
+                isinstance(effect, TransitionPlotThreadEffect)
+                and effect.thread_id not in plot_thread_ids
+            ):
+                issues.append(
+                    ValidationIssue(
+                        severity="error",
+                        code="MODULE_V3_PLOT_THREAD_NOT_FOUND",
+                        path=f"{step_path}.effect.thread_id",
+                        message=f"引用了不存在的 PlotThread: {effect.thread_id}",
+                    )
+                )
         elif isinstance(step, CreateNpcActionOpportunityStep):
             require(
                 step.entity_id,
@@ -359,7 +420,10 @@ def _rule_issues(
                 "MODULE_V3_ENTITY_NOT_FOUND",
                 f"{step_path}.entity_id",
             )
-        elif isinstance(step, CheckStep | AdjudicatedCheckStep) and not step.result_routes:
+        elif (
+            isinstance(step, CheckStep | AdjudicatedCheckStep)
+            and not step.result_routes
+        ):
             issues.append(
                 ValidationIssue(
                     severity="error",
@@ -373,7 +437,7 @@ def _rule_issues(
         presentation_ids = {rule.presentation.id}
         for index, step in enumerate(rule.execution.steps):
             if (
-                getattr(step, "kind", None) == "presentation"
+                isinstance(step, PresentationStep)
                 and step.presentation_id not in presentation_ids
             ):
                 issues.append(
@@ -384,6 +448,89 @@ def _rule_issues(
                         message=f"引用了未声明的展示片段: {step.presentation_id}",
                     )
                 )
+    return issues
+
+
+def _plot_thread_cycle_issues(content: ModuleContentV3) -> list[ValidationIssue]:
+    """依赖图必须无环，否则 locked 线程可能永远无法变为 available。"""
+
+    dependencies = {
+        thread.id: set(thread.dependency_thread_ids) for thread in content.plot_threads
+    }
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def has_cycle(thread_id: str) -> bool:
+        if thread_id in visiting:
+            return True
+        if thread_id in visited:
+            return False
+        visiting.add(thread_id)
+        cyclic = any(
+            dependency in dependencies and has_cycle(dependency)
+            for dependency in dependencies.get(thread_id, ())
+        )
+        visiting.remove(thread_id)
+        visited.add(thread_id)
+        return cyclic
+
+    for index, thread in enumerate(content.plot_threads):
+        if has_cycle(thread.id):
+            return [
+                ValidationIssue(
+                    severity="error",
+                    code="MODULE_V3_PLOT_THREAD_DEPENDENCY_CYCLE",
+                    path=f"plot_threads.{index}.dependency_thread_ids",
+                    message="PlotThread 依赖关系存在环",
+                )
+            ]
+    return []
+
+
+def _plot_thread_predicate_issues(
+    condition: ConditionExpr,
+    path: str,
+    plot_thread_ids: set[str],
+) -> list[ValidationIssue]:
+    """验证剧情谓词只引用已发布线程和固定状态枚举。"""
+
+    if isinstance(condition, AllCondition | AnyCondition):
+        return [
+            issue
+            for index, item in enumerate(condition.items)
+            for issue in _plot_thread_predicate_issues(
+                item, f"{path}.items.{index}", plot_thread_ids
+            )
+        ]
+    if isinstance(condition, NotCondition):
+        return _plot_thread_predicate_issues(
+            condition.item, f"{path}.item", plot_thread_ids
+        )
+    if not isinstance(condition, PredicateCondition):
+        return []
+    if condition.predicate != "plot_thread_status_is":
+        return []
+    thread_id = condition.args.get("thread_id")
+    status = condition.args.get("status")
+    issues: list[ValidationIssue] = []
+    if not isinstance(thread_id, str) or thread_id not in plot_thread_ids:
+        issues.append(
+            ValidationIssue(
+                severity="error",
+                code="MODULE_V3_PLOT_THREAD_NOT_FOUND",
+                path=f"{path}.args.thread_id",
+                message=f"剧情谓词引用了不存在的 PlotThread: {thread_id}",
+            )
+        )
+    if status not in {"locked", "available", "in_progress", "resolved", "failed"}:
+        issues.append(
+            ValidationIssue(
+                severity="error",
+                code="MODULE_V3_PLOT_THREAD_STATUS_INVALID",
+                path=f"{path}.args.status",
+                message=f"剧情谓词使用了无效状态: {status}",
+            )
+        )
     return issues
 
 
@@ -402,7 +549,9 @@ def _reachable_steps(rule: RuleSpecV3) -> set[str]:
     return reachable
 
 
-def _effect_issues(step: EffectStep, path: str, known: dict[str, set[str]]) -> list[ValidationIssue]:
+def _effect_issues(
+    step: EffectStep, path: str, known: dict[str, set[str]]
+) -> list[ValidationIssue]:
     """Check the Canon ids an effect names.
 
     `ensure_runtime_*` effects deliberately name ids that must *not* exist yet,

@@ -404,10 +404,21 @@ class RuleCheckSpec(ContractModel):
     allow_push: bool | None = None
 
 
+class TransitionPlotThreadEffect(ContractModel):
+    """仅允许已发布 Rule 推进剧情线程，Host Proposal 不暴露该能力。"""
+
+    type: Literal["transition_plot_thread"] = "transition_plot_thread"
+    thread_id: Identifier
+    to_status: Literal["available", "in_progress", "resolved", "failed"]
+
+
+RuleEffect: TypeAlias = ActionEffect | TransitionPlotThreadEffect
+
+
 class EffectStep(ContractModel):
     id: Identifier
     kind: Literal["effect"] = "effect"
-    effect: ActionEffect
+    effect: RuleEffect
     next_step_id: Identifier
 
 
@@ -752,6 +763,31 @@ class InitialStateSpec(ContractModel):
     entity_state: dict[Identifier, dict[str, JsonValue]] = Field(default_factory=dict)
 
 
+PlotThreadStatus: TypeAlias = Literal[
+    "locked", "available", "in_progress", "resolved", "failed"
+]
+
+
+class PlotThreadSpec(ContractModel):
+    """模组声明的剧情线程；只有 Rule Effect 可以改变其运行时状态。"""
+
+    id: Identifier
+    initial_status: Literal["locked", "available"] = "locked"
+    visibility: Literal["hidden", "player"] = "hidden"
+    player_safe_summary: str = Field(default="", max_length=500)
+    dependency_thread_ids: tuple[Identifier, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_visibility_and_dependencies(self) -> PlotThreadSpec:
+        if self.visibility == "player" and not self.player_safe_summary.strip():
+            raise ValueError("玩家可见 PlotThread 必须包含 player_safe_summary")
+        if self.id in self.dependency_thread_ids:
+            raise ValueError("PlotThread 不能依赖自身")
+        if len(self.dependency_thread_ids) != len(set(self.dependency_thread_ids)):
+            raise ValueError("PlotThread dependency_thread_ids 必须唯一")
+        return self
+
+
 # --------------------------------------------------------------------------- #
 # root
 # --------------------------------------------------------------------------- #
@@ -778,6 +814,7 @@ class ModuleContentV3(ContractModel):
     locations: tuple[LocationSpecV3, ...] = Field(min_length=1)
     location_edges: tuple[LocationEdgeSpec, ...] = ()
     rules: tuple[RuleSpecV3, ...] = ()
+    plot_threads: tuple[PlotThreadSpec, ...] = ()
 
     core_resolution: CoreResolutionSpec = Field(default_factory=CoreResolutionSpec)
     ending_policy: EndingPolicySpec = Field(default_factory=EndingPolicySpec)
@@ -796,6 +833,7 @@ class ModuleContentV3(ContractModel):
         _require_unique_ids(self.locations, "Location")
         _require_unique_ids(self.location_edges, "Location edge")
         _require_unique_ids(self.rules, "Rule")
+        _require_unique_ids(self.plot_threads, "PlotThread")
         _require_unique_ids(self.ending_anchors, "Ending anchor")
         return self
 
@@ -842,9 +880,12 @@ __all__ = [
     "ModuleContentV3",
     "ModuleTimePolicySpec",
     "NotCondition",
+    "PlotThreadSpec",
+    "PlotThreadStatus",
     "PredicateCondition",
     "PresentationStep",
     "RuleCheckSpec",
+    "RuleEffect",
     "RuleExecutionSpec",
     "RuleInputOption",
     "RuleLimitsSpec",
@@ -854,6 +895,7 @@ __all__ = [
     "RuleTriggerSpec",
     "TargetKind",
     "TimePointSpec",
+    "TransitionPlotThreadEffect",
     "TravelCostSpec",
     "WorldProfileSpec",
 ]

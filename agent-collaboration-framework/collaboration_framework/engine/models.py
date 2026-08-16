@@ -240,6 +240,15 @@ class AgendaStepExecution(ContractModel):
     created_at: datetime
 
 
+class PlotThreadState(ContractModel):
+    """GameState 内的权威剧情线程状态，版本用于事务内 CAS/幂等判断。"""
+
+    thread_id: str = Field(min_length=1, max_length=100)
+    status: Literal["locked", "available", "in_progress", "resolved", "failed"]
+    version: int = Field(default=1, ge=1)
+    last_transition_event_id: str | None = Field(default=None, min_length=1)
+
+
 class GameState(ContractModel):
     """Authoritative room state loaded and committed only through EngineStore."""
 
@@ -269,6 +278,7 @@ class GameState(ContractModel):
         default_factory=dict
     )
     rule_agendas: dict[str, RuleAgenda] = Field(default_factory=dict)
+    plot_threads: dict[str, PlotThreadState] = Field(default_factory=dict)
     core_resolved: bool = False
     ending_available: bool = False
     ending_resolution: EndingResolution | None = None

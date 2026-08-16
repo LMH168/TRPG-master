@@ -49,11 +49,13 @@ from collaboration_framework.contracts import (
     PostRollDecisionRequest,
     PushOption,
     RevealInformationEffect,
+    RuleEffect,
     SetEndingAvailabilityEffect,
     SetVisibilityEffect,
     SpendResourceOption,
     SubmitAdjudicationRequest,
     SubmitProposalRequest,
+    TransitionPlotThreadEffect,
     TravelInterrupted,
     TravelResolved,
 )
@@ -86,6 +88,7 @@ from .persistent_results import (
     is_public_standard_state,
     validate_persistent_effects,
 )
+from .plot_threads import transition_plot_thread
 from .ports import EngineStore
 from .projection_v3 import project_v3
 from .proposal_compiler import ProposalCompiler
@@ -1621,7 +1624,7 @@ class AdjudicationEngineService:
     def _validate_effect_sequence(
         self,
         runtime: EngineRuntimeSnapshot,
-        effects: tuple[ActionEffect, ...],
+        effects: tuple[RuleEffect, ...],
         *,
         custody_actor_id: str | None = None,
     ) -> None:
@@ -1761,7 +1764,7 @@ class AdjudicationEngineService:
     def _validate_effect(
         self,
         runtime: EngineRuntimeSnapshot,
-        effect: ActionEffect,
+        effect: RuleEffect,
         *,
         information_ids: set[str],
         entity_ids: set[str],
@@ -1933,11 +1936,15 @@ class AdjudicationEngineService:
                 )
             if effect.to_point_id is not None:
                 try:
-                    advance_to_target(
-                        runtime.v3,
-                        world_time if world_time is not None else state.world_time,
-                        effect.to_point_id,
+                    current_time = (
+                        world_time if world_time is not None else state.world_time
                     )
+                    # 一个 Effect 只能跨一个 authored point，确保中间事件不会被跳过。
+                    next_time = advanced_to_next(runtime.v3, current_time)
+                    if next_time.current_point_id != effect.to_point_id:
+                        raise ContractError(
+                            "time_target_not_next: 当前时间目标不是下一时间点"
+                        )
                 except ContractError as exc:
                     self._reject_validation(
                         "TIME_POINT_MISMATCH",
@@ -1946,6 +1953,29 @@ class AdjudicationEngineService:
                         player_safe_reason="当前时间目标与世界时间线不一致",
                         internal_reason=str(exc),
                     )
+        elif isinstance(effect, TransitionPlotThreadEffect):
+            current_thread = state.plot_threads.get(effect.thread_id)
+            if current_thread is None:
+                self._reject_validation(
+                    "PLOT_THREAD_NOT_FOUND",
+                    repairability="hard_reject",
+                    fault="engine",
+                    player_safe_reason="剧情状态暂时无法推进",
+                )
+            try:
+                transition_plot_thread(
+                    current_thread,
+                    to_status=effect.to_status,
+                    event_id="validation",
+                )
+            except ContractError as exc:
+                self._reject_validation(
+                    "PLOT_THREAD_TRANSITION_INVALID",
+                    repairability="hard_reject",
+                    fault="engine",
+                    player_safe_reason="剧情状态暂时无法推进",
+                    internal_reason=str(exc),
+                )
         elif isinstance(effect, CommitTerminalEndingEffect):
             self._reject_validation(
                 "ENDING_REQUIRES_DRAFT",
@@ -2038,7 +2068,7 @@ class AdjudicationEngineService:
         adjudication: ActionAdjudication,
         passed: bool,
         check_run: CheckRun | None,
-    ) -> tuple[ActionEffect, ...]:
+    ) -> tuple[RuleEffect, ...]:
         """Whose effects commit: the rule's if one owns this action, else the Agent's.
 
         #226 §5 gives a named rule `effect_authority: rule` — the Agent chose the
@@ -2446,7 +2476,7 @@ class AdjudicationEngineService:
         state: GameState,
         source_event: DomainEvent,
         actor_id: str,
-    ) -> list[tuple[str, list[ActionEffect]]]:
+    ) -> list[tuple[str, list[RuleEffect]]]:
         """Rules this event fires, already reduced to the effects they commit.
 
         v3 rules are step graphs, so the effects are whatever the walk collects
@@ -2485,7 +2515,7 @@ class AdjudicationEngineService:
         self,
         runtime: EngineRuntimeSnapshot,
         state: GameState,
-        effect: ActionEffect,
+        effect: RuleEffect,
         *,
         room_id: str,
         request_id: str,
@@ -2951,6 +2981,32 @@ class AdjudicationEngineService:
             )
             event_type = "ending.availability_changed"
             payload = {"available": effect.available}
+        elif isinstance(effect, TransitionPlotThreadEffect):
+            current_thread = state.plot_threads.get(effect.thread_id)
+            if current_thread is None:
+                self._reject_validation(
+                    "PLOT_THREAD_NOT_FOUND",
+                    repairability="hard_reject",
+                    fault="engine",
+                    player_safe_reason="剧情状态暂时无法推进",
+                )
+            # 事件 ID 与状态快照一起生成并提交，恢复时可识别同一次迁移。
+            effect_event_id = self._new_id("evt")
+            transitioned = transition_plot_thread(
+                current_thread,
+                to_status=effect.to_status,
+                event_id=effect_event_id,
+            )
+            threads = dict(state.plot_threads)
+            threads[effect.thread_id] = transitioned
+            state = state.model_copy(update={"plot_threads": threads}, deep=True)
+            event_type = "plot_thread.transitioned"
+            payload = {
+                "thread_id": effect.thread_id,
+                "from_status": current_thread.status,
+                "to_status": transitioned.status,
+                "thread_version": transitioned.version,
+            }
         elif isinstance(effect, CommitTerminalEndingEffect):
             self._reject_validation(
                 "ENDING_REQUIRES_DRAFT",
