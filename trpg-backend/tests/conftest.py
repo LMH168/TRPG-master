@@ -19,6 +19,7 @@ from sqlalchemy.pool import NullPool
 from app.adapters import (
     SqlAlchemyActionPlanRunStore,
     SqlAlchemyEngineStore,
+    SqlAlchemyMemoryProjectionSource,
     SqlAlchemyMemoryStore,
     SqlAlchemyRecentHistorySource,
     SqlAlchemyTurnStore,
@@ -165,6 +166,13 @@ def memory_store_factory() -> Callable[[], SqlAlchemyMemoryStore]:
     """构造使用隔离测试数据库的 Memory 投影 Store。"""
 
     return lambda: SqlAlchemyMemoryStore(TestSessionLocal)
+
+
+@pytest.fixture
+def memory_projection_source_factory() -> Callable[[], SqlAlchemyMemoryProjectionSource]:
+    """构造只读取隔离测试数据库的 Memory 投影来源适配器。"""
+
+    return lambda: SqlAlchemyMemoryProjectionSource(TestSessionLocal)
 
 
 @pytest.fixture
