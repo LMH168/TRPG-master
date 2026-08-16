@@ -9,7 +9,9 @@ import type {
   AgentPlayerView,
   RoomConversationEvent,
   ServerToClientEvent,
+  TurnRead,
 } from 'trpg-sdk'
+import { RoomSocketServerError } from 'trpg-sdk'
 import RoomPage from './RoomPage'
 import { useAuthStore } from '@/stores/auth-store'
 import { useCharacterStore } from '@/stores/character-store'
@@ -153,7 +155,7 @@ const {
     mockListConversation: vi.fn(),
     mockGetTurn: vi.fn(),
     mockFindTurnByClientAction: vi.fn(() => Promise.resolve(null)),
-    mockListTurns: vi.fn(() => Promise.resolve([])),
+    mockListTurns: vi.fn((): Promise<TurnRead[]> => Promise.resolve([])),
     mockResumeTurn: vi.fn(),
     mockGetHostSpeechSettings: vi.fn(),
     mockGetHostSpeechManifest: vi.fn(),
@@ -438,6 +440,36 @@ function conversationHistory(): RoomConversationEvent[] {
   ]
 }
 
+/** 构造服务端已经持久化、正在等待玩家选择检定结果的活动回合。 */
+function activePostRollTurn(): TurnRead {
+  return {
+    turnId: 'turn-active',
+    roomId: 'room-1',
+    clientActionId: 'action-waiting',
+    status: 'adjudicating',
+    commitState: 'partially_committed',
+    resumePoint: 'awaiting_player',
+    waitingReason: 'post_roll_decision',
+    recoveryAction: 'choose_post_roll',
+    phaseVersion: 6,
+    pendingDecision: {
+      check_id: 'check-1',
+      source_revision: '26',
+      status: 'awaiting_post_roll_decision',
+      selected_candidate_id: 'spot-hidden',
+      roll_count: 1,
+      roll: { value: 44, degree: 'failure' },
+      options: [
+        { id: 'accept', label: '接受当前失败' },
+        { id: 'spend_luck', label: '消耗 19 幸运' },
+        { id: 'push', label: '强推一次' },
+      ],
+    },
+    createdAt: '2026-08-16T00:00:00Z',
+    updatedAt: '2026-08-16T00:00:01Z',
+  }
+}
+
 describe('RoomPage conversation history', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -603,6 +635,63 @@ describe('RoomPage conversation history', () => {
 
     expect(await screen.findByRole('dialog', { name: '待处理检定' })).toBeInTheDocument()
     expect(mockSubmitPlannedAction).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the active turn when a rejected request overwrote the local locator', async () => {
+    sessionStorage.setItem(
+      'trpg:pending-turn:room-1:player-1',
+      JSON.stringify({ clientActionId: 'rejected-action', utterance: '再试一次' }),
+    )
+    mockFindTurnByClientAction.mockResolvedValue(null)
+    mockListTurns.mockResolvedValue([activePostRollTurn()])
+
+    renderRoomPage()
+
+    expect(await screen.findByRole('dialog', { name: '待处理检定' })).toBeInTheDocument()
+    expect(mockFindTurnByClientAction).toHaveBeenCalledWith(
+      'room-1',
+      'rejected-action',
+      'reconnect-1',
+    )
+    expect(mockListTurns).toHaveBeenCalledWith('room-1', 'reconnect-1', {
+      activeOnly: true,
+      limit: 1,
+    })
+    expect(sessionStorage.getItem('trpg:pending-turn:room-1:player-1')).toContain(
+      'turn-active',
+    )
+    expect(mockSubmitPlannedAction).not.toHaveBeenCalled()
+  })
+
+  it('restores the active turn immediately after a new request is rejected as in progress', async () => {
+    mockListTurns.mockResolvedValueOnce([])
+    renderRoomPage()
+    await waitFor(() => expect(mockListTurns).toHaveBeenCalled())
+
+    mockListTurns.mockClear()
+    mockListTurns.mockResolvedValue([activePostRollTurn()])
+    mockSubmitPlannedAction.mockRejectedValueOnce(
+      new RoomSocketServerError(
+        '当前房间已有行动正在处理，请稍后重试',
+        'ACTION_IN_PROGRESS',
+        'rejected-action',
+      ),
+    )
+    const input = screen.getByPlaceholderText('输入行动…')
+    fireEvent.change(input, { target: { value: '再试一次' } })
+    fireEvent.submit(input.closest('form')!)
+
+    expect(await screen.findByRole('dialog', { name: '待处理检定' })).toBeInTheDocument()
+    expect(mockListTurns).toHaveBeenCalledWith('room-1', 'reconnect-1', {
+      activeOnly: true,
+      limit: 1,
+    })
+    expect(
+      screen.queryByText('当前房间已有行动正在处理，请稍后重试'),
+    ).not.toBeInTheDocument()
+    expect(sessionStorage.getItem('trpg:pending-turn:room-1:player-1')).toContain(
+      'turn-active',
+    )
   })
 
   it('restores action history by default and discussion history after switching channel', async () => {
