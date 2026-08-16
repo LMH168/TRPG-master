@@ -213,6 +213,66 @@ async def test_sql_projection_complete_and_player_safe_read(
 
 
 @pytest.mark.asyncio
+async def test_sql_text_search_reaches_memory_older_than_preload_window(
+    db_session: AsyncSession,
+    turn_store_factory,
+    memory_store_factory,
+) -> None:
+    """显式长期搜索不能先按最新候选截断，避免退化为近期历史。"""
+
+    turn_store: SqlAlchemyTurnStore = turn_store_factory()
+    store: SqlAlchemyMemoryStore = memory_store_factory()
+    room_id, player_id, turn_id = await _room_player_turn(db_session, turn_store)
+    run, _ = await store.create_or_get_run(
+        new_memory_projection_run(
+            turn_id=turn_id,
+            room_id=room_id,
+            source_fingerprint="9" * 64,
+            now=NOW,
+        )
+    )
+    claimed = await store.claim_run(
+        turn_id=turn_id,
+        worker_id="worker-search",
+        now=NOW,
+        lease_expires_at=NOW + timedelta(seconds=30),
+    )
+    entries = tuple(
+        _entry(room_id=room_id, turn_id=turn_id, ordinal=ordinal).model_copy(
+            update={
+                "search_text": (
+                    "很久以前守墓人提到银钥匙" if ordinal == 0 else f"普通记忆 {ordinal}"
+                )
+            }
+        )
+        for ordinal in range(300)
+    )
+    await store.complete_run(
+        turn_id=turn_id,
+        worker_id="worker-search",
+        expected_version=claimed.version,
+        entries=entries,
+        supersessions=(),
+        now=NOW + timedelta(seconds=31),
+    )
+
+    context = await store.read_context(
+        scope=MemoryReadScope(
+            room_id=room_id,
+            viewer_player_id=player_id,
+            viewer_actor_id="actor-1",
+            as_of_revision="1",
+            current_location_id="cemetery",
+            visible_entity_ids=("caretaker",),
+        ),
+        query=MemoryQuery(text="银钥匙"),
+        budget=MemoryBudget(),
+    )
+
+    assert [entry.source_ordinal for entry in context.entries] == [0]
+
+
+@pytest.mark.asyncio
 async def test_sql_store_rejects_stale_lease_without_partial_entries(
     db_session: AsyncSession,
     turn_store_factory,
