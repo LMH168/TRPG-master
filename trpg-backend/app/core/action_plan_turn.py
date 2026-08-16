@@ -1821,7 +1821,32 @@ class ActionPlanTurnApplication:
         if outcomes and outcomes[-1] != "success":
             fallback_text = status_text + "".join(statements)
         else:
-            fallback_text = "".join(statements) or status_text
+            fallback_text = "".join(statements)
+            if not fallback_text:
+                # 模型叙事失败时仍返回最终 PlayerView 的最小可用上下文，不能只给
+                # 模板状态句；地点、时间和可见参与者都来自权威投影，不从玩家原话猜测。
+                scene = getattr(context.player_view, "scene", None)
+                scene_name = getattr(scene, "name", "")
+                world = getattr(context.player_view, "world", None)
+                details: list[str] = []
+                if scene_name:
+                    details.append(f"你现在位于{scene_name}。")
+                if world is not None and hasattr(world, "hour_of_day"):
+                    details.append(
+                        f"当前是第{world.day_index + 1}天{world.hour_of_day:02d}:00，"
+                        f"属于{('白天' if world.time_of_day == 'day' else '夜晚')}。"
+                    )
+                visible_names = tuple(
+                    item.name
+                    for item in (
+                        *getattr(scene, "visible_entities", ()),
+                        *getattr(scene, "visible_actors", ()),
+                    )
+                    if getattr(item, "name", "")
+                )
+                if visible_names:
+                    details.append("当前可见：" + "、".join(visible_names) + "。")
+                fallback_text = "".join(details) or status_text
         return NarrationOutput(
             # 失败或取消时即使存在失败分支效果，也必须先明确行动结果，不能让
             # 玩家把后面的状态变化误读成目标已经成功达成。

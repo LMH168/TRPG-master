@@ -210,6 +210,37 @@ def test_deterministic_narration_fallback_preserves_action_outcome(
     assert output.text == expected
 
 
+def test_success_fallback_includes_authoritative_scene_and_time() -> None:
+    """无提交结果时，兜底也必须反馈最终 PlayerView，而不是只返回模板。"""
+
+    context = SimpleNamespace(
+        termination_status="resolved",
+        player_input=SimpleNamespace(client_action_id="action-context-fallback"),
+        completed_steps=(
+            SimpleNamespace(
+                outcome="success",
+                goal_outcome="achieved",
+                committed_results=(),
+            ),
+        ),
+        player_view=SimpleNamespace(
+            scene=SimpleNamespace(
+                name="阿诺兹堡公共墓地",
+                visible_entities=(),
+                visible_actors=(SimpleNamespace(name="守墓人"),),
+            ),
+            world=SimpleNamespace(day_index=1, hour_of_day=6, time_of_day="day"),
+        ),
+    )
+
+    output = ActionPlanTurnApplication._deterministic_narration_fallback(cast(Any, context))
+
+    assert "这次行动已经完成" not in output.text
+    assert "阿诺兹堡公共墓地" in output.text
+    assert "第2天06:00" in output.text
+    assert "守墓人" in output.text
+
+
 def test_stopped_plan_clarification_requires_a_new_action() -> None:
     """计划停止后应明确后续未执行，并要求玩家重新提交新行动。"""
 
