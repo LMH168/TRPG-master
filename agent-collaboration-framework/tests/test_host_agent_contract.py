@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import unittest
 
+from pydantic import TypeAdapter, ValidationError
+
 from collaboration_framework.contracts import (
     PlayerInput,
     PlayerView,
@@ -24,7 +26,6 @@ from collaboration_framework.host.schemas import (
 )
 from collaboration_framework.memory import MemoryContext
 from collaboration_framework.schema_export import rendered_schemas
-from pydantic import TypeAdapter, ValidationError
 
 RAW_INTENT_CANDIDATE = {
     "kind": "unknown",
@@ -140,6 +141,7 @@ class HostAgentSchemaTests(unittest.TestCase):
                 "memory_context",
                 "recent_history",
                 "keeper_capabilities",
+                "agenda_continuation_candidates",
             },
         )
         self.assertEqual(
@@ -150,6 +152,7 @@ class HostAgentSchemaTests(unittest.TestCase):
                 "memory_context",
                 "recent_history",
                 "keeper_capabilities",
+                "agenda_continuation_candidates",
             },
         )
 
@@ -175,20 +178,22 @@ class HostAgentSchemaTests(unittest.TestCase):
             mismatched_view = self.player_view.model_copy(
                 update={field_name: f"other_{field_name}"}
             )
-            with self.subTest(field_name=field_name):
-                with self.assertRaisesRegex(ValidationError, "scope 不一致"):
-                    HostAgentContext(
+            with (
+                self.subTest(field_name=field_name),
+                self.assertRaisesRegex(ValidationError, "scope 不一致"),
+            ):
+                HostAgentContext(
+                    player_input=self.player_input,
+                    player_view=mismatched_view,
+                    memory_context=MemoryContext.empty(
                         player_input=self.player_input,
-                        player_view=mismatched_view,
-                        memory_context=MemoryContext.empty(
-                            player_input=self.player_input,
-                            player_view=self.player_view,
-                        ),
-                        recent_history=RecentTurnContext.empty(
-                            player_input=self.player_input,
-                            player_view=self.player_view,
-                        ),
-                    )
+                        player_view=self.player_view,
+                    ),
+                    recent_history=RecentTurnContext.empty(
+                        player_input=self.player_input,
+                        player_view=self.player_view,
+                    ),
+                )
 
     def test_usage_distinguishes_unreported_tokens_from_reported_zero(self) -> None:
         unreported = HostAgentUsage(
@@ -202,7 +207,9 @@ class HostAgentSchemaTests(unittest.TestCase):
         self.assertIsNone(unreported.to_json_dict()["input_tokens"])
         self.assertIsNone(unreported.to_json_dict()["output_tokens"])
 
-        reported_zero = unreported.model_copy(update={"input_tokens": 0, "output_tokens": 0})
+        reported_zero = unreported.model_copy(
+            update={"input_tokens": 0, "output_tokens": 0}
+        )
         self.assertEqual(reported_zero.input_tokens, 0)
         self.assertEqual(reported_zero.output_tokens, 0)
 
@@ -216,9 +223,11 @@ class HostAgentSchemaTests(unittest.TestCase):
         ):
             payload = make_usage().model_dump()
             payload[field_name] = -1
-            with self.subTest(field_name=field_name):
-                with self.assertRaises(ValidationError):
-                    HostAgentUsage.model_validate(payload)
+            with (
+                self.subTest(field_name=field_name),
+                self.assertRaises(ValidationError),
+            ):
+                HostAgentUsage.model_validate(payload)
 
         payload = make_usage().model_dump()
         payload["termination_reason"] = "provider_specific_finish_reason"
@@ -356,6 +365,7 @@ class HostAgentSchemaTests(unittest.TestCase):
                 "memory_context",
                 "recent_history",
                 "keeper_capabilities",
+                "agenda_continuation_candidates",
             },
         )
         self.assertIn("recent-turn-context.schema.json", schemas)
