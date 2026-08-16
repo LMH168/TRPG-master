@@ -16,9 +16,7 @@ from collaboration_framework.contracts import (
     SubmitProposalRequest,
 )
 from collaboration_framework.host.schemas import ActionPlanRun, ActionPlanStepContext
-from collaboration_framework.host.schemas.action_plan import (
-    ActionPlanNarrationContext,
-)
+from collaboration_framework.host.ports.narration_model import NarrationModelPort
 
 
 class ActionPlanStoreError(RuntimeError):
@@ -105,11 +103,8 @@ class SingleAdjudicationExecutor(Protocol):
     ) -> AdjudicationStatusView: ...
 
 
-class ActionPlanNarrationModelPort(Protocol):
-    async def generate(
-        self,
-        context: ActionPlanNarrationContext,
-    ) -> object: ...
+# PR1 保留旧端口名，生产依赖仍可无行为变化地导入同一协议。
+ActionPlanNarrationModelPort = NarrationModelPort
 
 
 ActionPlanProgressObserver = Callable[[ActionPlanProgressEvent], Awaitable[None]]
