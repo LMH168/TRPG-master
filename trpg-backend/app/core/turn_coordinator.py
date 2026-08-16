@@ -206,13 +206,15 @@ class TurnCoordinator:
                         recovery_action=TurnRecoveryAction.WAIT,
                     )
                 receipts = await self._store.list_receipts(current.turn_id)
-                # 等待玩家时可能已有部分计划步骤提交。恢复后若玩家取消剩余步骤，
-                # 这里只能保留 partially_committed；提前提升为 committed 会在根据
-                # 最终取消结果对账时形成非法降级。尚未标记部分提交的普通回合则可
-                # 由 receipt 确认规则结果已经完整落库。
+                # 等待玩家或停止的复合计划都可能已有部分步骤提交。Coordinator
+                # 此时还没有最终 outcome，receipt 只能证明“至少一项已提交”，不能
+                # 证明整个 Turn 完整提交；最终状态必须等 executor 返回后再对账。
                 narration_commit_state = current.commit_state
                 if receipts and narration_commit_state == TurnCommitState.NOT_COMMITTED:
-                    narration_commit_state = TurnCommitState.COMMITTED
+                    # 此时 Coordinator 只知道至少一个 Engine 提交已经发生，还不知道
+                    # 复合计划是否会以 stopped/cancelled 结束。先保持 partial，拿到最终
+                    # outcome 后再升级，避免 committed -> partially_committed 非法降级。
+                    narration_commit_state = TurnCommitState.PARTIALLY_COMMITTED
                 await move(
                     TurnStatus.AWAITING_NARRATION,
                     resume_point=TurnResumePoint.NARRATING,
@@ -244,7 +246,11 @@ class TurnCoordinator:
             with engine_turn_context(current.turn_id):
                 outcome = await executor(on_phase)
             receipts = await self._store.list_receipts(current.turn_id)
-            commit_state = self._commit_state(outcome, bool(receipts))
+            commit_state = self._commit_state(
+                outcome,
+                bool(receipts),
+                current=current.commit_state,
+            )
             if outcome.waiting_for_player:
                 if current.status == TurnStatus.EXECUTING:
                     status = TurnStatus.ADJUDICATING
@@ -472,16 +478,32 @@ class TurnCoordinator:
     def _commit_state(
         outcome: TurnExecutionOutcome,
         has_receipt: bool,
+        *,
+        current: TurnCommitState = TurnCommitState.NOT_COMMITTED,
     ) -> TurnCommitState:
+        """根据最终结果对账提交状态，同时兼容旧记录中已提前升级的状态。"""
+
         if not has_receipt:
-            return TurnCommitState.NOT_COMMITTED
-        if outcome.waiting_for_player or outcome.status in {
+            target = TurnCommitState.NOT_COMMITTED
+        elif outcome.waiting_for_player or outcome.status in {
             "cancelled",
             "stopped",
             "needs_clarification",
         }:
-            return TurnCommitState.PARTIALLY_COMMITTED
-        return TurnCommitState.COMMITTED
+            target = TurnCommitState.PARTIALLY_COMMITTED
+        else:
+            target = TurnCommitState.COMMITTED
+
+        # 历史版本可能在进入叙事阶段时已经把部分计划错误标成 committed。
+        # Turn 状态机禁止倒退，因此恢复时保留更高状态并继续发布同一份结果。
+        if current == TurnCommitState.COMMITTED:
+            return current
+        if (
+            current == TurnCommitState.PARTIALLY_COMMITTED
+            and target == TurnCommitState.NOT_COMMITTED
+        ):
+            return current
+        return target
 
     @staticmethod
     def _error_location(current: TurnRecord) -> tuple[TurnErrorStage, TurnResumePoint]:
