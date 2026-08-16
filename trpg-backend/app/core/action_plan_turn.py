@@ -1805,17 +1805,19 @@ class ActionPlanTurnApplication:
         )
         if "cancelled" in outcomes or context.termination_status == "cancelled":
             status_text = "这次行动已经取消。"
-        elif any(item in {"partially_achieved", "not_achieved"} for item in goal_outcomes):
-            status_text = "检定或过程已经结束，但玩家声明的完整目标没有形成可确认的权威结果。"
         elif "failure" in outcomes:
             # ActionPlan 可能保留此前成功步骤，因此失败文案要区分全部失败和部分完成。
             status_text = (
-                "当前步骤未能成功；此前已经完成的步骤仍然保留。"
+                "当前检定或行动未能成功；此前已经确认的结果仍然保留。"
                 if "success" in outcomes
-                else "这次行动未能成功，局面没有产生当前可确认的新结果。"
+                else "这次检定或行动未能成功，当前局面没有产生新的确认变化。"
             )
+        elif any(item in {"partially_achieved", "not_achieved"} for item in goal_outcomes):
+            # 检定已经成功但完整目标没有满足时，不能把内部 goal_outcome 暴露给玩家；
+            # 同时必须明确说明“检定成功”和“完整目标未完成”是两件事。
+            status_text = "检定或过程已经完成，但完整目标尚未形成结果。"
         else:
-            status_text = "这次行动已经按当前可确认的结果完成。"
+            status_text = "这次行动已经完成，当前状态已按确认结果更新。"
         if outcomes and outcomes[-1] != "success":
             fallback_text = status_text + "".join(statements)
         else:
