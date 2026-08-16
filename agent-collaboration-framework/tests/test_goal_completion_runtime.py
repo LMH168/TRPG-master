@@ -505,6 +505,42 @@ async def test_rule_owned_hit_does_not_claim_death_goal() -> None:
 
 
 @pytest.mark.asyncio
+async def test_advance_world_time_satisfies_effect_completion() -> None:
+    """时间推进提交后，完成条件必须读取最终时间点而不是默认失败。"""
+
+    store = _runtime_store()
+    engine = AdjudicationEngineService(store)
+    request = _submission(
+        request_id="advance-time",
+        revision="0",
+        goal="等待到晚上",
+        payload={
+            "semantic_focus": {"kind": "location", "id": "cemetery"},
+            "target_interaction": "observe",
+            "method_family": "等待",
+            "method_description": "等待时间推进到晚上",
+            "check_proposal": {"mode": "none"},
+            "success_effect_proposals": [
+                {"type": "advance_world_time", "to_point_id": "hour_18"}
+            ],
+            "failure_effect_proposals": [{"type": "narrative_only"}],
+            "completion": {
+                "kind": "effects",
+                "requirements": [
+                    {"type": "advance_world_time", "to_point_id": "hour_18"}
+                ],
+            },
+        },
+    )
+
+    result = await engine.submit_proposal(request)
+
+    assert result.outcome == "success"
+    assert result.goal_outcome == "achieved"
+    assert store.inspect_state(ROOM).world_time.current_point_id == "hour_18"
+
+
+@pytest.mark.asyncio
 async def test_item_condition_and_drop_are_atomic_and_visible_in_next_view() -> None:
     """打空并丢弃手枪后，最终 PlayerView 必须只在场景松散物品中显示它。"""
 

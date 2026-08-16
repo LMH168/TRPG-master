@@ -187,6 +187,10 @@ def _visibility_knowledge(
     )
 
 
+class GoalCompletionEvaluationError(RuntimeError):
+    """完成条件未注册求值逻辑时使用的开发期错误。"""
+
+
 class AdjudicationEngineService:
     """B-owned executor for one ActionAdjudication per call."""
 
@@ -669,7 +673,10 @@ class AdjudicationEngineService:
                     view_revision=str(new_state.event_sequence),
                     outcome="success",
                     goal_outcome=self._goal_outcome(
-                        validated_command, passed=True, state=new_state
+                        validated_command,
+                        passed=True,
+                        state=new_state,
+                        committed_events=events,
                     ),
                     event_refs=tuple(event.event_id for event in events),
                     public_event_refs=self._public_event_refs(events),
@@ -974,6 +981,7 @@ class AdjudicationEngineService:
                     decision.validated_command,
                     passed=roll.passed,
                     state=new_state,
+                    committed_events=events,
                 ),
                 check_run=self._run_view(check_run),
                 event_refs=tuple(event.event_id for event in events),
@@ -1208,6 +1216,7 @@ class AdjudicationEngineService:
                     check_run.validated_command,
                     passed=final_roll.passed,
                     state=new_state,
+                    committed_events=events,
                 ),
                 check_run=self._run_view(resolved_run),
                 event_refs=tuple(event.event_id for event in events),
@@ -1262,6 +1271,7 @@ class AdjudicationEngineService:
         *,
         passed: bool,
         state: GameState,
+        committed_events: tuple[DomainEvent, ...],
     ) -> Literal["achieved", "partially_achieved", "not_achieved", "legacy_unknown"]:
         """只根据冻结后置条件和最终权威状态判断目标，不读取自然语言。"""
 
@@ -1273,7 +1283,10 @@ class AdjudicationEngineService:
             return "achieved"
         matched = sum(
             AdjudicationEngineService._requirement_is_satisfied(
-                item, state, actor_id=command.request.actor_id
+                item,
+                state,
+                committed_events=committed_events,
+                actor_id=command.request.actor_id,
             )
             for item in command.completion_requirements
         )
@@ -1285,9 +1298,13 @@ class AdjudicationEngineService:
 
     @staticmethod
     def _requirement_is_satisfied(
-        requirement: ActionEffect, state: GameState, *, actor_id: str
+        requirement: ActionEffect,
+        state: GameState,
+        *,
+        committed_events: tuple[DomainEvent, ...],
+        actor_id: str,
     ) -> bool:
-        """在最终 GameState 中核对一种完成条件，供规则和自由行动共用。"""
+        """在最终状态和本次事件中核对结构化完成条件。"""
 
         if isinstance(requirement, ChangeEntityStateEffect):
             return (
@@ -1339,7 +1356,50 @@ class AdjudicationEngineService:
                 else state.actor_discovered_facts.get(actor_id, ())
             )
             return requirement.information_id in known
-        return False
+        if isinstance(requirement, HideInformationEffect):
+            known = (
+                state.discovered_facts
+                if requirement.scope == "party"
+                else state.actor_discovered_facts.get(actor_id, ())
+            )
+            return requirement.information_id not in known
+        if isinstance(requirement, SetVisibilityEffect):
+            key = (
+                f"actor:{actor_id}:{requirement.target_kind}:{requirement.target_id}"
+                if requirement.scope == "actor"
+                else f"party:{requirement.target_kind}:{requirement.target_id}"
+            )
+            return state.visibility_overrides.get(key) is requirement.visible
+        if isinstance(requirement, AdvanceWorldTimeEffect):
+            return (
+                requirement.to_point_id is not None
+                and state.world_time.current_point_id == requirement.to_point_id
+            )
+        if isinstance(requirement, EnsureRuntimeLocationEffect):
+            location = state.runtime_locations.get(requirement.location_id)
+            return location is not None and (
+                location.get("parent_location_id") == requirement.parent_location_id
+                and location.get("connected_location_id")
+                == requirement.connected_location_id
+            )
+        if isinstance(requirement, EnsureRuntimeEntityEffect):
+            entity = state.runtime_entities.get(requirement.entity_id)
+            return entity is not None and entity.get("location_id") == requirement.location_id
+        if isinstance(requirement, MarkCoreResolvedEffect):
+            return state.core_resolved
+        if isinstance(requirement, SetEndingAvailabilityEffect):
+            return state.ending_available is requirement.available
+        if isinstance(requirement, CommitTerminalEndingEffect):
+            return state.phase == "ended" and state.ending_id == requirement.ending_id
+        if isinstance(requirement, NarrativeOnlyEffect):
+            # NarrativeOnly 不代表持久状态，Proposal 编译阶段应将它限制在
+            # process 目标的支撑结果中；若它进入 requirements，必须显式暴露契约错误。
+            raise GoalCompletionEvaluationError(
+                "NarrativeOnlyEffect 不能作为持久完成条件"
+            )
+        raise GoalCompletionEvaluationError(
+            f"未注册完成条件求值器: {type(requirement).__name__}"
+        )
 
     @staticmethod
     def _public_event_refs(events: tuple[DomainEvent, ...]) -> tuple[str, ...]:
@@ -2059,7 +2119,10 @@ class AdjudicationEngineService:
                 effect,
                 ChangeEntityStateEffect | ChangeItemConditionEffect | MoveEntityEffect,
             ) and self._requirement_is_satisfied(
-                effect, state, actor_id=adjudication.actor_id
+                effect,
+                state,
+                committed_events=tuple(events),
+                actor_id=adjudication.actor_id,
             ):
                 # 已满足的终态不重复写事件；action.succeeded 仍记录这次幂等观察。
                 continue
