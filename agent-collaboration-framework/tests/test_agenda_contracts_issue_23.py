@@ -289,11 +289,11 @@ def test_waiting_input_v2_has_finite_options_and_legacy_step_still_reads() -> No
     )
     assert "next_step_id" not in continuation.model_dump(mode="json")
 
-    # PR1 只发布恢复契约，不提前扩大生产 Host 输出联合。
-    with pytest.raises(ValidationError):
-        TypeAdapter(HostDecisionProposal).validate_python(
-            continuation.model_dump(mode="json")
-        )
+    # PR2 允许 Host 选择服务端发布的有限 option，但仍不暴露 next_step_id。
+    parsed = TypeAdapter(HostDecisionProposal).validate_python(
+        continuation.model_dump(mode="json")
+    )
+    assert parsed == continuation
 
 
 def test_plot_thread_initialization_and_terminal_transition_are_authoritative() -> None:

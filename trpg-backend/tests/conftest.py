@@ -11,7 +11,12 @@ from collections.abc import AsyncGenerator, Callable, Generator
 from pathlib import Path
 
 import pytest
-from collaboration_framework.engine import AdjudicationEngineService, RuleEngineService
+from collaboration_framework.engine import (
+    AdjudicationEngineService,
+    DiceRoller,
+    RuleAgendaExecutor,
+    RuleEngineService,
+)
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -78,6 +83,24 @@ app.state.test_session_factory = TestSessionLocal
 # 去空的真实库里查 player，必然查不到而关连接。
 ws_controller.async_session_factory = TestSessionLocal  # type: ignore[assignment]
 _test_turn_store = SqlAlchemyEngineStore(TestSessionLocal)
+
+
+class _FixedAgendaDiceSource:
+    """测试生产组合根的固定骰源，避免后台被动检定产生随机断言。"""
+
+    def randint(self, minimum: int, maximum: int) -> int:
+        value = min(50, maximum)
+        if not minimum <= value <= maximum:
+            raise AssertionError("固定 Agenda 骰点超出表达式范围")
+        return value
+
+
+_test_adjudication_engine = AdjudicationEngineService(_test_turn_store)
+_test_agenda_executor = RuleAgendaExecutor(
+    _test_turn_store,
+    engine=_test_adjudication_engine,
+    dice=DiceRoller(_FixedAgendaDiceSource()),
+)
 ws_controller.session_view_application = build_session_view_application(  # type: ignore[assignment]
     _test_turn_store,
     RuleEngineService(_test_turn_store),
@@ -87,11 +110,12 @@ _test_plan_store = SqlAlchemyActionPlanRunStore(TestSessionLocal)
 reliable_turn_runtime.action_plan_turn_application = build_action_plan_turn_application(
     store=_test_turn_store,
     engine=RuleEngineService(_test_turn_store),
-    adjudication_engine=AdjudicationEngineService(_test_turn_store),
+    adjudication_engine=_test_adjudication_engine,
+    agenda_executor=_test_agenda_executor,
     plan_store=_test_plan_store,
     settings=Settings(host_model_provider="fake", opening_narration_mode="template"),
 )
-ws_controller.adjudication_engine_service = AdjudicationEngineService(_test_turn_store)
+ws_controller.adjudication_engine_service = _test_adjudication_engine
 _test_turn_runtime_store = SqlAlchemyTurnStore(TestSessionLocal)
 reliable_turn_runtime.turn_store = _test_turn_runtime_store
 reliable_turn_runtime.turn_coordinator = TurnCoordinator(
