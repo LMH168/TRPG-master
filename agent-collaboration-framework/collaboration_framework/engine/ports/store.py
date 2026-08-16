@@ -9,6 +9,7 @@ from typing import Protocol
 from collaboration_framework.contracts import ContractError
 
 from ..models import (
+    AgendaStepExecution,
     CheckRun,
     CompletedAction,
     CompletedAdjudicationCommand,
@@ -100,6 +101,24 @@ class EngineStore(Protocol):
         *,
         turn_id: str | None = None,
     ) -> AbstractAsyncContextManager[EngineTransaction]: ...
+
+    async def find_agenda_step_execution(
+        self,
+        *,
+        room_id: str,
+        execution_id: str,
+    ) -> AgendaStepExecution | None:
+        """读取已提交步骤证明；PR2 只允许由 Engine 权威事务写入。"""
+        ...
+
+    async def list_agenda_step_executions(
+        self,
+        *,
+        room_id: str,
+        agenda_id: str,
+    ) -> tuple[AgendaStepExecution, ...]:
+        """按稳定步骤身份返回 Agenda 的提交记录。"""
+        ...
 
     async def claim_rule_agenda(
         self,

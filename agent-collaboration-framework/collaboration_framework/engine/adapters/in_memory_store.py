@@ -15,6 +15,7 @@ from collaboration_framework.contracts import (
 )
 
 from ..models import (
+    AgendaStepExecution,
     CheckRun,
     CompletedAction,
     CompletedAdjudicationCommand,
@@ -57,6 +58,7 @@ class InMemoryEngineStore:
         before_commit: Callable[[str], None] | None = None,
     ) -> None:
         self._rooms: dict[str, _RoomRecord] = {}
+        self._agenda_step_executions: dict[str, dict[str, AgendaStepExecution]] = {}
         self._before_commit = before_commit
 
     def register_room(
@@ -80,6 +82,48 @@ class InMemoryEngineStore:
                 pending_checks={},
                 check_runs={},
             )
+        )
+        self._agenda_step_executions[room_id] = {}
+
+    def register_committed_agenda_step_execution(
+        self,
+        execution: AgendaStepExecution,
+    ) -> None:
+        """仅供离线夹具导入已提交证明；生产写入由 PR2 的事务边界负责。"""
+
+        room = self._record(execution.room_id)
+        del room
+        records = self._agenda_step_executions[execution.room_id]
+        existing = records.get(execution.execution_id)
+        if existing is not None and existing != execution:
+            raise ContractError("Agenda execution_id 已绑定不同执行结果")
+        records[execution.execution_id] = execution.model_copy(deep=True)
+
+    async def find_agenda_step_execution(
+        self,
+        *,
+        room_id: str,
+        execution_id: str,
+    ) -> AgendaStepExecution | None:
+        self._record(room_id)
+        execution = self._agenda_step_executions[room_id].get(execution_id)
+        return execution.model_copy(deep=True) if execution is not None else None
+
+    async def list_agenda_step_executions(
+        self,
+        *,
+        room_id: str,
+        agenda_id: str,
+    ) -> tuple[AgendaStepExecution, ...]:
+        self._record(room_id)
+        records = (
+            execution
+            for execution in self._agenda_step_executions[room_id].values()
+            if execution.agenda_id == agenda_id
+        )
+        return tuple(
+            item.model_copy(deep=True)
+            for item in sorted(records, key=lambda value: value.execution_id)
         )
 
     @asynccontextmanager
@@ -250,12 +294,16 @@ def _validate_agenda_checkpoint(
     ):
         raise RevisionConflictError("RuleAgenda lease 已失效或由其他 worker 持有")
     immutable = (
+        "schema_version",
         "agenda_id",
         "room_id",
         "module_id",
         "module_version",
         "correlation_id",
         "root_source",
+        "origin_turn_id",
+        "player_id",
+        "actor_id",
     )
     if any(getattr(current, name) != getattr(proposed, name) for name in immutable):
         raise ContractError("RuleAgenda checkpoint 不能改写不可变身份")

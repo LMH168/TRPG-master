@@ -106,6 +106,90 @@ class GameSession(Base):
     )
 
 
+class AgendaStepExecutionRecord(Base):
+    """RuleAgenda 单个步骤的稳定提交证明；只能随 Engine 事务写入。"""
+
+    __tablename__ = "agenda_step_executions"
+    __table_args__ = (
+        UniqueConstraint(
+            "room_id",
+            "execution_id",
+            name="uq_agenda_step_executions_room_execution",
+        ),
+        CheckConstraint(
+            "schema_version = 1",
+            name="ck_agenda_step_executions_schema_version",
+        ),
+        CheckConstraint(
+            "request_schema_version >= 1",
+            name="ck_agenda_step_executions_request_schema_version",
+        ),
+        CheckConstraint(
+            "result_schema_version >= 1",
+            name="ck_agenda_step_executions_result_schema_version",
+        ),
+        CheckConstraint(
+            "committed_state_version >= 0",
+            name="ck_agenda_step_executions_state_version",
+        ),
+        CheckConstraint(
+            "execution_kind IN ('passive_check', 'adjudicated_check', "
+            "'ruleset_action', 'npc_opportunity', 'presentation', 'effect_segment')",
+            name="ck_agenda_step_executions_kind",
+        ),
+        ForeignKeyConstraint(
+            ["room_id", "execution_id"],
+            [
+                "turn_commit_receipts.room_id",
+                "turn_commit_receipts.engine_request_id",
+            ],
+            name="fk_agenda_step_executions_receipt",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_agenda_step_executions_agenda",
+            "room_id",
+            "agenda_id",
+            "created_at",
+        ),
+        Index(
+            "ix_agenda_step_executions_execution_turn",
+            "execution_turn_id",
+            "created_at",
+        ),
+    )
+
+    execution_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    room_id: Mapped[str] = mapped_column(
+        Uuid(as_uuid=False), ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False
+    )
+    origin_turn_id: Mapped[str] = mapped_column(
+        Uuid(as_uuid=False),
+        ForeignKey("turn_records.turn_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    execution_turn_id: Mapped[str] = mapped_column(
+        Uuid(as_uuid=False),
+        ForeignKey("turn_records.turn_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    agenda_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    rule_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    branch_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    step_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    execution_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    request_schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    result_schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    result_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    committed_state_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class GameEvent(Base):
     """规则引擎产生的权威、只追加状态变化 Event。"""
 

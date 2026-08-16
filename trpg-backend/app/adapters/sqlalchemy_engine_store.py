@@ -14,6 +14,7 @@ from collaboration_framework.contracts import (
     ModuleContentV3,
 )
 from collaboration_framework.engine import (
+    AgendaStepExecution,
     CheckRun,
     CompletedAction,
     CompletedAdjudicationCommand,
@@ -42,6 +43,7 @@ from app.models.content import GameSystem
 from app.models.engine import (
     ActionExecution,
     AdjudicationCommandExecution,
+    AgendaStepExecutionRecord,
     CheckRunRecord,
     GameEvent,
     GameSession,
@@ -77,6 +79,41 @@ class SqlAlchemyEngineStore(EngineStore):
         self._session_factory = session_factory
         self._before_commit = before_commit
         self._after_commit = after_commit
+
+    async def find_agenda_step_execution(
+        self,
+        *,
+        room_id: str,
+        execution_id: str,
+    ) -> AgendaStepExecution | None:
+        """按稳定 ID 读取提交证明，不从 Agenda 游标推断执行结果。"""
+
+        async with self._session_factory() as session:
+            record = await session.get(AgendaStepExecutionRecord, execution_id)
+            if record is None or record.room_id != room_id:
+                return None
+            return _agenda_step_execution_from_record(record)
+
+    async def list_agenda_step_executions(
+        self,
+        *,
+        room_id: str,
+        agenda_id: str,
+    ) -> tuple[AgendaStepExecution, ...]:
+        """稳定排序读取同一 Agenda 已提交的步骤证明。"""
+
+        async with self._session_factory() as session:
+            records = tuple(
+                await session.scalars(
+                    select(AgendaStepExecutionRecord)
+                    .where(
+                        AgendaStepExecutionRecord.room_id == room_id,
+                        AgendaStepExecutionRecord.agenda_id == agenda_id,
+                    )
+                    .order_by(AgendaStepExecutionRecord.execution_id)
+                )
+            )
+            return tuple(_agenda_step_execution_from_record(item) for item in records)
 
     @asynccontextmanager
     async def transaction(
@@ -241,12 +278,16 @@ def _validate_agenda_checkpoint(
     ):
         raise RevisionConflictError("RuleAgenda lease 已失效或由其他 worker 持有")
     immutable = (
+        "schema_version",
         "agenda_id",
         "room_id",
         "module_id",
         "module_version",
         "correlation_id",
         "root_source",
+        "origin_turn_id",
+        "player_id",
+        "actor_id",
     )
     if any(getattr(current, name) != getattr(proposed, name) for name in immutable):
         raise ContractError("RuleAgenda checkpoint 不能改写不可变身份")
@@ -1165,6 +1206,38 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
         )
         record.check_json = check_run.to_json_dict()
         record.updated_at = now
+
+
+def _agenda_step_execution_from_record(
+    record: AgendaStepExecutionRecord,
+) -> AgendaStepExecution:
+    """将数据库行恢复为版本化领域契约，避免调用方直接依赖 ORM。"""
+
+    return AgendaStepExecution.model_validate(
+        {
+            "schema_version": record.schema_version,
+            "execution_id": record.execution_id,
+            "room_id": record.room_id,
+            "origin_turn_id": record.origin_turn_id,
+            "execution_turn_id": record.execution_turn_id,
+            "agenda_id": record.agenda_id,
+            "source_event_id": record.source_event_id,
+            "rule_id": record.rule_id,
+            "branch_id": record.branch_id,
+            "step_id": record.step_id,
+            "execution_kind": record.execution_kind,
+            "request_schema_version": record.request_schema_version,
+            "request": deepcopy(record.request_json),
+            "result_schema_version": record.result_schema_version,
+            "result": deepcopy(record.result_json),
+            "committed_state_version": record.committed_state_version,
+            "created_at": (
+                record.created_at
+                if record.created_at.tzinfo is not None
+                else record.created_at.replace(tzinfo=UTC)
+            ),
+        }
+    )
 
 
 def _hydrate_game_state_actor_skills(

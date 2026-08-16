@@ -20,6 +20,7 @@ from app.models.engine import (
     ActionExecution,
     ActionPlanRunRecord,
     AdjudicationCommandExecution,
+    AgendaStepExecutionRecord,
     CheckRunRecord,
     EndingCommandExecution,
     EndingDraftRecord,
@@ -45,6 +46,7 @@ from app.models.user import User, UserCharacterTemplate, UserSession
 
 __all__ = [
     "ActionExecution",
+    "AgendaStepExecutionRecord",
     "ActionPlanRunRecord",
     "AdjudicationCommandExecution",
     "ChatMessage",
