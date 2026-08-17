@@ -1026,36 +1026,12 @@ class ActionPlanTurnApplication:
             )
         await _emit_phase(on_phase, "executing_action")
         if isinstance(decision, AgendaContinuationProposal):
-            if self._agenda_executor is None:
-                raise TurnExecutionError(
-                    "AGENDA_CONTINUATION_UNAVAILABLE",
-                    "当前等待选择暂时无法恢复",
-                    retryable=True,
-                )
-            turn_id = current_turn_id()
-            if turn_id is None:
-                raise TurnExecutionError(
-                    "AGENDA_CONTINUATION_UNAVAILABLE",
-                    "当前等待选择缺少可靠回合身份",
-                    retryable=True,
-                )
-            await self._agenda_executor.resume_continuation(
-                decision,
-                room_id=room_id,
-                player_id=player_id,
-                actor_id=actor_id,
-                turn_id=turn_id,
-                source_revision=view.revision,
-            )
-            await self._agenda_executor.drain(room_id=room_id, turn_id=turn_id)
-            final_view = await self._projector.project(player_input)
-            await _emit_phase(on_phase, "refreshing_player_view")
-            await _emit_phase(on_phase, "generating_narration")
-            return ActionPlanTurnResult(
+            return await self._from_agenda_continuation(
                 player_input=player_input,
-                player_view=final_view,
-                status="completed",
-                narration=NarrationOutput(text="你的选择已经生效，当前局面已按规则结果更新。"),
+                decision=decision,
+                initial_view=view,
+                recent_history=recent_history,
+                on_phase=on_phase,
             )
         result = await self._dispatcher.execute(
             player_input,
@@ -1597,6 +1573,131 @@ class ActionPlanTurnApplication:
             execution=result.latest_execution,
             narration=narration,
             plan_id=run.plan_id,
+        )
+
+    async def _from_agenda_continuation(
+        self,
+        *,
+        player_input: PlayerInput,
+        decision: AgendaContinuationProposal,
+        initial_view: PlayerView,
+        recent_history: RecentTurnContext | None,
+        on_phase: TurnPhaseObserver | None,
+    ) -> ActionPlanTurnResult:
+        """恢复有限规则选择，并按最终权威证据生成本轮叙事。"""
+
+        if self._agenda_executor is None:
+            raise TurnExecutionError(
+                "AGENDA_CONTINUATION_UNAVAILABLE",
+                "当前等待选择暂时无法恢复",
+                retryable=True,
+            )
+        turn_id = current_turn_id()
+        if turn_id is None:
+            raise TurnExecutionError(
+                "AGENDA_CONTINUATION_UNAVAILABLE",
+                "当前等待选择缺少可靠回合身份",
+                retryable=True,
+            )
+        await self._agenda_executor.resume_continuation(
+            decision,
+            room_id=player_input.room_id,
+            player_id=player_input.player_id,
+            actor_id=player_input.actor_id,
+            turn_id=turn_id,
+            source_revision=initial_view.revision,
+        )
+        await self._agenda_executor.drain(
+            room_id=player_input.room_id,
+            turn_id=turn_id,
+        )
+        executions = await self._agenda_executor.executions_for_turn(
+            room_id=player_input.room_id,
+            turn_id=turn_id,
+        )
+        agenda_status = await self._agenda_executor.continuation_status(
+            room_id=player_input.room_id,
+            agenda_id=decision.agenda_id,
+            player_id=player_input.player_id,
+            actor_id=player_input.actor_id,
+        )
+        final_view = await self._projector.project(player_input)
+        await _emit_phase(on_phase, "refreshing_player_view")
+        await _emit_phase(on_phase, "generating_narration")
+
+        if agenda_status == "awaiting_player_input":
+            candidates = await self._agenda_executor.continuation_candidates(
+                room_id=player_input.room_id,
+                player_id=player_input.player_id,
+                actor_id=player_input.actor_id,
+            )
+            candidate = next(
+                (item for item in candidates if item.agenda_id == decision.agenda_id),
+                None,
+            )
+            if candidate is None:
+                raise TurnExecutionError(
+                    "AGENDA_CONTINUATION_UNAVAILABLE",
+                    "当前等待选择暂时无法恢复",
+                    retryable=True,
+                )
+            option_text = " / ".join(option.semantic_hints[0] for option in candidate.options)
+            # 有限选项来自固定 ModuleVersion，可以确定性展示；无需让模型改写后
+            # 再承担漏项或暴露隐藏游标的风险。当前 Turn 正常结束并释放房间。
+            return ActionPlanTurnResult(
+                player_input=player_input,
+                player_view=final_view,
+                status="completed",
+                narration=NarrationOutput(
+                    text=f"{candidate.player_safe_prompt}（可选：{option_text}）"
+                ),
+            )
+
+        if agenda_status == "failed":
+            return ActionPlanTurnResult(
+                player_input=player_input,
+                player_view=final_view,
+                status="completed",
+                narration=NarrationOutput(text="这个选择未能继续推进当前规则流程，请换一种行动。"),
+            )
+        if agenda_status != "stable":
+            raise TurnExecutionError(
+                "AGENDA_CONTINUATION_UNSETTLED",
+                "当前规则流程尚未到达稳定状态",
+                retryable=True,
+            )
+
+        summary = CompletedPlanStepSummary(
+            step_index=0,
+            semantic_goal=player_input.utterance,
+            outcome="success",
+            goal_outcome="legacy_unknown",
+            view_revision=final_view.revision,
+            world_time_after=WorldClockView.from_world(final_view.world),
+        )
+        context = NarrationContext(
+            background=final_view.background,
+            player_input=player_input,
+            plan_goal=player_input.utterance,
+            termination_status="resolved",
+            completed_steps=(summary,),
+            player_view=final_view,
+            recent_history=self._rebind_recent_history(
+                recent_history,
+                player_view=final_view,
+            ),
+            memory_context=await self._read_memory_context(
+                player_input=player_input,
+                player_view=final_view,
+            ),
+            opening_world_time=WorldClockView.from_world(initial_view.world),
+        )
+        context = self._merge_agenda_results(context, executions)
+        return ActionPlanTurnResult(
+            player_input=player_input,
+            player_view=final_view,
+            status="completed",
+            narration=await self._narrate(context),
         )
 
     async def _from_single(

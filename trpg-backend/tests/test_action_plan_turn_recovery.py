@@ -8,13 +8,14 @@ from unittest.mock import AsyncMock
 import pytest
 from collaboration_framework.contracts import (
     ActionPlanPolicy,
+    AgendaContinuationProposal,
     CommittedResult,
     NarrationEvidence,
     PlayerInput,
     PlayerView,
     PostRollDecisionRequest,
 )
-from collaboration_framework.engine import AgendaStepExecution
+from collaboration_framework.engine import AgendaStepExecution, engine_turn_context
 from collaboration_framework.host.application import (
     NarrationValidationError,
 )
@@ -27,6 +28,7 @@ from collaboration_framework.host.schemas import (
     NarrationOutput,
     RecentTurnContext,
 )
+from collaboration_framework.memory import MemoryContext
 
 from app.core.action_plan_turn import ActionPlanTurnApplication
 
@@ -582,6 +584,98 @@ def test_merge_agenda_results_restores_persisted_player_safe_evidence() -> None:
     assert merged.allowed_evidence_refs == (event_ref, presentation_ref)
     assert merged.completed_steps[0].committed_results[0].state_value == "unconscious"
     assert merged.narration_evidence[0].ref == presentation_ref
+
+
+@pytest.mark.asyncio
+async def test_agenda_continuation_narrates_persisted_execution_evidence() -> None:
+    """有限选择稳定后必须进入统一 Narrator，不能返回固定占位句。"""
+
+    player_input = PlayerInput(
+        room_id="room-agenda",
+        player_id="player-agenda",
+        actor_id="actor-agenda",
+        client_action_id="continue-agenda",
+        utterance="屏住呼吸",
+    )
+    world = SimpleNamespace(day_index=0, hour_of_day=18, time_of_day="night")
+    initial_view = PlayerView.model_construct(
+        room_id=player_input.room_id,
+        player_id=player_input.player_id,
+        actor_id=player_input.actor_id,
+        background="测试背景",
+        scene_id="crypt",
+        phase="playing",
+        revision="4",
+        self_actor=SimpleNamespace(id=player_input.actor_id),
+        scene=SimpleNamespace(id="crypt", visible_actors=(), visible_entities=()),
+        world=world,
+    )
+    final_view = initial_view.model_copy(update={"revision": "5"})
+    event_ref = "evt-entered"
+    execution = AgendaStepExecution(
+        execution_id="b" * 64,
+        room_id=player_input.room_id,
+        origin_turn_id="turn-origin",
+        execution_turn_id="turn-continuation",
+        agenda_id="agenda-1",
+        source_event_id="evt-source",
+        rule_id="rule-1",
+        branch_id="hold-breath",
+        step_id="enter",
+        execution_kind="effect_segment",
+        result={
+            "public_event_refs": [event_ref],
+            "committed_results": [
+                CommittedResult(
+                    kind="location",
+                    target_id="crypt",
+                    event_ref=event_ref,
+                ).to_json_dict()
+            ],
+        },
+        committed_state_version=5,
+        created_at=datetime.now(UTC),
+    )
+    agenda_executor = SimpleNamespace(
+        resume_continuation=AsyncMock(),
+        drain=AsyncMock(),
+        executions_for_turn=AsyncMock(return_value=(execution,)),
+        continuation_status=AsyncMock(return_value="stable"),
+    )
+    narrator = SimpleNamespace(
+        narrate=AsyncMock(return_value=NarrationOutput(text="你屏住呼吸进入地穴。"))
+    )
+    application = object.__new__(ActionPlanTurnApplication)
+    application._agenda_executor = agenda_executor
+    application._projector = SimpleNamespace(project=AsyncMock(return_value=final_view))
+    application._narrator = narrator
+    application._read_memory_context = AsyncMock(
+        return_value=MemoryContext(
+            room_id=player_input.room_id,
+            viewer_player_id=player_input.player_id,
+            viewer_actor_id=player_input.actor_id,
+            as_of_revision=final_view.revision,
+        )
+    )
+
+    with engine_turn_context("turn-continuation"):
+        result = await application._from_agenda_continuation(
+            player_input=player_input,
+            decision=AgendaContinuationProposal(
+                agenda_id="agenda-1",
+                boundary_id="door-choice",
+                option_id="hold-breath",
+            ),
+            initial_view=initial_view,
+            recent_history=None,
+            on_phase=None,
+        )
+
+    assert result.narration is not None
+    assert result.narration.text == "你屏住呼吸进入地穴。"
+    context = narrator.narrate.await_args.args[0]
+    assert context.allowed_evidence_refs == (event_ref,)
+    assert context.completed_steps[0].committed_results[0].target_id == "crypt"
 
 
 @pytest.mark.asyncio
