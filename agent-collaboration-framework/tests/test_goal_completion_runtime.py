@@ -24,9 +24,11 @@ from collaboration_framework.engine import (
     ActorState,
     AdjudicationEngineService,
     DiceRoller,
+    DomainEvent,
     InMemoryEngineStore,
     RuleEngineService,
     SequenceDiceSource,
+    committed_results_from_events,
 )
 from collaboration_framework.engine.adjudication import GoalCompletionEvaluationError
 from collaboration_framework.engine.initialization import create_initial_game_state
@@ -46,6 +48,28 @@ ROOM = "goal-runtime-room"
 PLAYER = "goal-runtime-player"
 ACTOR = "goal-runtime-actor"
 HANDGUN = f"{ACTOR}:equipment:0"
+
+
+def test_travel_resolved_event_projects_location_result() -> None:
+    """v3 旅行事件必须进入结构化 Narrator 证据，不能退回自然语言推断。"""
+
+    event = DomainEvent(
+        event_id="event-travel-resolved",
+        sequence=1,
+        type="travel.resolved",
+        room_id=ROOM,
+        actor_id=ACTOR,
+        client_action_id="travel-action",
+        cause="enter_location",
+        payload={"destination_id": "archive-room", "path": ["hall", "archive-room"]},
+    )
+
+    results = committed_results_from_events((event,))
+
+    assert len(results) == 1
+    assert results[0].kind == "location"
+    assert results[0].target_id == "archive-room"
+    assert results[0].event_ref == "event-travel-resolved"
 
 
 def _runtime_store(*, handgun_location_id: str | None = None) -> InMemoryEngineStore:

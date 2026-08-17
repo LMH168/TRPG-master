@@ -418,7 +418,8 @@
           "enum": [
             "entity_discovered",
             "rule_presentation",
-            "plot_thread_transition"
+            "plot_thread_transition",
+            "travel_interrupted"
           ],
           "title": "Kind",
           "type": "string"

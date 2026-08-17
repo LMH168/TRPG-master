@@ -2066,6 +2066,15 @@ class ActionPlanTurnApplication:
             )
             plot_threads = ()
         context = context.model_copy(update={"plot_threads": plot_threads})
+        blocked_travel = tuple(
+            item
+            for item in context.narration_evidence
+            if item.kind == "travel_interrupted" and item.required_in_narration
+        )
+        if blocked_travel:
+            # 受阻旅行的地点与边界已经由 Engine 确认。这里直接使用结构化事实，
+            # 不让模型把“抵达入口”扩写成“打开入口”或“已经进入”。
+            return self._safe_narration_fallback(context, prefer_evidence=True)
         # goal_outcome 未完成不等于“没有可叙述结果”。Narrator 仍可表达本轮
         # committed_results，但后续持久声明校验会阻止它把检定成功外推为目标完成。
         for attempt in range(2):
@@ -2168,7 +2177,11 @@ class ActionPlanTurnApplication:
             )
         sentences: list[str] = []
         for item in required:
-            if item.kind in {"rule_presentation", "plot_thread_transition"}:
+            if item.kind in {
+                "rule_presentation",
+                "plot_thread_transition",
+                "travel_interrupted",
+            }:
                 sentences.append(item.description.rstrip("。！？!?；;，,") + "。")
                 continue
             sentences.append(f"随着调查深入，你很快辨认出{item.subject_name}。")
@@ -2243,10 +2256,19 @@ class ActionPlanTurnApplication:
         statements.extend(
             f"{inventory_names[result.target_id]}已经放入你的背包。" for result in inventory_results
         )
+        location_results = tuple(result for result, _label in results if result.kind == "location")
+        scene = getattr(context.player_view, "scene", None)
+        scene_id = getattr(scene, "id", None)
+        scene_name = getattr(scene, "name", "")
+        statements.extend(
+            f"你已经抵达{scene_name}。"
+            for result in location_results
+            if result.target_id == scene_id and scene_name
+        )
         refs = tuple(
             result.event_ref
             for result, label in results
-            if label is not None or result in inventory_results
+            if label is not None or result in inventory_results or result in location_results
         )
         outcomes = tuple(step.outcome for step in context.completed_steps)
         # 历史上下文没有目标完成字段，必须按未知处理，不能倒推出目标已经达成。

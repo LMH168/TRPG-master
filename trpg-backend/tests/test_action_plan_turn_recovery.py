@@ -566,6 +566,64 @@ async def test_narration_falls_back_to_required_player_safe_evidence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_blocked_travel_uses_structured_fallback_without_model_claims() -> None:
+    """受阻旅行直接复述 Engine 边界，模型不能把抵达入口扩写成已经进入。"""
+
+    application = object.__new__(ActionPlanTurnApplication)
+    application._store = _narration_store("room-281")
+    narrate = AsyncMock()
+    application._narrator = SimpleNamespace(narrate=narrate)
+    evidence = NarrationEvidence(
+        ref="evt-travel-blocked",
+        kind="travel_interrupted",
+        subject_id="sealed-hatch",
+        subject_name="密封舱门",
+        description="你抵达密封舱门，但通路仍被阻挡，尚未进入目标地点。",
+        required_in_narration=True,
+    )
+    context = cast(NarrationContext, _NarrationContextStub(evidence, "resolved"))
+
+    narration = await application._narrate(context)
+
+    narrate.assert_not_awaited()
+    assert narration.text == evidence.description
+    assert narration.claimed_evidence_refs == (evidence.ref,)
+
+
+def test_travel_result_fallback_uses_final_player_view_location() -> None:
+    """travel.resolved 的结构化地点结果应生成抵达事实，不退回空状态模板。"""
+
+    result = CommittedResult(
+        kind="location",
+        target_id="archive-room",
+        event_ref="evt-arrived",
+    )
+    context = SimpleNamespace(
+        termination_status="resolved",
+        player_input=SimpleNamespace(client_action_id="travel-fallback"),
+        completed_steps=(
+            SimpleNamespace(
+                outcome="success",
+                goal_outcome="achieved",
+                committed_results=(result,),
+            ),
+        ),
+        player_view=SimpleNamespace(
+            scene=SimpleNamespace(
+                id="archive-room",
+                name="档案室",
+                visible_entities=(),
+            ),
+        ),
+    )
+
+    output = ActionPlanTurnApplication._deterministic_narration_fallback(cast(Any, context))
+
+    assert output.text == "你已经抵达档案室。"
+    assert output.claimed_evidence_refs == ("evt-arrived",)
+
+
+@pytest.mark.asyncio
 async def test_not_achieved_goal_still_narrates_committed_rule_result() -> None:
     """完整目标未满足时仍应调用 Narrator 表达实际结果，不能直接返回地点模板。"""
 

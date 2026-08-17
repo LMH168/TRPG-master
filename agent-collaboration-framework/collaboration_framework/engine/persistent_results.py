@@ -28,7 +28,6 @@ from collaboration_framework.contracts import (
 
 from .models import DomainEvent
 
-
 # 标准键和值是玩家可见状态的唯一白名单，任意模组私有键不会因此被公开。
 CHARACTER_STATE_VALUES: dict[str, tuple[JsonValue, ...]] = {
     "consciousness": ("conscious", "unconscious", "dead"),
@@ -325,10 +324,12 @@ def committed_results_from_events(
                     event_ref=event.event_id,
                 )
             )
-        elif event.type == "location.entered" and isinstance(
-            payload.get("location_id"), str
+        elif event.type in {"location.entered", "travel.resolved"} and isinstance(
+            payload.get("location_id") or payload.get("destination_id"), str
         ):
-            location_id = payload.get("location_id")
+            # v3 导航提交 travel.resolved；旧 writer 仍可能保存 location.entered。
+            # 两者都归一成同一种最终地点结果，Narrator 不需要猜测事件版本。
+            location_id = payload.get("location_id") or payload.get("destination_id")
             assert isinstance(location_id, str)
             results.append(
                 CommittedResult(

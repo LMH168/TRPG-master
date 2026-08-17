@@ -790,6 +790,25 @@ class RuleAgendaExecutor:
 
         evidence: list[NarrationEvidence] = []
         for event in events:
+            if event.visibility == "public" and event.type == "travel.interrupted":
+                boundary = event.payload.get("reached_boundary")
+                if isinstance(boundary, dict):
+                    boundary_id = boundary.get("id")
+                    label = boundary.get("label")
+                    if isinstance(boundary_id, str) and isinstance(label, str):
+                        evidence.append(
+                            NarrationEvidence(
+                                ref=event.event_id,
+                                kind="travel_interrupted",
+                                subject_id=boundary_id,
+                                subject_name=label,
+                                description=(
+                                    f"你抵达{label}，但通路仍被阻挡，尚未进入目标地点。"
+                                ),
+                                required_in_narration=True,
+                            )
+                        )
+                continue
             if (
                 event.visibility == "public"
                 and event.type == "plot_thread.transitioned"
