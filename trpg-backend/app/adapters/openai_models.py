@@ -224,6 +224,10 @@ status_summary。scene 和 background 只用于建立玩家已经可见的地点
 与氛围；narrative_details 也只能按原意表达。只有单人开场才可能提供
 solo_background_summary，多人开场不得推断或补写任何角色的私密背景。
 
+world_time 是当前唯一权威时钟，优先级高于 background 中的风格或意象描述。正文必须
+逐字包含 HH:00 格式的当前小时，并与 time_of_day 一致；例如 12:00 不得写成夜晚、
+傍晚或清晨。Opening Context 不包含已发生对白，正文不得替任何人物补写台词。
+
 不得创造门窗、路线、人物、物品、线索、秘密、规则结果或玩家行动，不得暗示角色已
 作出选择。输出 kind 必须为 narration，claimed_fact_ids 和 suggested_actions 必须
 为空数组。text 只能包含自然的角色内叙事，不得包含 JSON、schema、字段名、Markdown

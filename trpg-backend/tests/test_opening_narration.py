@@ -13,6 +13,7 @@ from collaboration_framework.contracts import (
     SceneView,
     SelfActorView,
     VisibleActorView,
+    WorldStateView,
 )
 from collaboration_framework.engine import InMemoryEngineStore, RuleEngineService
 from collaboration_framework.host.schemas import OpeningNarrationContext
@@ -50,6 +51,7 @@ def opening_view() -> PlayerView:
                 ),
             ),
         ),
+        world=WorldStateView(day_index=0, hour_of_day=12, time_of_day="day"),
     )
 
 
@@ -90,7 +92,7 @@ class CandidateOpeningModel:
             }
         return {
             "kind": "narration",
-            "text": "杜明与林夏一同站在旧宅门厅的昏黄灯光下。",
+            "text": "12:00，杜明与林夏一同站在旧宅门厅的昏黄灯光下。",
             "claimed_fact_ids": [],
             "suggested_actions": [],
         }
@@ -153,3 +155,4 @@ async def test_template_mode_does_not_call_model() -> None:
 
     assert result.result == "template"
     assert model.calls == 0
+    assert "第1天12:00（白天）" in result.narration.text

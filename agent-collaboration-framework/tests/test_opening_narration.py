@@ -13,6 +13,8 @@ from collaboration_framework.contracts import (
     SceneView,
     SelfActorView,
     VisibleActorView,
+    WorldClockView,
+    WorldStateView,
 )
 from collaboration_framework.host.application import (
     ContextAssembler,
@@ -60,7 +62,7 @@ def player_view(*, multiplayer: bool) -> PlayerView:
             id="foyer",
             name="旧宅门厅",
             description="昏黄灯光落在积灰的木地板上。",
-            time="深夜",
+            time="day",
             visible_actors=(
                 (
                     VisibleActorView(
@@ -74,6 +76,7 @@ def player_view(*, multiplayer: bool) -> PlayerView:
                 else ()
             ),
         ),
+        world=WorldStateView(day_index=0, hour_of_day=12, time_of_day="day"),
     )
 
 
@@ -129,12 +132,18 @@ class OpeningContextTests(unittest.TestCase):
             OpeningNarrationContext(
                 background="公开背景",
                 scene=OpeningSceneContext(id="foyer", name="门厅", description=""),
+                world_time=WorldClockView(
+                    day_index=0, hour_of_day=12, time_of_day="day"
+                ),
                 participants=(participant, participant),
             )
         with self.assertRaises(ValidationError):
             OpeningNarrationContext(
                 background="公开背景",
                 scene=OpeningSceneContext(id="foyer", name="门厅", description=""),
+                world_time=WorldClockView(
+                    day_index=0, hour_of_day=12, time_of_day="day"
+                ),
                 participants=(
                     participant,
                     OpeningParticipant(actor_id="other", name="林夏"),
@@ -150,7 +159,7 @@ class OpeningNarratorTests(unittest.IsolatedAsyncioTestCase):
             CandidateOpeningModel(
                 {
                     "kind": "narration",
-                    "text": "杜明与林夏一同站在旧宅门厅的昏黄灯光下。",
+                    "text": "12:00，杜明与林夏一同站在旧宅门厅的昏黄灯光下。",
                     "claimed_fact_ids": [],
                     "suggested_actions": [],
                 }
@@ -158,6 +167,30 @@ class OpeningNarratorTests(unittest.IsolatedAsyncioTestCase):
         ).narrate(context)
         self.assertIn("杜明", output.text)
         self.assertIn("林夏", output.text)
+
+    async def test_rejects_time_conflict_and_invented_opening_dialogue(self) -> None:
+        """背景风格和模型对白都不能覆盖权威时钟或创造开场事实。"""
+
+        context = ContextAssembler().for_opening(player_view(multiplayer=True))
+        candidates = (
+            "12:00，夜幕低垂，杜明与林夏站在旧宅门厅。",
+            "12:00，杜明对林夏说：“桌上有一把秘密钥匙。”",
+        )
+        for text in candidates:
+            with (
+                self.subTest(text=text),
+                self.assertRaises(OpeningNarrationValidationError),
+            ):
+                await OpeningNarrator(
+                    CandidateOpeningModel(
+                        {
+                            "kind": "narration",
+                            "text": text,
+                            "claimed_fact_ids": [],
+                            "suggested_actions": [],
+                        }
+                    )
+                ).narrate(context)
 
     async def test_rejects_non_narration_claims_suggestions_protocol_and_missing_name(
         self,
@@ -196,16 +229,24 @@ class OpeningNarratorTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         for candidate in candidates:
-            with self.subTest(candidate=candidate):
-                with self.assertRaises(OpeningNarrationValidationError):
-                    await OpeningNarrator(CandidateOpeningModel(candidate)).narrate(
-                        context
-                    )
+            with (
+                self.subTest(candidate=candidate),
+                self.assertRaises(OpeningNarrationValidationError),
+            ):
+                await OpeningNarrator(CandidateOpeningModel(candidate)).narrate(context)
 
     def test_deterministic_opening_mentions_scene_and_every_participant(self) -> None:
         context = ContextAssembler().for_opening(player_view(multiplayer=True))
         text = deterministic_opening_narration(context).text
 
-        for expected in ("旧宅门厅", "昏黄灯光", "杜明", "记者", "林夏", "医生"):
+        for expected in (
+            "第1天12:00（白天）",
+            "旧宅门厅",
+            "昏黄灯光",
+            "杜明",
+            "记者",
+            "林夏",
+            "医生",
+        ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, text)

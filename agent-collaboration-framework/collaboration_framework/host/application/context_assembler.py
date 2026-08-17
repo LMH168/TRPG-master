@@ -47,6 +47,7 @@ class ContextAssembler:
                 time=player_view.scene.time,
                 narrative_details=player_view.scene.narrative_details,
             ),
+            world_time=WorldClockView.from_world(player_view.world),
             participants=participants,
             solo_background_summary=(
                 player_view.self_actor.background_summary
