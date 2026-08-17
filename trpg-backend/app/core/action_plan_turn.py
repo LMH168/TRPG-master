@@ -1371,12 +1371,14 @@ class ActionPlanTurnApplication:
             # the frozen adjudication summary is the safe recovery label.
             utterance=recovery.summary,
         )
+        # 单动作提交后，同一 Turn 的 RuleAgenda 可以继续提交被动检定、资源变化、
+        # NPC 机会和剧情线程，因此当前 revision 合法地晚于原 adjudication。
+        # 恢复时必须读取最新权威视图，再由 _from_single 按 execution/receipt 合并
+        # Agenda 证据；若强制与旧 execution.view_revision 相等，每次叙事重试都会
+        # 把已经提交的 Agenda 误判为并发状态漂移，最终耗尽 Turn 恢复预算。
         result = SingleActionTurnResult(
             execution=recovery.execution,
-            player_view=await self._projector.refresh_adjudication(
-                player_input,
-                recovery.execution,
-            ),
+            player_view=await self._projector.project(player_input),
         )
         if recovery.execution.status in {
             "awaiting_skill_choice",

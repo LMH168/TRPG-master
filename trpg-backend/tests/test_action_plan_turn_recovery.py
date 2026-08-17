@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 from collaboration_framework.contracts import (
     ActionPlanPolicy,
+    AdjudicationExecution,
+    AdjudicationRecovery,
     AgendaContinuationProposal,
     CommittedResult,
     NarrationEvidence,
@@ -21,11 +23,13 @@ from collaboration_framework.engine import (
     AgendaStepExecution,
     InMemoryEngineStore,
     PlotThreadState,
+    RuleEngineService,
     create_initial_game_state,
     engine_turn_context,
 )
 from collaboration_framework.host.application import (
     NarrationValidationError,
+    PlayerViewProjector,
 )
 from collaboration_framework.host.application.narrator import (
     unsupported_focus_shift_claim,
@@ -225,6 +229,55 @@ def test_application_injects_plan_repair_dependencies_into_single_action_path() 
 
     assert application._dispatcher._repair_adjudicator is orchestrator.adjudicator
     assert application._dispatcher._policy is orchestrator.policy
+
+
+@pytest.mark.asyncio
+async def test_resume_single_uses_current_view_after_agenda_advanced_revision() -> None:
+    """叙事恢复必须接受同一 Turn 的 Agenda 已把 revision 向前推进。"""
+
+    store = _narration_store("room-281")
+    player_input = PlayerInput(
+        room_id="room-281",
+        player_id="player-281",
+        actor_id="actor-281",
+        client_action_id="action-after-agenda",
+        utterance="与当前可见的人交谈",
+    )
+    current_view = await PlayerViewProjector(RuleEngineService(store)).project(player_input)
+    # 模拟原裁决在 revision 63 提交，而同一 Turn 的 Agenda 随后推进到 70。
+    current_view = current_view.model_copy(update={"revision": "70"})
+    recovery = AdjudicationRecovery(
+        action_request_id=player_input.client_action_id,
+        actor_id=player_input.actor_id,
+        summary=player_input.utterance,
+        execution=AdjudicationExecution(
+            request_id=player_input.client_action_id,
+            action_request_id=player_input.client_action_id,
+            status="resolved",
+            view_revision="63",
+            outcome="success",
+            goal_outcome="achieved",
+        ),
+    )
+    application = object.__new__(ActionPlanTurnApplication)
+    application._adjudication_engine = SimpleNamespace(
+        recover_action=AsyncMock(return_value=recovery)
+    )
+    application._projector = SimpleNamespace(project=AsyncMock(return_value=current_view))
+    application._from_single = AsyncMock(return_value="recovered")
+
+    result = await application.resume_single(
+        room_id=player_input.room_id,
+        player_id=player_input.player_id,
+        parent_action_id=player_input.client_action_id,
+    )
+
+    assert result == "recovered"
+    application._projector.project.assert_awaited_once()
+    assert application._from_single.await_args is not None
+    submitted = application._from_single.await_args.args[2]
+    assert submitted.execution.view_revision == "63"
+    assert submitted.player_view.revision == "70"
 
 
 @pytest.mark.parametrize(
