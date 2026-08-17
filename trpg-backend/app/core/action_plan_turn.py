@@ -478,6 +478,24 @@ class DeterministicHostTurnDecisionModel:
         )
 
 
+class TravelFirstHostTurnDecisionModel:
+    """优先解析玩家安全视图中唯一、明确的纯移动，再调用不可信 Host 模型。"""
+
+    def __init__(self, fallback: HostTurnDecisionModel) -> None:
+        self._fallback = fallback
+
+    async def generate(self, context: HostAgentContext) -> HostDecisionProposal:
+        """纯移动不需要模型猜测；复合行动和歧义输入仍完整交给 Host。"""
+
+        proposal = _direct_travel_proposal(
+            context.player_view,
+            context.player_input.utterance,
+        )
+        if proposal is not None:
+            return proposal
+        return await self._fallback.generate(context)
+
+
 def _compact_travel_plan(view: PlayerView, utterance: str) -> ActionPlan | None:
     """Split compact fake-provider phrases without consulting hidden ModuleContent."""
 
@@ -724,6 +742,59 @@ def _match_travel_target(view: PlayerView, text: str) -> _TravelTarget | None:
     if len(ranked) > 1 and ranked[0][0] == ranked[1][0]:
         return None
     return ranked[0][2]
+
+
+def _direct_travel_proposal(
+    view: PlayerView,
+    utterance: str,
+) -> SingleActionProposal | None:
+    """把“去 + 唯一已知地点”编译为 Proposal，不截断同行或后续动作。"""
+
+    destination = _match_travel_target(view, utterance)
+    if destination is None or destination.id == view.scene.id:
+        return None
+
+    labels: list[str] = [
+        destination.name,
+        destination.id,
+        *_ambient_venue_aliases(destination.id),
+    ]
+    for exit_view in view.scene.available_exits:
+        if exit_view.destination is None or exit_view.destination.scene_id != destination.id:
+            continue
+        labels.extend((exit_view.name, exit_view.id, *exit_view.aliases))
+    anchor = _best_label_overlap(utterance, tuple(labels))
+    if anchor is None:
+        return None
+
+    residual = utterance.replace(anchor, "", 1)
+    residual = re.sub(r"[\s，,。.!！?？；;]+", "", residual)
+    # 这里只接受完整语义等于“移动”的短句。任何额外主体、同行要求、调查或
+    # 后续步骤都会令匹配失败，原句随即原样交给 Host/ActionPlan。
+    simple_travel = re.fullmatch(
+        r"(?:我|我们)?"
+        r"(?:现在|马上|立刻|这就|直接|先)?"
+        r"(?:想要|想|要|打算|准备|决定)?"
+        r"(?:现在|马上|立刻|这就|直接|先)?"
+        r"(?:去|前往|进入|抵达|到)"
+        r"(?:一下)?(?:吧|了)?",
+        residual,
+    )
+    if simple_travel is None:
+        return None
+
+    return _proposal_from_adjudication(
+        ActionAdjudication(
+            request_id="application-owned",
+            source_revision=view.revision,
+            actor_id=view.actor_id,
+            summary=utterance,
+            target=ActionTarget(kind="location", id=destination.id),
+            method=ActionMethod(family="travel", description=utterance),
+            check=NoAdjudicationCheck(),
+            success_effects=(EnterLocationEffect(location_id=destination.id),),
+        )
+    )
 
 
 def _best_travel_label_score(
@@ -2414,7 +2485,7 @@ def build_action_plan_turn_application(
         store=store,
         engine=engine,
         adjudication_engine=adjudication_engine,
-        planner=planner,
+        planner=TravelFirstHostTurnDecisionModel(planner),
         orchestrator=orchestrator,
         narrator=Narrator(narration_model),
         recent_history_source=history_source,

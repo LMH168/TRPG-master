@@ -57,6 +57,7 @@ from collaboration_framework.memory import MemoryContext
 
 from app.core.action_plan_turn import (
     DeterministicHostTurnDecisionModel,
+    TravelFirstHostTurnDecisionModel,
     _deterministic_step_adjudication,
     _DeterministicStepAdjudicator,
     _match_travel_target,
@@ -452,6 +453,64 @@ async def test_visible_travel_uses_v2_deterministic_proposal_without_model() -> 
     assert proposal.success_effect_proposals[0].location_ref.id == "cemetery"
     assert proposal.completion is not None
     assert proposal.completion.kind == "effects"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("utterance", "uses_fallback", "expected_location_id"),
+    (
+        ("去墓地", False, "cemetery"),
+        ("我现在想去墓地", False, "cemetery"),
+        ("去墓地吧", False, "cemetery"),
+        ("去图书馆", False, "library"),
+        ("带托马斯一起去墓地", True, None),
+        ("去墓地调查守墓人", True, None),
+    ),
+)
+async def test_production_planner_only_shortcuts_unambiguous_travel(
+    utterance: str,
+    uses_fallback: bool,
+    expected_location_id: str | None,
+) -> None:
+    """纯移动必须稳定命中；同行和后续动作不能被快捷路径静默截断。"""
+
+    class RecordingFallback:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate(self, context):
+            self.calls += 1
+            return await DeterministicHostTurnDecisionModel().generate(context)
+
+    step_context = await _cemetery_context(
+        utterance,
+        step_kind="travel",
+        semantic_goal=utterance,
+        scene_id="thomas_office",
+    )
+    host_context = HostAgentContext(
+        player_input=step_context.player_input,
+        player_view=step_context.player_view,
+        recent_history=RecentTurnContext.empty(
+            player_input=step_context.player_input,
+            player_view=step_context.player_view,
+        ),
+        memory_context=MemoryContext.empty(
+            player_input=step_context.player_input,
+            player_view=step_context.player_view,
+        ),
+        keeper_capabilities=step_context.keeper_capabilities,
+    )
+    fallback = RecordingFallback()
+
+    proposal = await TravelFirstHostTurnDecisionModel(fallback).generate(host_context)
+
+    assert fallback.calls == int(uses_fallback)
+    if not uses_fallback:
+        assert isinstance(proposal, SingleActionProposal)
+        assert proposal.semantic_goal == utterance
+        assert proposal.semantic_focus.id == expected_location_id
+        assert proposal.success_effect_proposals[0].type == "enter_location"
 
 
 @pytest.mark.asyncio

@@ -116,6 +116,12 @@ def application(
     )
 
 
+def test_opening_defaults_to_validated_model_mode() -> None:
+    """生产默认保留 AI 主持沉浸感，失败仍由 generate_opening 安全降级。"""
+
+    assert Settings(_env_file=None).opening_narration_mode == "model"  # ty: ignore[unknown-argument]
+
+
 @pytest.mark.parametrize(
     ("outcome", "failure_category"),
     [
