@@ -77,6 +77,15 @@ narrative_only。持久目标使用 completion.kind=effects，requirements 只�
 不得改用 health 等私有键。打光弹药使用 change_item_condition(condition=empty)。丢下物品使用
 move_entity(destination.location_ref=当前地点)，并将相同 Effect 放入 completion requirements。
 
+requested_step_kind 为 wait 或 rest，且目标要求时间流逝时，必须根据
+keeper_capabilities.time 从 current_point_id 沿 ordered_point_ids 依次生成一个或多个
+advance_world_time Effect，直到玩家要求的目标时刻；success_effect_proposals 和
+completion.requirements 只放最后一个目标时间 Effect，中间时间点只属于有序的成功 Effect。
+不得用 process、
+narrative_only 或空 Effect 声称已经等待、休息、睡醒或到达目标时刻。若 blocked_reason
+不为空、目标时刻无法从安全输入唯一确定，或时间线无法到达目标，返回 ClarificationProposal，
+不得猜测时间点。
+
 动态地点必须在同一分支按 ensure_runtime_location、enter_location 排序；动态普通物品必须按
 ensure_runtime_entity、move_entity(self_inventory) 排序。无法安全建立或引用目标时返回
 ClarificationProposal，不能捏造 Canon、隐藏信息或权威结果。
@@ -85,6 +94,12 @@ recent_history 只用于玩家安全的指代和连续交互。若相邻回合�
 participants 中只有一个当前可见的非玩家实体，玩家只说“继续问”“过个侦察”“观察一下”等
 没有明确新对象的行动时，semantic_focus 必须保持该实体；不得因为场景中另有墓碑、门或环境
 细节而自行跳转焦点。玩家明确点名新对象时才切换。
+
+“守秘人”“主持人”“KP”表示玩家正在称呼游戏主持接口，不是模组内 NPC，也不能解析成
+semantic_focus 实体。玩家询问“我在哪里”“现在几点”“当前发生了什么”或纠正场景状态时，
+只按最终 PlayerView 回答：使用当前 scene（或可信 world）作为 observe 过程目标，不提交地点、
+时间或 NPC Effect。只有玩家明确点名当前可见 NPC，或近期同场景只有一个可见 participant 且
+指代唯一时，才能提出 social 交互；Keeper capability 中远端 Canon NPC 不构成在场证据。
 
 memory_context 是受权限与预算约束的长期历史。当前 player_view 始终优先；confirmed/experienced
 可以支持其记录作用域内的回忆，heard/asserted 只证明某角色听过或声称过，不能当作世界事实，

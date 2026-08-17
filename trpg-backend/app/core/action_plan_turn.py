@@ -2734,6 +2734,15 @@ def _deterministic_step_adjudication(
         "",
     ).strip(" ，,。")
     target = _match_visible_entity(context.player_view, action_text)
+    if context.step.kind == "dialogue" and target is None and not _addresses_keeper(action_text):
+        # “询问眼前的人”没有名字，但当前只有一个可见 NPC 时没有歧义；在此
+        # 绑定该实体，避免后续把地点当作 social 目标。明确称呼守秘人/KP 的
+        # 输入属于主持接口查询，绝不能借此自动选择场景中的 NPC。
+        visible_npcs = tuple(
+            entity for entity in context.player_view.scene.visible_entities if entity.kind == "npc"
+        )
+        if len(visible_npcs) == 1:
+            target = visible_npcs[0]
     # Once the planner has identified a visible conversation partner, ordinary
     # dialogue needs no second model call to invent an adjudication.  Keeping
     # this path narrative-only is also an information boundary: authored rules
@@ -2767,6 +2776,13 @@ def _match_visible_entity(view: PlayerView, text: str):
     if len(matches) > 1 and matches[0][0] == matches[1][0]:
         return None
     return matches[0][2]
+
+
+def _addresses_keeper(text: str) -> bool:
+    """判断玩家是否明确称呼主持接口，而不是模组中的在场角色。"""
+
+    normalized = text.strip().casefold()
+    return any(marker in normalized for marker in ("守秘人", "主持人", "kp"))
 
 
 def _companion_move_effects(

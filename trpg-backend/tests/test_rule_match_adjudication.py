@@ -307,6 +307,35 @@ async def test_rule_first_adjudicator_does_not_call_model_for_unique_match() -> 
     assert isinstance(proposal.check_proposal, NoAdjudicationCheck)
 
 
+@pytest.mark.asyncio
+async def test_ambiguous_dialogue_binds_only_unique_visible_npc() -> None:
+    """“询问眼前的人”只在当前恰有一个可见 NPC 时确定性绑定该角色。"""
+
+    context = await _cemetery_context(
+        "询问眼前的人",
+        step_kind="dialogue",
+    )
+
+    adjudication = _deterministic_step_adjudication(context)
+
+    assert adjudication is not None
+    assert adjudication.target.kind == "entity"
+    assert adjudication.target.id == "melodias"
+    assert adjudication.method.family == "talk"
+
+
+@pytest.mark.asyncio
+async def test_keeper_address_is_not_bound_to_visible_npc() -> None:
+    """明确询问守秘人时，确定性对话路径不能擅自选择场景 NPC。"""
+
+    context = await _cemetery_context(
+        "守秘人，我现在在哪里？",
+        step_kind="dialogue",
+    )
+
+    assert _deterministic_step_adjudication(context) is None
+
+
 @pytest.mark.skip(reason="旧 ActionAdjudication 字段断言已由 Proposal 契约测试替代")
 async def test_visible_dialogue_does_not_call_model_or_reveal_information() -> None:
     """普通对话不应因二次模型调用失败，也不能绕过规则凭空揭示线索。"""

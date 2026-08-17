@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -191,6 +192,7 @@ def _submission(
     revision: str,
     goal: str,
     payload: dict[str, object],
+    step_kind: Literal["travel", "wait", "rest", "action", "dialogue"] | None = None,
 ) -> SubmitProposalRequest:
     """用可信目标快照包装一份 v2 Proposal。"""
 
@@ -211,6 +213,7 @@ def _submission(
         source_revision=revision,
         proposal=proposal,
         requested_goal=goal,
+        requested_step_kind=step_kind,
     )
 
 
@@ -542,6 +545,7 @@ async def test_advance_world_time_satisfies_effect_completion() -> None:
         request_id="advance-time",
         revision="0",
         goal="等待到晚上",
+        step_kind="wait",
         payload={
             "semantic_focus": {"kind": "location", "id": "cemetery"},
             "target_interaction": "observe",
@@ -566,6 +570,49 @@ async def test_advance_world_time_satisfies_effect_completion() -> None:
     assert result.outcome == "success"
     assert result.goal_outcome == "achieved"
     assert store.inspect_state(ROOM).world_time.current_point_id == "hour_18"
+
+
+@pytest.mark.asyncio
+async def test_rest_to_midnight_commits_each_authoritative_time_point() -> None:
+    """从中午休息到午夜必须逐点提交，不能只在 Narrator 文本中切换时间。"""
+
+    store = _runtime_store()
+    engine = AdjudicationEngineService(store)
+    advances = [
+        {"type": "advance_world_time", "to_point_id": "hour_18"},
+        {"type": "advance_world_time", "to_point_id": "hour_20"},
+        {"type": "advance_world_time", "to_point_id": "hour_00"},
+    ]
+    request = _submission(
+        request_id="rest-to-midnight",
+        revision="0",
+        goal="休息到深夜十二点",
+        step_kind="rest",
+        payload={
+            "semantic_focus": {"kind": "location", "id": "cemetery"},
+            "target_interaction": "other",
+            "method_family": "休息",
+            "method_description": "休息到深夜十二点",
+            "check_proposal": {"mode": "none"},
+            "success_effect_proposals": advances,
+            "failure_effect_proposals": [],
+            "completion": {"kind": "effects", "requirements": [advances[-1]]},
+        },
+    )
+
+    result = await engine.submit_proposal(request)
+    view = await RuleEngineService(store).read(
+        PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
+    )
+
+    assert result.goal_outcome == "achieved"
+    assert view.world.hour_of_day == 0
+    assert store.inspect_state(ROOM).world_time.current_point_id == "hour_00"
+    assert [
+        event.payload["point_id"]
+        for event in store.inspect_domain_events(ROOM)
+        if event.type == "time.point_entered"
+    ] == ["hour_18", "hour_20", "hour_00"]
 
 
 def test_narrative_only_cannot_silently_complete_persistent_goal() -> None:

@@ -9,6 +9,7 @@ import pytest
 
 from collaboration_framework.contracts import (
     AdjudicationValidationError,
+    AdvanceWorldTimeEffect,
     AgentMatchTriggerSpec,
     ModuleContentV3,
     NoAdjudicationCheck,
@@ -432,6 +433,26 @@ def test_wait_step_requires_authoritative_time_completion() -> None:
     assert raised.value.result.code == "WAIT_REQUIRES_TIME_EFFECT"
 
 
+def test_rest_step_requires_authoritative_time_completion() -> None:
+    """可信 rest 步骤同样不能用过程结果冒充已经睡到目标时刻。"""
+
+    with pytest.raises(AdjudicationValidationError) as raised:
+        ProposalCompiler().compile(
+            _runtime(),
+            _request(
+                goal="休息到深夜",
+                focus_id="cemetery",
+                focus_kind="location",
+                family="休息",
+                interaction="other",
+                step_kind="rest",
+            ),
+        )
+
+    assert raised.value.result.code == "WAIT_REQUIRES_TIME_EFFECT"
+    assert "等待或休息" in raised.value.result.player_safe_reason
+
+
 def test_wait_step_accepts_matching_time_effect_and_completion() -> None:
     """等待门禁只要求结构化时间结果，不识别具体自然语言或模组地点。"""
 
@@ -459,6 +480,116 @@ def test_wait_step_accepts_matching_time_effect_and_completion() -> None:
     command = ProposalCompiler().compile(_runtime(), request)
 
     assert command.adjudication.success_effects[0].type == "advance_world_time"
+
+
+def test_rest_step_accepts_ordered_time_effects_and_completion() -> None:
+    """跨越多个离散时间点的休息目标必须完整保留有序时间 Effect。"""
+
+    request = _request(
+        goal="休息到深夜",
+        focus_id="cemetery",
+        focus_kind="location",
+        family="休息",
+        interaction="other",
+        step_kind="rest",
+    )
+    advances = [
+        {"type": "advance_world_time", "to_point_id": "hour_18"},
+        {"type": "advance_world_time", "to_point_id": "hour_00"},
+    ]
+    request = request.model_copy(
+        update={
+            "proposal": SingleActionProposal.model_validate(
+                {
+                    **request.proposal.to_json_dict(),
+                    "success_effect_proposals": advances,
+                    "completion": {"kind": "effects", "requirements": [advances[-1]]},
+                }
+            )
+        }
+    )
+
+    command = ProposalCompiler().compile(_runtime(), request)
+
+    time_effects = command.adjudication.success_effects
+    assert all(isinstance(effect, AdvanceWorldTimeEffect) for effect in time_effects)
+    assert [
+        effect.to_point_id
+        for effect in time_effects
+        if isinstance(effect, AdvanceWorldTimeEffect)
+    ] == [
+        "hour_18",
+        "hour_00",
+    ]
+
+
+def test_rest_step_rejects_intermediate_points_as_final_requirements() -> None:
+    """中间时间点不能同时声明为最终状态，否则目标永远只能部分完成。"""
+
+    request = _request(
+        goal="休息到深夜",
+        focus_id="cemetery",
+        focus_kind="location",
+        family="休息",
+        interaction="other",
+        step_kind="rest",
+    )
+    advances = [
+        {"type": "advance_world_time", "to_point_id": "hour_18"},
+        {"type": "advance_world_time", "to_point_id": "hour_00"},
+    ]
+    proposal = SingleActionProposal.model_validate(
+        {
+            **request.proposal.to_json_dict(),
+            "success_effect_proposals": advances,
+            "completion": {"kind": "effects", "requirements": advances},
+        }
+    )
+
+    with pytest.raises(AdjudicationValidationError) as raised:
+        ProposalCompiler().compile(
+            _runtime(),
+            request.model_copy(update={"proposal": proposal}),
+        )
+
+    assert raised.value.result.code == "WAIT_REQUIRES_TIME_EFFECT"
+
+
+def test_travel_step_requires_matching_location_completion() -> None:
+    """远端地点不能用零 Effect 的 process 结果冒充已经到达。"""
+
+    with pytest.raises(AdjudicationValidationError) as raised:
+        ProposalCompiler().compile(
+            _runtime(),
+            _request(
+                goal="回去找托马斯",
+                focus_id="thomas_office",
+                focus_kind="location",
+                family="travel",
+                interaction="other",
+                step_kind="travel",
+            ),
+        )
+
+    assert raised.value.result.code == "TRAVEL_REQUIRES_LOCATION_EFFECT"
+
+
+def test_social_step_rejects_remote_canon_entity() -> None:
+    """Keeper 可知但不在当前场景的 NPC 不能成为本轮社交目标。"""
+
+    with pytest.raises(AdjudicationValidationError) as raised:
+        ProposalCompiler().compile(
+            _runtime(),
+            _request(
+                goal="向托马斯汇报发现",
+                focus_id="thomas",
+                family="dialogue",
+                interaction="social",
+                step_kind="dialogue",
+            ),
+        )
+
+    assert raised.value.result.code == "SOCIAL_TARGET_NOT_PRESENT"
 
 
 def test_auto_bound_rule_may_supply_omitted_active_check() -> None:

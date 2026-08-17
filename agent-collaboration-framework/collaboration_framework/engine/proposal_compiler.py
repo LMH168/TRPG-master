@@ -274,6 +274,7 @@ class ProposalCompiler:
             self._validate_completion_contract(
                 runtime,
                 request,
+                target_kind=focus.kind,
                 target_id=focus.id,
                 completion_mode=completion_mode,
                 process_interaction=process_interaction,
@@ -599,28 +600,45 @@ class ProposalCompiler:
     ) -> None:
         """按 Coordinator 冻结的步骤类型校验最低完成条件。
 
-        ``method_family`` 是 Host 可自由表达的字符串，不能承担授权。等待步骤只有
-        实际推进世界时间才算完成，避免模型用 narrative_only 冒充“等到晚上”。
+        ``method_family`` 是 Host 可自由表达的字符串，不能承担授权。等待和休息
+        步骤只有实际推进世界时间才算完成，避免模型用 narrative_only 冒充
+        “等到晚上”或“睡到深夜”。
         """
 
-        if request.requested_step_kind != "wait":
+        # v1 只用于读取和恢复历史命令；它没有完成条件字段，不能用 v2 的
+        # writer 完整性规则反向判定为非法。
+        if request.proposal.schema_version != 2 or request.requested_step_kind not in {
+            "wait",
+            "rest",
+        }:
             return
         proposal = request.proposal
         completion = proposal.completion
-        success_advances_time = any(
-            isinstance(effect, AdvanceWorldTimeEffectProposal)
+        success_time_effects = tuple(
+            effect
             for effect in proposal.success_effect_proposals
+            if isinstance(effect, AdvanceWorldTimeEffectProposal)
         )
-        completion_advances_time = isinstance(
-            completion, EffectsGoalCompletionProposal
-        ) and any(
-            isinstance(requirement, AdvanceWorldTimeEffectProposal)
-            for requirement in completion.requirements
+        completion_time_effects = tuple(
+            requirement
+            for requirement in (
+                completion.requirements
+                if isinstance(completion, EffectsGoalCompletionProposal)
+                else ()
+            )
+            if isinstance(requirement, AdvanceWorldTimeEffectProposal)
         )
-        if not success_advances_time or not completion_advances_time:
+        # 中间时间点属于提交过程，只有最后一个目标时间点是完成后的状态。
+        # 若把每个中间点都列为 requirement，最终状态永远只能满足其中一个。
+        completion_matches_final = bool(
+            success_time_effects
+        ) and completion_time_effects == (success_time_effects[-1],)
+        if not completion_matches_final:
+            # 保留既有错误码，避免恢复中的旧 ActionPlan 因错误分类变化而进入
+            # 不同分支；玩家安全原因统一说明时间目标没有形成权威结果。
             self._reject(
                 "WAIT_REQUIRES_TIME_EFFECT",
-                "等待目标必须由实际时间推进结果完成",
+                "等待或休息目标必须由实际时间推进结果完成",
                 repairability="auto_repairable",
                 fault="agent",
             )
@@ -675,6 +693,7 @@ class ProposalCompiler:
         runtime: EngineRuntimeSnapshot,
         request: SubmitProposalRequest,
         *,
+        target_kind: str,
         target_id: str,
         completion_mode: str,
         process_interaction: str | None,
@@ -688,6 +707,29 @@ class ProposalCompiler:
         # 满足目标当前能够参与该交互的前置条件。
         interaction = request.proposal.target_interaction or process_interaction
         if interaction == "social":
+            # Host 的 Keeper capability 能看到不在当前场景的 Canon，但社交行动
+            # 只能指向本轮 PlayerView 中真正可见的对象。这样“询问守秘人”不会
+            # 被错误绑定到远端 NPC，历史对话也不能越过当前地点恢复参与者。
+            from .projection_v3 import project_v3
+
+            projection = project_v3(
+                runtime,
+                player_id=request.player_id,
+                actor_id=request.actor_id,
+            )
+            visible_target_ids = {
+                item.id for item in projection.scene.visible_entities
+            } | {item.id for item in projection.scene.visible_actors}
+            if (
+                target_kind not in {"entity", "actor"}
+                or target_id not in visible_target_ids
+            ):
+                self._reject(
+                    "SOCIAL_TARGET_NOT_PRESENT",
+                    "只能与当前场景中可见且在场的角色交流",
+                    repairability="requires_player_choice",
+                    fault="player",
+                )
             state = runtime.game_state.entities.get(target_id, {})
             if state.get("consciousness") in {"dead", "unconscious"}:
                 self._reject(
@@ -695,6 +737,35 @@ class ProposalCompiler:
                     "目标当前无法回应这次交互",
                     repairability="requires_player_choice",
                     fault="player",
+                )
+
+        if request.requested_step_kind == "travel":
+            # 旅行步骤必须由最终地点变化证明。唯一例外是目标就是当前地点，
+            # 此时属于幂等确认，不应重复写入 location 事件。
+            already_there = (
+                target_kind == "location" and target_id == runtime.game_state.scene_id
+            )
+            required_destinations = {
+                item.location_id
+                for item in requirements
+                if isinstance(item, EnterLocationEffect)
+            }
+            committed_destinations = {
+                item.location_id
+                for item in success_effects
+                if isinstance(item, EnterLocationEffect)
+            }
+            completion_reaches_target = target_id in required_destinations
+            success_reaches_target = target_id in committed_destinations
+            if not already_there and (
+                not completion_reaches_target
+                or (not rule_owned and not success_reaches_target)
+            ):
+                self._reject(
+                    "TRAVEL_REQUIRES_LOCATION_EFFECT",
+                    "旅行目标必须由实际地点到达结果完成",
+                    repairability="auto_repairable",
+                    fault="agent",
                 )
 
         if completion_mode == "process":
@@ -719,10 +790,18 @@ class ProposalCompiler:
             EnsureRuntimeEntityEffect,
             EnsureRuntimeLocationEffect,
         )
+        allows_intermediate_time = request.requested_step_kind in {
+            "wait",
+            "rest",
+        } and any(isinstance(item, AdvanceWorldTimeEffect) for item in requirements)
         undeclared = tuple(
             item
             for item in success_effects
-            if not isinstance(item, supporting) and item not in requirements
+            if not isinstance(item, supporting)
+            and item not in requirements
+            and not (
+                allows_intermediate_time and isinstance(item, AdvanceWorldTimeEffect)
+            )
         )
         if undeclared:
             self._reject("GOAL_EFFECT_MISMATCH", "成功分支包含未声明的持久结果")
