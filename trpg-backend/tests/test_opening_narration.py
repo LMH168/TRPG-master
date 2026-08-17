@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Literal
+from unittest.mock import Mock
 
 import anyio
 import httpx
@@ -18,6 +20,7 @@ from collaboration_framework.contracts import (
 from collaboration_framework.engine import InMemoryEngineStore, RuleEngineService
 from collaboration_framework.host.schemas import OpeningNarrationContext
 
+from app.core import turn as turn_module
 from app.core.config import Settings
 from app.core.turn import HostModelMetadata, build_session_view_application
 
@@ -153,6 +156,37 @@ async def test_valid_model_opening_mentions_every_public_participant() -> None:
     assert result.failure_category is None
     assert "杜明" in result.narration.text
     assert "林夏" in result.narration.text
+
+
+@pytest.mark.parametrize(
+    ("outcome", "failure_family"),
+    [
+        ("timeout", "timeout"),
+        ("connection", "provider"),
+        ("http", "provider"),
+        ("json", "schema"),
+        ("invalid-output", "evidence"),
+    ],
+)
+async def test_opening_log_is_room_searchable_and_has_stable_failure_family(
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+    failure_family: str,
+) -> None:
+    """开场降级日志必须能按匿名房间标识检索并稳定分类。"""
+
+    log_info = Mock()
+    monkeypatch.setattr(turn_module.logger, "info", log_info)
+
+    await application(CandidateOpeningModel(outcome)).generate_opening(opening_view())
+
+    log_info.assert_called_once()
+    (event_name,) = log_info.call_args.args
+    fields = log_info.call_args.kwargs
+    assert event_name == "opening_narration_completed"
+    assert fields["room_ref"] == hashlib.sha256(b"room-1").hexdigest()[:12]
+    assert fields["result"] == "fallback"
+    assert fields["failure_family"] == failure_family
 
 
 async def test_template_mode_does_not_call_model() -> None:

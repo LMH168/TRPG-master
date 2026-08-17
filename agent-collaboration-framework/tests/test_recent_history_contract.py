@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from collaboration_framework.contracts import (
+    ObservableStateView,
     PlayerInput,
     PlayerView,
     SceneView,
@@ -92,7 +93,11 @@ def test_recent_history_scope_and_host_contract_are_required() -> None:
     assert context.recent_history.turns[0].accepted_intent_summary
     assert "recent_history" in HostAgentContext.model_json_schema()["required"]
     with pytest.raises(ValidationError):
-        HostAgentContext(player_input=player_input, player_view=player_view)
+        # 负向契约测试故意省略两个必填 Context，静态检查器无需替 Pydantic 拦截。
+        HostAgentContext(  # ty: ignore[missing-argument]
+            player_input=player_input,
+            player_view=player_view,
+        )
     with pytest.raises(ValidationError, match="as_of_revision"):
         HostAgentContext(
             player_input=player_input,
@@ -234,3 +239,95 @@ def test_narration_context_keeps_reliable_npc_across_clarification() -> None:
     assert switched.focus_entity_ids == ("desk",)
     assert switched.active_interaction_entity_ids == ()
     assert switched.interaction_continuity == "none"
+
+
+@pytest.mark.parametrize("consciousness", ["dead", "unconscious"])
+def test_narration_context_ends_interaction_for_incapacitated_npc(
+    consciousness: str,
+) -> None:
+    """最终状态已经不可交互的 NPC 不能被近期对话重新激活。"""
+
+    player_input, base_view = scope()
+    player_view = base_view.model_copy(
+        update={
+            "scene": SceneView(
+                id="study",
+                name="书房",
+                description="安静的书房",
+                visible_entities=(
+                    VisibleEntity(
+                        id="thomas",
+                        kind="npc",
+                        name="托马斯",
+                        description="仍留在当前场景。",
+                        observable_state=(
+                            ObservableStateView(
+                                key="consciousness",
+                                label="意识状态",
+                                value=consciousness,
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        }
+    )
+    history = RecentTurnContext(
+        room_id="room",
+        viewer_player_id="viewer",
+        as_of_revision="7",
+        turns=(own_turn(),),
+    )
+
+    context = ContextAssembler().for_narration(
+        player_input=player_input,
+        plan_goal="继续问他",
+        termination_status="resolved",
+        completed_steps=(),
+        player_view=player_view,
+        recent_history=history,
+    )
+
+    assert context.focus_entity_ids == ()
+    assert context.active_interaction_entity_ids == ()
+    assert context.interaction_source_turn_id is None
+    assert context.interaction_continuity == "none"
+
+
+def test_narration_context_ends_interaction_after_scene_change_or_npc_departure() -> (
+    None
+):
+    """玩家移动或 NPC 离场后，旧场景 participant 不得延续为当前焦点。"""
+
+    player_input, base_view = scope()
+    history = RecentTurnContext(
+        room_id="room",
+        viewer_player_id="viewer",
+        as_of_revision="7",
+        turns=(own_turn(),),
+    )
+
+    for player_view in (
+        base_view.model_copy(
+            update={
+                "scene_id": "library",
+                "scene": SceneView(
+                    id="library",
+                    name="图书馆",
+                    description="安静的图书馆",
+                ),
+            }
+        ),
+        base_view,
+    ):
+        context = ContextAssembler().for_narration(
+            player_input=player_input,
+            plan_goal="继续问他",
+            termination_status="resolved",
+            completed_steps=(),
+            player_view=player_view,
+            recent_history=history,
+        )
+
+        assert context.active_interaction_entity_ids == ()
+        assert context.interaction_continuity == "none"

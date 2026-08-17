@@ -164,6 +164,7 @@ class SessionViewApplication:
         context = ContextAssembler().for_opening(player_view)
         started_at = time.perf_counter()
         failure_category: str | None = None
+        failure_family: str | None = None
         result: Literal["model", "template", "fallback"]
         if self.opening_narration_mode == "template":
             narration = deterministic_opening_narration(context)
@@ -175,6 +176,7 @@ class SessionViewApplication:
                 result = "model"
             except Exception as exc:  # the opening must never prevent entering InGame
                 failure_category = _opening_failure_category(exc)
+                failure_family = _opening_failure_family(exc)
                 narration = deterministic_opening_narration(context)
                 result = "fallback"
 
@@ -192,6 +194,7 @@ class SessionViewApplication:
             elapsed_ms=elapsed_ms,
             result=result,
             failure_category=failure_category,
+            failure_family=failure_family,
             input_chars=input_chars,
             output_chars=len(narration.text),
         )
@@ -215,6 +218,20 @@ def _opening_failure_category(exc: Exception) -> str:
         return f"validation_{exc.reason}"
     if isinstance(exc, ValidationError):
         return "pydantic_validation"
+    return "unexpected"
+
+
+def _opening_failure_family(exc: Exception) -> str:
+    """将细分异常归入稳定类别，便于按房间检索开场失败来源。"""
+
+    if isinstance(exc, TimeoutError | httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.RequestError | httpx.HTTPStatusError):
+        return "provider"
+    if isinstance(exc, OpeningNarrationValidationError):
+        return "evidence"
+    if isinstance(exc, json.JSONDecodeError | ValidationError):
+        return "schema"
     return "unexpected"
 
 

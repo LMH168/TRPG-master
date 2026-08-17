@@ -415,6 +415,24 @@ def test_real_model_focus_shift_wording_is_rejected_without_name_hardcoding() ->
     assert shifted == "douglas_grave"
 
 
+def test_prior_npc_cannot_block_new_object_focus_without_evidence() -> None:
+    """玩家转向新对象后，旧 NPC 不能凭空成为阻挡当前行动的剧情门槛。"""
+
+    visible = (
+        SimpleNamespace(id="prior_npc", name="管理员", aliases=("那个人",)),
+        SimpleNamespace(id="new_object", name="陈旧书柜", aliases=("书柜",)),
+    )
+
+    shifted = unsupported_focus_shift_claim(
+        "管理员突然挡在书柜前，不许你继续查看。",
+        focus_entity_ids=("new_object",),
+        visible_entities=visible,
+        evidence_subject_ids=set(),
+    )
+
+    assert shifted == "prior_npc"
+
+
 def test_recent_history_rebinds_to_post_commit_player_view_revision() -> None:
     """单动作提交推进 revision 后，叙事历史应只重绑定截止点而不改写内容。"""
 
