@@ -246,7 +246,7 @@ async def test_douglas_death_reaches_durable_player_choice_once() -> None:
 
 
 def test_rule_presentation_becomes_required_player_safe_evidence() -> None:
-    """Agenda 只能从显式 Presentation 生成叙事证据，不能解释普通事件载荷。"""
+    """显式 Presentation 必须成为叙事证据，hidden 内容不得进入玩家上下文。"""
 
     evidence = RuleAgendaExecutor._narration_evidence(
         (

@@ -998,6 +998,39 @@ async def test_direct_entry_reaches_awake_stable_boundary_once() -> None:
     assert sum(event.type == "actor.condition_applied" for event in events) == 1
     assert sum(event.type == "actor.condition_expired" for event in events) == 1
     assert sum(event.type == "rule.presentation" for event in events) == 1
+    narration_evidence = [
+        item
+        for execution in executions
+        for item in execution.result.get("narration_evidence", [])
+    ]
+    # 多阶段 Agenda 的具体公开结果必须按提交顺序交给 Narrator，不能只留下
+    # PlotThread 摘要或最终地点，导致昏迷、醒来和被动检定在叙事中消失。
+    required_evidence = [
+        item for item in narration_evidence if item["required_in_narration"]
+    ]
+    assert [item["kind"] for item in required_evidence] == [
+        "actor_condition",
+        "world_time",
+        "actor_condition",
+        "location_transition",
+        "npc_opportunity",
+        "rule_presentation",
+        "passive_check",
+        "actor_resource_change",
+    ]
+    assert all(
+        not item["required_in_narration"]
+        for item in narration_evidence
+        if item["kind"] == "plot_thread_transition"
+    )
+    evidence_text = "".join(item["description"] for item in required_evidence)
+    assert "失去了意识" in evidence_text
+    assert "18点" in evidence_text
+    assert "恢复了意识" in evidence_text
+    assert "墓地" in evidence_text
+    assert "墓地中的人影" in evidence_text
+    assert "理智检定" in evidence_text
+    assert "理智值" in evidence_text
     assert (
         await executor.drain(
             room_id="room-rule-binding",

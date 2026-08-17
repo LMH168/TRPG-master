@@ -122,6 +122,9 @@ needs_clarification，才用自然的角色内措辞提出一次最小澄清。c
 叙事必须明确写出 narration_evidence 中 required_in_narration=true 的每项玩家可见结果；
 应把对应 ref 放入 claimed_evidence_refs，服务端也会按正文中明确出现的公开名称或别名
 确定性记录 required ref。不得以未经证据确认的关键发现替代这些结果。
+Agenda 证据按权威事件顺序给出。角色状态、时间、地点、NPC 机会、被动检定和资源变化必须
+按该顺序自然连成一段，不得省略中间状态，也不得增加证据中不存在的门、石板、人物或状态变化。
+plot_thread_transition 只提供当前剧情阶段背景，不要逐字朗读抽象流程摘要。
 text 只能包含自然的角色内叙事，不得把 claimed_evidence_refs、suggested_actions 或其他
 JSON/schema 字段和值重复写入正文。
 如果输入中提供 narration_retry_hint，说明上一版叙事漏报了一个已提交结果；本次必须

@@ -21,7 +21,11 @@ from collaboration_framework.host.schemas import (
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models.engine import ActionExecution, ActionPlanRunRecord
+from app.models.engine import (
+    ActionExecution,
+    ActionPlanRunRecord,
+    AgendaStepExecutionRecord,
+)
 from app.models.event import Event
 
 _CANDIDATE_LIMIT = 24
@@ -267,10 +271,36 @@ class SqlAlchemyRecentHistorySource:
                 if correlations
                 else []
             )
+            # Agenda execution 内含玩家回合的私有语义摘要，只查询当前玩家自己的
+            # Turn；公开旁观历史仍由 transport Event 提供，不能借此读取他人证明。
+            turn_ids = [
+                event.turn_id
+                for event in action_events
+                if event.turn_id is not None and event.player_id == player_input.player_id
+            ]
+            agenda_execution_records = (
+                list(
+                    (
+                        await session.scalars(
+                            select(AgendaStepExecutionRecord)
+                            .where(AgendaStepExecutionRecord.execution_turn_id.in_(turn_ids))
+                            .order_by(
+                                AgendaStepExecutionRecord.committed_state_version,
+                                AgendaStepExecutionRecord.execution_id,
+                            )
+                        )
+                    ).all()
+                )
+                if turn_ids
+                else []
+            )
 
         event_by_key = {(event.correlation_id, event.event_type): event for event in related_events}
         execution_by_correlation = {execution.request_id: execution for execution in executions}
         plan_by_correlation = {record.parent_action_id: record for record in plan_records}
+        agenda_by_turn: dict[str, list[AgendaStepExecutionRecord]] = {}
+        for record in agenda_execution_records:
+            agenda_by_turn.setdefault(record.execution_turn_id, []).append(record)
         safe_participant_ids = {
             player_view.actor_id,
             *(item.id for item in player_view.scene.visible_entities),
@@ -366,12 +396,34 @@ class SqlAlchemyRecentHistorySource:
                         if focus_id in safe_participant_ids and focus_id not in participants:
                             participants.append(focus_id)
                         break
+            # Proposal 只能记录初始目标；规则执行期间新出现的 NPC 必须从已提交
+            # Agenda 玩家安全证据恢复，不能依赖 Narrator 文本猜测参与者。
+            if own_turn and action_event.turn_id is not None:
+                for agenda_record in agenda_by_turn.get(action_event.turn_id, []):
+                    raw_evidence = agenda_record.result_json.get("narration_evidence", [])
+                    if not isinstance(raw_evidence, list):
+                        continue
+                    for item in raw_evidence:
+                        if not isinstance(item, dict) or item.get("kind") != "npc_opportunity":
+                            continue
+                        subject_id = item.get("subject_id")
+                        if (
+                            isinstance(subject_id, str)
+                            and subject_id in safe_participant_ids
+                            and subject_id not in participants
+                        ):
+                            participants.append(subject_id)
 
             evidence = [f"transport_event:{action_event.id}"]
             if execution is not None and own_turn:
                 evidence.append(f"action_execution:{correlation_id}")
             if narration_event is not None and narration is not None:
                 evidence.append(f"transport_event:{narration_event.id}")
+            if own_turn and action_event.turn_id is not None:
+                evidence.extend(
+                    f"agenda_execution:{record.execution_id}"
+                    for record in agenda_by_turn.get(action_event.turn_id, [])
+                )
             check_event = event_by_key.get((correlation_id, "check.result"))
             if (
                 check_event is not None

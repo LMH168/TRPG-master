@@ -445,6 +445,12 @@ class NarrationEvidence(ContractModel):
         "rule_presentation",
         "plot_thread_transition",
         "travel_interrupted",
+        "actor_condition",
+        "world_time",
+        "location_transition",
+        "npc_opportunity",
+        "passive_check",
+        "actor_resource_change",
     ]
     subject_id: str = Field(min_length=1)
     subject_name: str = Field(min_length=1)

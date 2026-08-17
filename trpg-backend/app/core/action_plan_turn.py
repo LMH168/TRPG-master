@@ -956,7 +956,11 @@ class DeterministicNarrationModel:
             item.ref for item in context.narration_evidence if item.required_in_narration
         )
         required_text = "；".join(
-            f"你发现了{item.subject_name}" + (f"：{item.description}" if item.description else "")
+            (
+                item.description.rstrip("。！？!?；;，,")
+                if item.description
+                else f"你注意到{item.subject_name}"
+            )
             for item in context.narration_evidence
             if item.required_in_narration
         )
@@ -1983,12 +1987,28 @@ class ActionPlanTurnApplication:
         allowed_refs = tuple(
             dict.fromkeys(ref for step in completed_steps for ref in step.event_refs)
         )
+        scene = getattr(context.player_view, "scene", None)
+        visible_entity_ids = {item.id for item in getattr(scene, "visible_entities", ())} | {
+            item.id for item in getattr(scene, "visible_actors", ())
+        }
+        agenda_focus_ids = tuple(
+            dict.fromkeys(
+                item.subject_id
+                for item in narration_evidence
+                if item.kind == "npc_opportunity" and item.subject_id in visible_entity_ids
+            )
+        )
         return context.model_copy(
             update={
                 "completed_steps": completed_steps,
                 "allowed_evidence_refs": allowed_refs,
                 "narration_evidence": tuple(
                     item for step in completed_steps for item in step.narration_evidence
+                ),
+                # Agenda 新产生的当前可见 NPC 是本轮后续叙事的权威焦点；否则
+                # Narrator 会继续围绕 Proposal 原目标或历史 NPC，自行跳走。
+                "focus_entity_ids": tuple(
+                    dict.fromkeys((*context.focus_entity_ids, *agenda_focus_ids))
                 ),
             }
         )
@@ -2177,17 +2197,15 @@ class ActionPlanTurnApplication:
             )
         sentences: list[str] = []
         for item in required:
-            if item.kind in {
-                "rule_presentation",
-                "plot_thread_transition",
-                "travel_interrupted",
-            }:
+            if item.kind == "entity_discovered":
+                sentences.append(f"随着调查深入，你很快辨认出{item.subject_name}。")
+                if item.description:
+                    sentences.append(item.description.rstrip("。！？!?；;，,") + "。")
+                continue
+            if item.description:
                 sentences.append(item.description.rstrip("。！？!?；;，,") + "。")
                 continue
             sentences.append(f"随着调查深入，你很快辨认出{item.subject_name}。")
-            description = item.description.strip()
-            if description:
-                sentences.append(description.rstrip("。！？!?；;，,") + "。")
         return NarrationOutput(
             text="".join(sentences),
             claimed_evidence_refs=tuple(item.ref for item in required),

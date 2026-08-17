@@ -668,7 +668,13 @@ def test_merge_agenda_results_restores_persisted_player_safe_evidence() -> None:
         plan_goal="进入地穴",
         termination_status="resolved",
         completed_steps=(step,),
-        player_view=SimpleNamespace(revision="7"),
+        player_view=SimpleNamespace(
+            revision="7",
+            scene=SimpleNamespace(
+                visible_entities=(SimpleNamespace(id="cemetery-figure"),),
+                visible_actors=(),
+            ),
+        ),
         memory_context=SimpleNamespace(),
         allowed_evidence_refs=(),
         narration_evidence=(),
@@ -703,7 +709,15 @@ def test_merge_agenda_results_restores_persisted_player_safe_evidence() -> None:
                     subject_name="地穴恶臭令你失去意识。",
                     description="地穴恶臭令你失去意识。",
                     required_in_narration=True,
-                ).to_json_dict()
+                ).to_json_dict(),
+                NarrationEvidence(
+                    ref="evt-agenda-npc",
+                    kind="npc_opportunity",
+                    subject_id="cemetery-figure",
+                    subject_name="墓地中的人影",
+                    description="墓地中的人影现在就在你眼前。",
+                    required_in_narration=True,
+                ).to_json_dict(),
             ],
         },
         committed_state_version=7,
@@ -716,6 +730,7 @@ def test_merge_agenda_results_restores_persisted_player_safe_evidence() -> None:
     assert merged.allowed_evidence_refs == (event_ref, presentation_ref)
     assert merged.completed_steps[0].committed_results[0].state_value == "unconscious"
     assert merged.narration_evidence[0].ref == presentation_ref
+    assert merged.focus_entity_ids == ("cemetery-figure",)
 
 
 @pytest.mark.asyncio

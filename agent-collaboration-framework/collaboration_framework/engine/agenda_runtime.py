@@ -24,6 +24,7 @@ from collaboration_framework.contracts import (
     EffectStep,
     FinishStep,
     InvokeRulesetActionStep,
+    ModuleContentV3,
     NarrationEvidence,
     PresentationStep,
 )
@@ -733,7 +734,11 @@ class RuleAgendaExecutor:
                     ],
                     "narration_evidence": [
                         item.to_json_dict()
-                        for item in self._narration_evidence(tuple(events))
+                        for item in self._narration_evidence(
+                            tuple(events),
+                            module=runtime.v3,
+                            state=state,
+                        )
                     ],
                 },
                 committed_state_version=state.event_sequence,
@@ -785,11 +790,224 @@ class RuleAgendaExecutor:
     @staticmethod
     def _narration_evidence(
         events: tuple[DomainEvent, ...],
+        *,
+        module: ModuleContentV3 | None = None,
+        state: GameState | None = None,
     ) -> tuple[NarrationEvidence, ...]:
-        """只把模组显式发布的 Presentation 与剧情摘要交给 Narrator。"""
+        """把公开 Agenda 事件编译为玩家安全、可强制表达的具体证据。
+
+        这里只识别受控事件契约，不解释玩家文本或任意状态路径。实体与地点名称
+        必须来自当前固定 ModuleVersion 或已提交运行时状态，找不到安全名称就跳过。
+        """
 
         evidence: list[NarrationEvidence] = []
         for event in events:
+            if event.visibility != "public":
+                continue
+            if event.type in {
+                "actor.condition_applied",
+                "actor.condition_expired",
+                "actor.temporary_insanity",
+            }:
+                condition = event.payload.get("condition")
+                condition_event_type = (
+                    "actor.condition_applied"
+                    if event.type == "actor.temporary_insanity"
+                    else event.type
+                )
+                condition_text = {
+                    ("unconscious", "actor.condition_applied"): (
+                        "失去意识",
+                        "你失去了意识。",
+                    ),
+                    ("unconscious", "actor.condition_expired"): (
+                        "恢复意识",
+                        "你恢复了意识。",
+                    ),
+                    ("unconscious_until_night", "actor.condition_applied"): (
+                        "失去意识",
+                        "你失去了意识。",
+                    ),
+                    ("unconscious_until_night", "actor.condition_expired"): (
+                        "恢复意识",
+                        "你恢复了意识。",
+                    ),
+                    ("temporary_insanity", "actor.condition_applied"): (
+                        "临时疯狂",
+                        "你陷入了临时疯狂。",
+                    ),
+                    ("temporary_insanity", "actor.condition_expired"): (
+                        "恢复清醒",
+                        "你从临时疯狂中恢复清醒。",
+                    ),
+                    ("detained", "actor.condition_applied"): (
+                        "受到拘留",
+                        "你受到了拘留。",
+                    ),
+                    ("detained", "actor.condition_expired"): (
+                        "结束拘留",
+                        "你的拘留状态已经结束。",
+                    ),
+                }.get((condition, condition_event_type))
+                if condition_text is not None:
+                    subject_name, description = condition_text
+                    evidence.append(
+                        NarrationEvidence(
+                            ref=event.event_id,
+                            kind="actor_condition",
+                            subject_id=event.actor_id,
+                            subject_name=subject_name,
+                            description=description,
+                            required_in_narration=True,
+                        )
+                    )
+                continue
+            if event.type == "time.point_entered":
+                hour = event.payload.get("hour_of_day")
+                day_index = event.payload.get("day_index")
+                point_id = event.payload.get("point_id")
+                if (
+                    isinstance(hour, int)
+                    and isinstance(day_index, int)
+                    and isinstance(point_id, str)
+                ):
+                    subject_name = f"{hour:02d}点"
+                    evidence.append(
+                        NarrationEvidence(
+                            ref=event.event_id,
+                            kind="world_time",
+                            subject_id=point_id,
+                            subject_name=subject_name,
+                            description=f"时间推进到第{day_index + 1}天{subject_name}。",
+                            required_in_narration=True,
+                        )
+                    )
+                continue
+            if event.type == "travel.resolved":
+                destination_id = event.payload.get("destination_id")
+                if not isinstance(destination_id, str):
+                    continue
+                location = RuleAgendaExecutor._player_safe_location(
+                    destination_id,
+                    module=module,
+                    state=state,
+                )
+                if location is not None:
+                    location_name, aliases = location
+                    evidence.append(
+                        NarrationEvidence(
+                            ref=event.event_id,
+                            kind="location_transition",
+                            subject_id=destination_id,
+                            subject_name=location_name,
+                            subject_aliases=aliases,
+                            description=f"你来到{location_name}。",
+                            required_in_narration=True,
+                        )
+                    )
+                continue
+            if event.type == "npc.action_opportunity":
+                entity_id = event.payload.get("entity_id")
+                if not isinstance(entity_id, str):
+                    continue
+                entity = RuleAgendaExecutor._player_safe_entity(
+                    entity_id,
+                    module=module,
+                    state=state,
+                )
+                if entity is not None:
+                    entity_name, aliases = entity
+                    evidence.append(
+                        NarrationEvidence(
+                            ref=event.event_id,
+                            kind="npc_opportunity",
+                            subject_id=entity_id,
+                            subject_name=entity_name,
+                            subject_aliases=aliases,
+                            description=f"{entity_name}现在就在你眼前。",
+                            required_in_narration=True,
+                        )
+                    )
+                continue
+            if event.type == "rule.check_resolved":
+                profile_id = event.payload.get("profile_id")
+                profile_name = {
+                    "coc7.sanity": "理智检定",
+                    "coc7.skill": "技能检定",
+                }.get(profile_id)
+                roll = event.payload.get("roll")
+                target = event.payload.get("target")
+                degree = event.payload.get("degree")
+                degree_name = {
+                    "critical_success": "大成功",
+                    "extreme_success": "极难成功",
+                    "hard_success": "困难成功",
+                    "regular_success": "成功",
+                    # 旧 execution 可能保存尚未规范化的成功等级，reader 继续兼容。
+                    "critical": "大成功",
+                    "extreme": "极难成功",
+                    "hard": "困难成功",
+                    "regular": "成功",
+                    "failure": "失败",
+                    "fumble": "大失败",
+                }.get(degree)
+                if (
+                    profile_name is not None
+                    and isinstance(roll, int)
+                    and isinstance(target, int)
+                    and degree_name is not None
+                ):
+                    evidence.append(
+                        NarrationEvidence(
+                            ref=event.event_id,
+                            kind="passive_check",
+                            subject_id=str(profile_id),
+                            subject_name=profile_name,
+                            description=f"{profile_name} D100 {roll}/{target}：{degree_name}。",
+                            required_in_narration=True,
+                        )
+                    )
+                continue
+            if event.type == "actor.sanity_changed":
+                before = event.payload.get("from")
+                after = event.payload.get("to")
+                loss = event.payload.get("loss")
+                if all(isinstance(value, int) for value in (before, after, loss)):
+                    description = (
+                        f"你的理智值保持在{after}点。"
+                        if loss == 0
+                        else f"你的理智值从{before}点降至{after}点，损失{loss}点。"
+                    )
+                    evidence.append(
+                        NarrationEvidence(
+                            ref=event.event_id,
+                            kind="actor_resource_change",
+                            subject_id=event.actor_id,
+                            subject_name="理智值",
+                            description=description,
+                            required_in_narration=True,
+                        )
+                    )
+                continue
+            if event.type == "actor.mythos_changed":
+                before = event.payload.get("from")
+                after = event.payload.get("to")
+                gain = event.payload.get("gain")
+                if all(isinstance(value, int) for value in (before, after, gain)):
+                    evidence.append(
+                        NarrationEvidence(
+                            ref=event.event_id,
+                            kind="actor_resource_change",
+                            subject_id=event.actor_id,
+                            subject_name="克苏鲁神话",
+                            description=(
+                                f"你的克苏鲁神话技能从{before}点升至{after}点，"
+                                f"增加{gain}点。"
+                            ),
+                            required_in_narration=True,
+                        )
+                    )
+                continue
             if event.visibility == "public" and event.type == "travel.interrupted":
                 boundary = event.payload.get("reached_boundary")
                 if isinstance(boundary, dict):
@@ -823,7 +1041,9 @@ class RuleAgendaExecutor:
                             subject_id=thread_id,
                             subject_name=summary,
                             description=summary,
-                            required_in_narration=True,
+                            # PlotThread 摘要只负责提供剧情阶段背景；具体公开事件
+                            # 才是本轮必须表达的结果，避免正文朗读内部流程摘要。
+                            required_in_narration=False,
                         )
                     )
                 continue
@@ -844,6 +1064,59 @@ class RuleAgendaExecutor:
                 )
             )
         return tuple(evidence)
+
+    @staticmethod
+    def _player_safe_entity(
+        entity_id: object,
+        *,
+        module: ModuleContentV3 | None,
+        state: GameState | None,
+    ) -> tuple[str, tuple[str, ...]] | None:
+        """从固定模组或运行时状态读取公开实体名称，绝不回退到内部 ID。"""
+
+        if not isinstance(entity_id, str):
+            return None
+        if module is not None:
+            spec = next(
+                (item for item in module.entities if item.id == entity_id), None
+            )
+            if spec is not None and spec.visibility in {"public", "party"}:
+                return (
+                    spec.player_visible_name or spec.name,
+                    tuple(spec.player_visible_aliases),
+                )
+        if state is not None:
+            payload = state.runtime_entities.get(entity_id)
+            if isinstance(payload, dict):
+                name = payload.get("name")
+                if isinstance(name, str) and name.strip():
+                    return name, ()
+        return None
+
+    @staticmethod
+    def _player_safe_location(
+        location_id: object,
+        *,
+        module: ModuleContentV3 | None,
+        state: GameState | None,
+    ) -> tuple[str, tuple[str, ...]] | None:
+        """从固定模组或运行时状态读取公开地点名称，绝不回退到内部 ID。"""
+
+        if not isinstance(location_id, str):
+            return None
+        if module is not None:
+            spec = next(
+                (item for item in module.locations if item.id == location_id), None
+            )
+            if spec is not None:
+                return spec.player_visible_name or spec.name, ()
+        if state is not None:
+            payload = state.runtime_locations.get(location_id)
+            if isinstance(payload, dict):
+                name = payload.get("name")
+                if isinstance(name, str) and name.strip():
+                    return name, ()
+        return None
 
     def _run_passive_check(
         self,
