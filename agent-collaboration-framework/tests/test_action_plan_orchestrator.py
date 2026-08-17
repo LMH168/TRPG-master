@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+
 from collaboration_framework.contracts import (
     ActionAdjudication,
     ActionMethod,
@@ -1456,7 +1457,7 @@ async def test_second_step_context_failure_releases_adjudicating_state() -> None
 async def test_repeated_unreadable_model_output_stops_and_releases_plan_lease() -> None:
     """连续不可读输出只自动重试一次，随后进入澄清而不是持续占用房间。"""
 
-    module, engine_store, projector = runtime()
+    _module, engine_store, projector = runtime()
     service = ActionPlanOrchestrator(
         store=InMemoryActionPlanRunStore(),
         adjudicator=AlwaysUnreadableAdjudicator(),
@@ -1481,7 +1482,7 @@ async def test_repeated_unreadable_model_output_stops_and_releases_plan_lease() 
 async def test_terminal_uncommitted_turn_can_abandon_orphan_plan() -> None:
     """Turn 已确认未提交失败时，孤儿计划必须释放房间 reservation。"""
 
-    module, engine_store, projector = runtime()
+    _module, engine_store, projector = runtime()
     service = ActionPlanOrchestrator(
         store=InMemoryActionPlanRunStore(),
         adjudicator=AlwaysUnreadableAdjudicator(),
@@ -2217,6 +2218,47 @@ def single_travel_decision(*, target_id: str) -> SingleActionProposal:
             check=NoAdjudicationCheck(),
             success_effects=(EnterLocationEffect(location_id=target_id),),
         )
+    )
+
+
+@pytest.mark.asyncio
+async def test_single_action_binds_trusted_goal_over_host_paraphrase() -> None:
+    """Host 同义改写不应阻塞结构化目标，最终目标仍以玩家原话为准。"""
+
+    module, engine_store, projector = runtime(two_scenes=True)
+    plan_store = InMemoryActionPlanRunStore()
+    engine = AdjudicationEngineService(engine_store)
+    orchestrator_service = ActionPlanOrchestrator(
+        store=plan_store,
+        adjudicator=RecordingAdjudicator(module.world_ref),
+        executor=engine,
+        player_view_projector=projector,
+    )
+    dispatcher = HostTurnDecisionExecutor(
+        plan_orchestrator=orchestrator_service,
+        executor=engine,
+        player_view_projector=projector,
+        policy=ActionPlanPolicy(),
+    )
+    original = player_input("trusted-goal-paraphrase", "我要去目标地点")
+    decision = single_travel_decision(target_id="cemetery").model_copy(
+        update={"semantic_goal": "前往目标附近的地点"}, deep=True
+    )
+
+    result = await dispatcher.execute(original, decision)
+
+    assert isinstance(result, SingleActionTurnResult)
+    assert result.execution.status == "resolved"
+    assert result.player_view.scene.id == "cemetery"
+    async with engine_store.transaction(original.room_id) as tx:
+        command = await tx.find_latest_adjudication_command_by_action(
+            original.client_action_id
+        )
+    assert command is not None
+    assert command.validated_command is not None
+    assert command.validated_command.request.requested_goal == original.utterance
+    assert (
+        command.validated_command.request.proposal.semantic_goal == original.utterance
     )
 
 

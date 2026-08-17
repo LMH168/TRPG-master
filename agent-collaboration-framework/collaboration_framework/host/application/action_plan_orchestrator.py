@@ -1179,17 +1179,13 @@ class ActionPlanOrchestrator:
                     step_status="stopped",
                     code="HOST_PROPOSAL_REQUIRED",
                 )
-            if candidate.semantic_goal != current.step.semantic_goal:
-                return await self._mark_step_failure(
-                    run,
-                    plan_status="needs_clarification",
-                    step_status="stopped",
-                    code="PROPOSAL_SEMANTIC_GOAL_CHANGED",
-                )
+            # semantic_goal 的可信来源是冻结计划步骤；Host 只负责结构化做法与
+            # 目标。服务端绑定可避免同义改写被误判，同时不放宽 Effect 权限。
+            candidate = candidate.model_copy(
+                update={"semantic_goal": current.step.semantic_goal}
+            )
             if current.repair_proposal_baseline is not None and (
-                candidate.semantic_goal
-                != current.repair_proposal_baseline.semantic_goal
-                or candidate.method_family
+                candidate.method_family
                 != current.repair_proposal_baseline.method_family
                 or candidate.target_interaction
                 != current.repair_proposal_baseline.target_interaction
@@ -1825,7 +1821,11 @@ class HostTurnDecisionExecutor:
             )
         opening_view = await self._player_view_projector.project(player_input)
         view = opening_view
-        candidate = proposal
+        # 玩家原话是单动作目标的唯一可信来源；保留 Host 的结构化字段并在
+        # 提交前覆盖回显文本，避免模型同义改写触发永久澄清循环。
+        candidate = proposal.model_copy(
+            update={"semantic_goal": player_input.utterance}
+        )
         repair_attempts = 0
         while True:
             try:
@@ -1903,11 +1903,20 @@ class HostTurnDecisionExecutor:
                     ),
                 )
                 repaired = await self._repair_adjudicator.adjudicate(context)
+                if not isinstance(repaired, SingleActionProposal):
+                    return SingleActionClarificationResult(
+                        player_view=view,
+                        player_safe_reason="修复后的动作改变了玩家原意，请明确目标或做法",
+                        opening_world_time=WorldClockView.from_world(
+                            opening_view.world
+                        ),
+                    )
+                repaired = repaired.model_copy(
+                    update={"semantic_goal": player_input.utterance}
+                )
                 if (
-                    not isinstance(repaired, SingleActionProposal)
-                    or repaired.semantic_goal != proposal.semantic_goal
-                    or repaired.method_family != proposal.method_family
-                    or repaired.target_interaction != proposal.target_interaction
+                    repaired.method_family != candidate.method_family
+                    or repaired.target_interaction != candidate.target_interaction
                 ):
                     return SingleActionClarificationResult(
                         player_view=view,
