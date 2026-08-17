@@ -67,6 +67,7 @@ from app.core.action_plan_turn import (
     _deterministic_step_adjudication,
     _DeterministicStepAdjudicator,
     _match_travel_target,
+    _normalize_rule_owned_proposal,
     _RuleFirstStepAdjudicator,
 )
 
@@ -248,6 +249,73 @@ async def test_engine_publishes_rule_candidates_where_the_actor_stands() -> None
     assert context.keeper_capabilities is not None
     rule_ids = {candidate.rule_id for candidate in context.keeper_capabilities.rule_candidates}
     assert "observe_caretaker" in rule_ids
+
+
+@pytest.mark.asyncio
+async def test_published_rule_owns_results_even_when_host_attaches_effects() -> None:
+    """任意模组的已发布 Rule 都应剥离 Host 猜测结果，而不是终止玩家回合。"""
+
+    context = _with_synthetic_rule(_host_context(await _cemetery_context("开启控制阀")))
+    proposal = SingleActionProposal.model_validate(
+        {
+            "schema_version": 2,
+            "semantic_goal": "开启控制阀",
+            "semantic_focus": {"kind": "entity", "id": "control_valve"},
+            "target_interaction": "physical",
+            "method_family": "operate",
+            "method_description": "手动开启控制阀",
+            "execution_means": {"kind": "intrinsic"},
+            "check_proposal": {"mode": "none", "candidates": []},
+            "rule_ref": {
+                "rule_id": "operate_control_valve",
+                "option_id": "manual_force",
+            },
+            "success_effect_proposals": [{"type": "narrative_only"}],
+            "failure_effect_proposals": [{"type": "narrative_only"}],
+            "completion": {"kind": "process", "interaction": "physical"},
+        }
+    )
+
+    normalized = _normalize_rule_owned_proposal(
+        proposal,
+        context.keeper_capabilities,
+    )
+
+    assert normalized.success_effect_proposals == ()
+    assert normalized.failure_effect_proposals == ()
+    assert normalized.completion is not None
+    assert normalized.completion.kind == "process"
+    assert normalized.completion.interaction == "physical"
+
+
+@pytest.mark.asyncio
+async def test_unknown_rule_reference_is_not_normalized() -> None:
+    """未知 rule_ref 必须保留给 Engine 拒绝，不能借规范化绕过权限。"""
+
+    context = _with_synthetic_rule(_host_context(await _cemetery_context("开启控制阀")))
+    proposal = SingleActionProposal.model_validate(
+        {
+            "schema_version": 2,
+            "semantic_goal": "开启控制阀",
+            "semantic_focus": {"kind": "entity", "id": "control_valve"},
+            "target_interaction": "physical",
+            "method_family": "operate",
+            "method_description": "手动开启控制阀",
+            "execution_means": {"kind": "intrinsic"},
+            "check_proposal": {"mode": "none", "candidates": []},
+            "rule_ref": {"rule_id": "unknown_rule", "option_id": "unknown_option"},
+            "success_effect_proposals": [{"type": "narrative_only"}],
+            "failure_effect_proposals": [],
+            "completion": {"kind": "process", "interaction": "physical"},
+        }
+    )
+
+    normalized = _normalize_rule_owned_proposal(
+        proposal,
+        context.keeper_capabilities,
+    )
+
+    assert normalized == proposal
 
 
 @pytest.mark.asyncio

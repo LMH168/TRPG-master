@@ -46,6 +46,7 @@ from collaboration_framework.contracts import (
     PlayerInput,
     PlayerView,
     PostRollDecisionRequest,
+    ProcessGoalCompletionProposal,
     RevealInformationEffect,
     SetEndingAvailabilityEffect,
     SetVisibilityEffect,
@@ -1177,6 +1178,14 @@ class ActionPlanTurnApplication:
                     keeper_capabilities=keeper_capabilities,
                 )
             )
+            if isinstance(decision, SingleActionProposal):
+                # Host 可能正确选中服务端发布的 Rule，却仍附带它自己猜测的 Effect。
+                # 在可信候选边界统一去掉这些无授权结果，Engine 随后仍会重新校验
+                # rule、option、目标、前置条件与 revision，不能借此使用未知规则。
+                decision = _normalize_rule_owned_proposal(
+                    decision,
+                    keeper_capabilities,
+                )
         except TurnExecutionError as exc:
             if exc.code != "MODEL_OUTPUT_UNREADABLE":
                 raise
@@ -2718,7 +2727,53 @@ class _RuleFirstStepAdjudicator:
         adjudication = _deterministic_step_adjudication(context)
         if adjudication is not None:
             return _proposal_from_adjudication(adjudication)
-        return await self._fallback.adjudicate(context)
+        proposal = await self._fallback.adjudicate(context)
+        if isinstance(proposal, SingleActionProposal):
+            return _normalize_rule_owned_proposal(
+                proposal,
+                context.keeper_capabilities,
+            )
+        # 旧测试/兼容 Adapter 仍可能返回 ActionAdjudication；生产 Adapter 已只写
+        # Proposal，但这里保持 reader 兼容，不把迁移期对象误当成新契约处理。
+        return proposal
+
+
+def _normalize_rule_owned_proposal(
+    proposal: SingleActionProposal,
+    capabilities: KeeperCapabilityView | None,
+) -> SingleActionProposal:
+    """将已发布 Rule 的 Proposal 收敛为由规则独占结果的安全形态。
+
+    这里只识别当前 Keeper View 中精确存在的 rule/option。其余 Proposal 原样进入
+    Engine，让严格 Validator 拒绝未知、过期、目标漂移或越权引用。
+    """
+
+    rule_ref = proposal.rule_ref
+    if (
+        proposal.schema_version != 2
+        or rule_ref is None
+        or proposal.target_interaction is None
+        or capabilities is None
+    ):
+        return proposal
+    candidate = next(
+        (
+            item
+            for item in capabilities.rule_candidates
+            if item.rule_id == rule_ref.rule_id
+            and any(option.id == rule_ref.option_id for option in item.options)
+        ),
+        None,
+    )
+    if candidate is None:
+        return proposal
+    return proposal.model_copy(
+        update={
+            "success_effect_proposals": (),
+            "failure_effect_proposals": (),
+            "completion": ProcessGoalCompletionProposal(interaction=proposal.target_interaction),
+        }
+    )
 
 
 def _deterministic_step_adjudication(

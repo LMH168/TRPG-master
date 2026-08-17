@@ -182,7 +182,17 @@ class SessionViewApplication:
                             OpeningNarrationValidationError,
                             ValidationError,
                             json.JSONDecodeError,
-                        ):
+                        ) as exc:
+                            # 每次候选拒绝都记录稳定类别；不记录模型正文或 Context，
+                            # 既便于按房间定位 fallback，也不泄露玩家与模组内容。
+                            logger.warning(
+                                "opening_narration_candidate_rejected",
+                                room_ref=hashlib.sha256(player_view.room_id.encode()).hexdigest()[
+                                    :12
+                                ],
+                                attempt=attempt + 1,
+                                failure_category=_opening_failure_category(exc),
+                            )
                             # 仅重试已经返回但不符合契约的候选；连接、HTTP 和超时
                             # 继续立即降级，避免开场长时间阻塞玩家进入房间。
                             if attempt + 1 >= _MAX_OPENING_OUTPUT_ATTEMPTS:

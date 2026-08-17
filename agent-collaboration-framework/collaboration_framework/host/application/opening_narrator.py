@@ -59,9 +59,11 @@ class OpeningNarrator:
         rejection_reason = narration_text_rejection_reason(output.text)
         if rejection_reason is not None:
             raise OpeningNarrationValidationError(rejection_reason)
-        if any(
+        if len(context.participants) > 1 and any(
             participant.name not in output.text for participant in context.participants
         ):
+            # 多人公共开场必须明确所有在场玩家，避免模型把某位参与者从共享
+            # 场景中漏掉；单人开场允许自然使用第二人称，不强迫直呼角色全名。
             raise OpeningNarrationValidationError("participant_coverage")
         if _opening_time_conflicts(output.text, context):
             raise OpeningNarrationValidationError("world_time_conflict")
