@@ -394,10 +394,26 @@ def test_synthetic_module_ids_project_through_the_same_evidence_path() -> None:
             )
         },
     )
-    final_state = state.model_copy(
+    # 提交前后都位于同一合成场景，让本用例只验证状态变化文本；实体首次发现
+    # 的独立证据由其他投影用例覆盖。
+    runtime_state = state.model_copy(update={"scene_id": location.id}, deep=True)
+    final_state = runtime_state.model_copy(
         update={
-            "scene_id": location.id,
-            "discovered_facts": (*state.discovered_facts, information.id),
+            "discovered_facts": (*runtime_state.discovered_facts, information.id),
+            "entities": {
+                **runtime_state.entities,
+                npc.id: {
+                    **runtime_state.entities[npc.id],
+                    "consciousness": "dead",
+                },
+            },
+            "public_entity_state_keys": {
+                **runtime_state.public_entity_state_keys,
+                npc.id: (
+                    *runtime_state.public_entity_state_keys.get(npc.id, ()),
+                    "consciousness",
+                ),
+            },
         },
         deep=True,
     )
@@ -405,7 +421,7 @@ def test_synthetic_module_ids_project_through_the_same_evidence_path() -> None:
         module_id=module.module_id,
         module_version=module.version,
         module_content=module,
-        game_state=state,
+        game_state=runtime_state,
         revision="0",
     )
     events = (
@@ -430,8 +446,22 @@ def test_synthetic_module_ids_project_through_the_same_evidence_path() -> None:
             payload={"entity_id": npc.id},
         ),
         DomainEvent(
-            event_id="evt-synthetic-information",
+            event_id="evt-synthetic-state",
             sequence=3,
+            type="entity.state_changed",
+            room_id=state.room_id,
+            actor_id="actor-1",
+            client_action_id="synthetic-action",
+            cause="test",
+            payload={
+                "entity_id": npc.id,
+                "key": "consciousness",
+                "value": "dead",
+            },
+        ),
+        DomainEvent(
+            event_id="evt-synthetic-information",
+            sequence=4,
             type="information.revealed",
             room_id=state.room_id,
             actor_id="actor-1",
@@ -452,11 +482,15 @@ def test_synthetic_module_ids_project_through_the_same_evidence_path() -> None:
     assert [item.subject_id for item in evidence] == [
         location.id,
         npc.id,
+        npc.id,
         information.id,
     ]
     descriptions = "".join(item.description for item in evidence)
     assert "旧档案室" in descriptions
     assert "档案管理员" in descriptions
+    assert "档案管理员已经死亡。" in descriptions
+    assert "consciousness" not in descriptions
+    assert "dead" not in descriptions
     assert information.player_content in descriptions
     assert information.keeper_content not in descriptions
     assert evidence[0].required_in_narration is True

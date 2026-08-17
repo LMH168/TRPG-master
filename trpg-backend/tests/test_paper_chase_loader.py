@@ -51,7 +51,7 @@ async def test_loader_is_idempotent_and_reports_real_content(
 
     assert result.outcome == "unchanged"
     assert result.module_id == BUILTIN_MODULE_ID
-    assert result.version == "3.0.13"
+    assert result.version == "3.0.14"
     assert result.world_ref == "coc-7e"
     assert result.location_count == 12
     assert result.entity_count == 15
@@ -76,7 +76,7 @@ async def test_paper_chase_models_caretaker_bottle_as_discoverable_state() -> No
     """
 
     payload = json.loads(loader.PAPER_CHASE_SOURCE_PATH.read_text(encoding="utf-8"))
-    assert payload["version"] == "3.0.13"
+    assert payload["version"] == "3.0.14"
     entities = {entity["id"]: entity for entity in payload["entities"]}
     information = {item["id"]: item for item in payload["information"]}
     rules = {rule["id"]: rule for rule in payload["rules"]}
@@ -104,12 +104,21 @@ async def test_paper_chase_models_caretaker_bottle_as_discoverable_state() -> No
     assert "仍站在墓地" in slab_summary
     assert "尚未进入地穴" in slab_summary
 
+    death_summary = rules["identify_douglas_after_death"]["presentation"]["player_safe_summary"]
+    # Presentation 是可直接展示的事实与现场选择，不是写给 Narrator 的内部指令。
+    assert "道格拉斯·金博尔" in death_summary
+    assert "立刻离开" in death_summary
+    assert "留下观察" in death_summary
+    assert "准备对抗" in death_summary
+    assert "权威结果" not in death_summary
+    assert "只描述" not in death_summary
+
 
 def test_paper_chase_keeps_previous_v2_snapshots() -> None:
     """切到 v3 不删旧快照——已经开局的房间可能还钉在某个 v2 版本上。"""
 
     current = json.loads(loader.PAPER_CHASE_SOURCE_PATH.read_text(encoding="utf-8"))
-    assert current["version"] == "3.0.13"
+    assert current["version"] == "3.0.14"
     assert current["content_schema_version"] == 3
 
     for name, version in (
@@ -247,7 +256,7 @@ async def test_loader_preserves_rooms_pinned_legacy_version(
 
     result = await loader.load_paper_chase(db_session)
 
-    assert result.version == "3.0.13"
+    assert result.version == "3.0.14"
     legacy = await db_session.get(ModuleVersion, (BUILTIN_MODULE_ID, "1.0.1"))
     assert legacy is not None
     assert legacy.content_json == legacy_content

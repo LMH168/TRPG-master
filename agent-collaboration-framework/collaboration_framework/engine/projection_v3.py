@@ -57,7 +57,7 @@ from collaboration_framework.contracts import (
 
 from .models import EngineRuntimeSnapshot, GameState
 from .navigation import effective_location_knowledge, runtime_location_edges
-from .persistent_results import PUBLIC_STATE_KEYS
+from .persistent_results import PUBLIC_STATE_KEYS, public_state_label
 from .rules_v3 import agent_match_scope_admits, evaluate_condition, pending_check_for
 from .timeline import next_point_after, ordered_points, time_advance_block_reason
 
@@ -375,7 +375,11 @@ def _public_entity_state(
 
     keys = state.public_entity_state_keys.get(entity_id, ())
     return tuple(
-        ProjectionObservableState(key=key, label=key, value=values[key])
+        ProjectionObservableState(
+            key=key,
+            label=public_state_label(key),
+            value=values[key],
+        )
         for key in keys
         if key in PUBLIC_STATE_KEYS and key in values
     )

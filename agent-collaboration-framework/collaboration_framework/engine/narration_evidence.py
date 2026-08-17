@@ -16,6 +16,7 @@ from collaboration_framework.contracts import (
 )
 
 from .models import DomainEvent, EngineRuntimeSnapshot, GameState
+from .persistent_results import public_state_change_description
 from .projection_v3 import project_v3
 
 
@@ -157,9 +158,12 @@ class EvidenceAssembler:
                     subject_id=entity.id,
                     subject_name=entity.name,
                     subject_aliases=entity.aliases,
-                    description=(
-                        f"{entity.name}的{observable.label}为"
-                        f"{cls._display_value(observable.value)}。"
+                    # key/value 是 Engine 协议标识，玩家安全证据必须使用统一的
+                    # 自然语言句式，避免 fallback 泄露 consciousness=dead。
+                    description=public_state_change_description(
+                        entity.name,
+                        observable.key,
+                        observable.value,
                     ),
                     required_in_narration=True,
                 )
