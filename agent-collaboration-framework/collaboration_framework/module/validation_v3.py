@@ -23,11 +23,13 @@ from collaboration_framework.contracts.module_v3 import (
     AgentMatchTriggerSpec,
     AllCondition,
     AnyCondition,
+    AwaitPlayerInputStep,
     CheckStep,
     ConditionExpr,
     CreateNpcActionOpportunityStep,
     EffectStep,
     EventTriggerSpec,
+    InvokeRulesetActionStep,
     ModuleContentV3,
     NotCondition,
     PredicateCondition,
@@ -378,12 +380,51 @@ def _rule_issues(
                 )
             )
     elif isinstance(rule.trigger, AgentMatchTriggerSpec):
+        if rule.trigger.when is not None:
+            issues.extend(_condition_issues(rule.trigger.when, f"{path}.trigger.when"))
+            issues.extend(
+                _plot_thread_predicate_issues(
+                    rule.trigger.when,
+                    f"{path}.trigger.when",
+                    plot_thread_ids,
+                )
+            )
         for index, location_id in enumerate(rule.trigger.scope.location_ids):
             require(
                 location_id,
                 "locations",
                 "MODULE_V3_LOCATION_NOT_FOUND",
                 f"{path}.trigger.scope.location_ids.{index}",
+            )
+        blocking_steps = tuple(
+            step
+            for step in rule.execution.steps
+            if isinstance(
+                step,
+                InvokeRulesetActionStep
+                | CreateNpcActionOpportunityStep
+                | AwaitPlayerInputStep,
+            )
+            or (
+                isinstance(step, CheckStep)
+                and step.check.initiation_kind == "passive_rule"
+            )
+        )
+        unsafe_blocking_steps = tuple(
+            step
+            for step in blocking_steps
+            if not _all_continuations_reach_presentation(rule, step.id)
+        )
+        if blocking_steps and (rule.presentation is None or unsafe_blocking_steps):
+            # 阻塞步骤的结果会在初始裁决之后提交；每条可能的后续路径都必须先
+            # 发布安全证据，不能仅靠规则中某个无关分支存在 PresentationStep。
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code="MODULE_V3_AGENDA_PRESENTATION_REQUIRED",
+                    path=f"{path}.presentation",
+                    message="含阻塞步骤的玩家规则必须在每条后续路径提供安全 PresentationStep",
+                )
             )
 
     reachable = _reachable_steps(rule)
@@ -547,6 +588,40 @@ def _reachable_steps(rule: RuleSpecV3) -> set[str]:
         reachable.add(current)
         frontier.extend(_step_targets(steps[current]))
     return reachable
+
+
+def _all_continuations_reach_presentation(
+    rule: RuleSpecV3,
+    blocking_step_id: str,
+) -> bool:
+    """确认阻塞步骤的每条结果路径都先发布玩家安全证据。"""
+
+    from collaboration_framework.contracts.module_v3 import _step_targets
+
+    steps = {step.id: step for step in rule.execution.steps}
+    blocking_step = steps[blocking_step_id]
+
+    def reaches_presentation(step_id: str, visiting: frozenset[str]) -> bool:
+        step = steps.get(step_id)
+        if step is None:
+            # 悬空游标由步骤引用校验报告；这里仍返回不安全，避免坏模组使校验器崩溃。
+            return False
+        if isinstance(step, PresentationStep):
+            return True
+        if step_id in visiting:
+            # 没经过 Presentation 的环无法形成可叙述的稳定结果。
+            return False
+        targets = _step_targets(step)
+        if not targets:
+            return False
+        next_visiting = visiting | {step_id}
+        return all(reaches_presentation(target, next_visiting) for target in targets)
+
+    targets = _step_targets(blocking_step)
+    return bool(targets) and all(
+        reaches_presentation(target, frozenset({blocking_step_id}))
+        for target in targets
+    )
 
 
 def _effect_issues(

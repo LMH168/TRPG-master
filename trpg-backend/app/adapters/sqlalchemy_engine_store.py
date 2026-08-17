@@ -115,6 +115,72 @@ class SqlAlchemyEngineStore(EngineStore):
             )
             return tuple(_agenda_step_execution_from_record(item) for item in records)
 
+    async def list_agenda_step_executions_for_turn(
+        self,
+        *,
+        room_id: str,
+        turn_id: str,
+    ) -> tuple[AgendaStepExecution, ...]:
+        """读取 Turn 已提交的 Agenda 证明；恢复时不能依赖本进程 drain 返回值。"""
+
+        async with self._session_factory() as session:
+            records = tuple(
+                await session.scalars(
+                    select(AgendaStepExecutionRecord)
+                    .where(
+                        AgendaStepExecutionRecord.room_id == room_id,
+                        AgendaStepExecutionRecord.execution_turn_id == turn_id,
+                    )
+                    .order_by(
+                        AgendaStepExecutionRecord.committed_state_version,
+                        AgendaStepExecutionRecord.execution_id,
+                    )
+                )
+            )
+            return tuple(_agenda_step_execution_from_record(item) for item in records)
+
+    async def list_recoverable_rule_agenda_bindings(
+        self,
+        *,
+        now: datetime,
+        limit: int = 20,
+    ) -> tuple[tuple[str, str], ...]:
+        """返回需要经 TurnCoordinator 恢复的 ``(room_id, turn_id)``。"""
+
+        async with self._session_factory() as session:
+            sessions = tuple(
+                await session.scalars(select(GameSession).order_by(GameSession.room_id))
+            )
+            candidates: list[tuple[str, str]] = []
+            seen: set[str] = set()
+            for game_session in sessions:
+                state = GameState.model_validate(deepcopy(game_session.state_json))
+                for agenda in sorted(state.rule_agendas.values(), key=agenda_claim_key):
+                    turn_id = agenda.active_turn_id
+                    if (
+                        turn_id is None
+                        or turn_id in seen
+                        or not agenda_is_claimable(agenda, now=now)
+                    ):
+                        continue
+                    turn = await session.get(TurnRecordModel, turn_id)
+                    if (
+                        turn is None
+                        or turn.room_id != game_session.room_id
+                        or turn.status
+                        in {
+                            "completed",
+                            "failed",
+                            "cancelled",
+                        }
+                    ):
+                        continue
+                    candidates.append((game_session.room_id, turn_id))
+                    seen.add(turn_id)
+                    if len(candidates) >= limit:
+                        return tuple(candidates)
+            return tuple(candidates)
+
     @asynccontextmanager
     async def transaction(
         self,
@@ -214,11 +280,13 @@ class SqlAlchemyEngineStore(EngineStore):
                 expected_lease_version=expected_lease_version,
                 now=now,
             )
-            terminal = agenda.status != "running"
+            release = agenda.status in {"stable", "failed", "awaiting_player_input"} or (
+                agenda.next_attempt_at is not None
+            )
             saved = agenda.model_copy(
                 update={
-                    "lease_owner": None if terminal else worker_id,
-                    "lease_expires_at": None if terminal else agenda.lease_expires_at,
+                    "lease_owner": None if release else worker_id,
+                    "lease_expires_at": None if release else agenda.lease_expires_at,
                     "lease_version": expected_lease_version + 1,
                 },
                 deep=True,
@@ -231,6 +299,41 @@ class SqlAlchemyEngineStore(EngineStore):
                 game_session=game_session,
                 state=state,
                 now=now,
+            )
+            return saved
+
+    async def resume_rule_agenda_input(
+        self,
+        *,
+        agenda: RuleAgenda,
+        expected_lease_version: int,
+    ) -> RuleAgenda:
+        """CAS 持久化已由 Engine 校验的有限玩家选项。"""
+
+        async with self._session_factory() as session, session.begin():
+            game_session = await session.scalar(
+                select(GameSession).where(GameSession.room_id == agenda.room_id).with_for_update()
+            )
+            if game_session is None:
+                raise ContractError(f"房间运行时不存在: {agenda.room_id}")
+            state = GameState.model_validate(deepcopy(game_session.state_json))
+            current = state.rule_agendas.get(agenda.agenda_id)
+            _validate_agenda_input_resume(
+                current=current,
+                proposed=agenda,
+                expected_lease_version=expected_lease_version,
+            )
+            saved = agenda.model_copy(
+                update={"lease_version": expected_lease_version + 1}, deep=True
+            )
+            agendas = dict(state.rule_agendas)
+            agendas[saved.agenda_id] = saved
+            state = state.model_copy(update={"rule_agendas": agendas}, deep=True)
+            await self._write_agenda_state(
+                session,
+                game_session=game_session,
+                state=state,
+                now=datetime.now(UTC),
             )
             return saved
 
@@ -293,10 +396,46 @@ def _validate_agenda_checkpoint(
         raise ContractError("RuleAgenda checkpoint 不能改写不可变身份")
     if proposed.lease_owner != worker_id:
         raise ContractError("RuleAgenda checkpoint 的 worker 不匹配")
-    if proposed.status == "running" and (
-        proposed.lease_expires_at is None or proposed.lease_expires_at <= now
+    if (
+        proposed.status == "running"
+        and proposed.next_attempt_at is None
+        and (proposed.lease_expires_at is None or proposed.lease_expires_at <= now)
     ):
         raise ContractError("运行中的 RuleAgenda 必须保留有效 lease")
+
+
+def _validate_agenda_input_resume(
+    *,
+    current: RuleAgenda | None,
+    proposed: RuleAgenda,
+    expected_lease_version: int,
+) -> None:
+    """数据库 Adapter 复核玩家恢复没有越过有限候选边界。"""
+
+    if current is None or current.status != "awaiting_player_input":
+        raise RevisionConflictError("RuleAgenda 已不再等待玩家输入")
+    if current.lease_version != expected_lease_version:
+        raise RevisionConflictError("RuleAgenda 玩家输入版本已变化")
+    immutable = (
+        "schema_version",
+        "agenda_id",
+        "room_id",
+        "module_id",
+        "module_version",
+        "correlation_id",
+        "root_source",
+        "origin_turn_id",
+        "player_id",
+        "actor_id",
+        "queue",
+        "source_event_ids",
+    )
+    if any(getattr(current, name) != getattr(proposed, name) for name in immutable):
+        raise ContractError("RuleAgenda 玩家输入恢复不能改写可信身份或队列")
+    if proposed.status != "running" or proposed.active_turn_id is None:
+        raise ContractError("RuleAgenda 玩家输入恢复必须绑定新的活动 Turn")
+    if proposed.pending_boundary_id is not None:
+        raise ContractError("RuleAgenda 玩家输入恢复后必须清除 boundary")
 
 
 class _SqlAlchemyEngineTransaction(EngineTransaction):
@@ -956,6 +1095,119 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
             self._before_commit(self._room_id)
         self._committed = True
 
+    async def commit_agenda_segment(
+        self,
+        *,
+        expected_revision: str,
+        new_state: GameState,
+        events: tuple[DomainEvent, ...],
+        agenda: RuleAgenda,
+        execution: AgendaStepExecution,
+    ) -> None:
+        """在一个数据库事务中提交 Agenda gameplay 状态、证明与 receipt。"""
+
+        self._ensure_active()
+        if self._committed:
+            raise ContractError("同一引擎事务只能提交一次")
+        await self._require_writable_room()
+        if self._turn_id is None or self._turn_id != execution.execution_turn_id:
+            raise ContractError("Agenda execution 必须绑定当前 Engine Turn")
+        if execution.room_id != self._room_id or agenda.room_id != self._room_id:
+            raise ContractError("Agenda 提交身份与事务房间不一致")
+        if execution.agenda_id != agenda.agenda_id:
+            raise ContractError("Agenda execution 与游标不一致")
+
+        expected_version = self._parse_revision(expected_revision)
+        current_session = await self._session.get(GameSession, self._room_id)
+        if current_session is None:
+            raise ContractError(f"房间运行时不存在: {self._room_id}")
+        current_state = GameState.model_validate(deepcopy(current_session.state_json))
+        if current_session.state_version != expected_version:
+            raise RevisionConflictError("Agenda 提交时房间 revision 已变化")
+        self._validate_agenda_segment_commit(
+            current_state=current_state,
+            new_state=new_state,
+            events=events,
+            agenda=agenda,
+            execution=execution,
+        )
+        if await self._session.get(AgendaStepExecutionRecord, execution.execution_id):
+            raise ContractError("Agenda 步骤已经提交")
+
+        now = datetime.now(UTC)
+        state_update = await self._session.execute(
+            update(GameSession)
+            .where(
+                GameSession.room_id == self._room_id,
+                GameSession.state_version == expected_version,
+                GameSession.agenda_state_version == current_session.agenda_state_version,
+            )
+            .values(
+                state_json=new_state.to_json_dict(),
+                state_version=new_state.event_sequence,
+                agenda_state_version=current_session.agenda_state_version + 1,
+                updated_at=now,
+            )
+        )
+        if getattr(state_update, "rowcount", None) != 1:
+            raise RevisionConflictError("Agenda 状态或协调版本已变化")
+
+        self._session.add_all(
+            [
+                GameEvent(
+                    room_id=self._room_id,
+                    turn_id=execution.execution_turn_id,
+                    sequence=event.sequence,
+                    event_id=event.event_id,
+                    client_action_id=event.client_action_id,
+                    type=event.type,
+                    actor_id=event.actor_id,
+                    visibility=event.visibility,
+                    cause=event.cause,
+                    event_schema_version=1,
+                    payload=deepcopy(event.payload),
+                    created_at=now,
+                )
+                for event in events
+            ]
+        )
+        self._session.add(
+            AgendaStepExecutionRecord(
+                execution_id=execution.execution_id,
+                room_id=execution.room_id,
+                origin_turn_id=execution.origin_turn_id,
+                execution_turn_id=execution.execution_turn_id,
+                agenda_id=execution.agenda_id,
+                source_event_id=execution.source_event_id,
+                rule_id=execution.rule_id,
+                branch_id=execution.branch_id,
+                step_id=execution.step_id,
+                execution_kind=execution.execution_kind,
+                schema_version=execution.schema_version,
+                request_schema_version=execution.request_schema_version,
+                request_json=deepcopy(execution.request),
+                result_schema_version=execution.result_schema_version,
+                result_json=deepcopy(execution.result),
+                committed_state_version=execution.committed_state_version,
+                created_at=now,
+            )
+        )
+        # receipt 使用稳定 execution_id；提交后恢复只能对账，不能再次掷骰或执行 Effect。
+        await self._append_turn_receipt(
+            engine_request_id=execution.execution_id,
+            action_request_id=agenda.correlation_id,
+            committed_state_version=new_state.event_sequence,
+            events=events,
+            created_at=now,
+        )
+        try:
+            await self._session.flush()
+        except IntegrityError as exc:
+            raise ContractError("Agenda 原子提交与已持久化记录冲突") from exc
+        if self._before_commit is not None:
+            self._before_commit(self._room_id)
+        self._committed = True
+
     def close(self) -> None:
         self._closed = True
 
@@ -1088,6 +1340,43 @@ class _SqlAlchemyEngineTransaction(EngineTransaction):
                 raise ContractError("领域 Event 与裁决命令 request_id 不一致")
         if completed_command.execution.view_revision != str(new_state.event_sequence):
             raise ContractError("裁决结果 revision 与 GameState 不一致")
+
+    def _validate_agenda_segment_commit(
+        self,
+        *,
+        current_state: GameState,
+        new_state: GameState,
+        events: tuple[DomainEvent, ...],
+        agenda: RuleAgenda,
+        execution: AgendaStepExecution,
+    ) -> None:
+        """校验 Agenda 段没有绕开连续 Event 和稳定身份边界。"""
+
+        if current_state.room_id != self._room_id or new_state.room_id != self._room_id:
+            raise ContractError("Agenda GameState 与事务房间不一致")
+        if not events:
+            raise ContractError("Agenda gameplay 提交必须产生领域 Event")
+        expected_sequences = tuple(
+            range(
+                current_state.event_sequence + 1,
+                current_state.event_sequence + len(events) + 1,
+            )
+        )
+        if tuple(event.sequence for event in events) != expected_sequences:
+            raise ContractError("Agenda Event sequence 必须连续递增")
+        if new_state.event_sequence != current_state.event_sequence + len(events):
+            raise ContractError("Agenda GameState 版本与 Event 数量不一致")
+        if new_state.rule_agendas.get(agenda.agenda_id) != agenda:
+            raise ContractError("GameState 未包含待提交的 Agenda 游标")
+        if execution.committed_state_version != new_state.event_sequence:
+            raise ContractError("Agenda execution 与状态版本不一致")
+        if len({event.event_id for event in events}) != len(events):
+            raise ContractError("Agenda Event id 必须唯一")
+        for event in events:
+            if event.room_id != self._room_id:
+                raise ContractError("Agenda Event 与事务房间不一致")
+            if event.client_action_id != execution.execution_id:
+                raise ContractError("Agenda Event 必须使用稳定 execution_id")
 
     @staticmethod
     def _decision_from_record(

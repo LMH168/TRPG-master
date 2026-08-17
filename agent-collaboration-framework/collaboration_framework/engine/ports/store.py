@@ -91,6 +91,18 @@ class EngineTransaction(Protocol):
         completed_command: CompletedAdjudicationCommand,
     ) -> None: ...
 
+    async def commit_agenda_segment(
+        self,
+        *,
+        expected_revision: str,
+        new_state: GameState,
+        events: tuple[DomainEvent, ...],
+        agenda: RuleAgenda,
+        execution: AgendaStepExecution,
+    ) -> None:
+        """原子提交一个 Agenda 段及其步骤证明和 Turn receipt。"""
+        ...
+
 
 class EngineStore(Protocol):
     """Open a transaction over one room's authoritative runtime."""
@@ -120,6 +132,15 @@ class EngineStore(Protocol):
         """按稳定步骤身份返回 Agenda 的提交记录。"""
         ...
 
+    async def list_agenda_step_executions_for_turn(
+        self,
+        *,
+        room_id: str,
+        turn_id: str,
+    ) -> tuple[AgendaStepExecution, ...]:
+        """读取当前 Turn 已提交的 Agenda 结果，供叙事恢复复用。"""
+        ...
+
     async def claim_rule_agenda(
         self,
         *,
@@ -140,4 +161,13 @@ class EngineStore(Protocol):
         now: datetime,
     ) -> RuleAgenda:
         """Persist a cursor/status update owned by a live lease."""
+        ...
+
+    async def resume_rule_agenda_input(
+        self,
+        *,
+        agenda: RuleAgenda,
+        expected_lease_version: int,
+    ) -> RuleAgenda:
+        """CAS 恢复一个已校验的玩家输入边界，不提交 gameplay 状态。"""
         ...

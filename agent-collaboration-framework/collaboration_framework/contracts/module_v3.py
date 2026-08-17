@@ -355,6 +355,8 @@ class AgentMatchTriggerSpec(ContractModel):
     required: bool = True
     decision_mode: Literal["selective", "exhaustive_for_scope"] = "selective"
     scope: CandidateScopeSpec = Field(default_factory=CandidateScopeSpec)
+    # 玩家动作候选与事件规则共用同一受控谓词；缺失时保持旧模组始终可候选。
+    when: ConditionExpr | None = None
     question: MatchQuestionSpec
     options: tuple[MatchOptionAuthorSpec, ...] = Field(min_length=1)
     bindings: tuple[BindingSlotSpec, ...] = ()

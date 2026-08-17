@@ -9,6 +9,7 @@ from collaboration_framework.contracts import (
     NarrativeDetailView,
     PlayerInput,
     PlayerView,
+    WorldClockView,
 )
 from collaboration_framework.host.schemas.history import RecentTurnContext
 
@@ -54,6 +55,7 @@ class OpeningNarrationContext(ContractModel):
         description="玩家可知的时代、地点、故事前提与叙事基调。",
     )
     scene: OpeningSceneContext
+    world_time: WorldClockView
     participants: tuple[OpeningParticipant, ...] = Field(min_length=1)
     solo_background_summary: str = ""
 

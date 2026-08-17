@@ -3,7 +3,7 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from collaboration_framework.engine import current_turn_id
+from collaboration_framework.engine import AgendaRetryScheduledError, current_turn_id
 
 from app.core.turn_coordinator import TurnCoordinator, TurnExecutionOutcome
 from app.core.turn_runtime import (
@@ -316,6 +316,52 @@ async def test_partial_execution_failure_releases_room_for_new_action() -> None:
         executor=execute_replacement,
     )
     assert replacement.status == TurnStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_agenda_retry_budget_can_resume_committed_turn_more_than_three_times() -> None:
+    """Agenda 自己的有限预算不能被 Turn 默认三次预算提前截断。"""
+
+    store = InMemoryTurnStore()
+    coordinator = TurnCoordinator(store, worker_id="worker-1")
+    attempts = 0
+
+    async def execute(on_phase):  # noqa: ANN001
+        nonlocal attempts
+        attempts += 1
+        await on_phase("executing_action")
+        turn_id = current_turn_id()
+        assert turn_id is not None
+        if not await store.list_receipts(turn_id):
+            await store.append_receipt(
+                TurnCommitReceipt(
+                    turn_id=turn_id,
+                    room_id="room-1",
+                    engine_request_id="engine-agenda-prefix",
+                    action_request_id="action-1",
+                    committed_state_version=1,
+                    created_at=datetime.now(UTC),
+                )
+            )
+        if attempts <= 4:
+            raise AgendaRetryScheduledError()
+        return _outcome()
+
+    current = await coordinator.start(_request(), executor=execute)
+    assert current.status == TurnStatus.EXECUTING
+    assert current.last_error is not None
+    assert current.last_error.retryable is True
+
+    for expected_attempt in range(2, 5):
+        current = await coordinator.resume(current.turn_id, executor=execute)
+        assert current.status == TurnStatus.EXECUTING
+        assert current.last_error is not None
+        assert current.last_error.attempt_count == expected_attempt
+        assert current.last_error.retryable is True
+
+    current = await coordinator.resume(current.turn_id, executor=execute)
+    assert current.status == TurnStatus.COMPLETED
+    assert attempts == 5
 
 
 @pytest.mark.asyncio

@@ -23,9 +23,11 @@ from collaboration_framework.contracts import (
     AdjudicationRecovery,
     AdjudicationStatusView,
     AdvanceWorldTimeEffect,
+    AwaitPlayerInputStep,
     ChangeEntityStateEffect,
     ChangeItemConditionEffect,
     CheckDecisionRequest,
+    CheckStep,
     CommitTerminalEndingEffect,
     ConsumeEntityEffect,
     ContractError,
@@ -47,6 +49,7 @@ from collaboration_framework.contracts import (
     NarrativeOnlyEffect,
     PendingCheckOption,
     PostRollDecisionRequest,
+    PresentationStep,
     PushOption,
     RevealInformationEffect,
     RuleEffect,
@@ -72,6 +75,7 @@ from collaboration_framework.runtime_context import current_turn_id
 
 from .dice import DiceRoller, coc7_success_level, passes_difficulty
 from .models import (
+    AgendaItem,
     AgendaSource,
     CheckRun,
     CompletedAdjudicationCommand,
@@ -100,9 +104,11 @@ from .rules_v3 import (
     effects_after_degree,
     entity_state,
     matching_event_rules,
+    ordered_agenda_items,
     pending_check_for,
     resolve_rule_option,
     walk_rule,
+    walk_rule_from,
 )
 from .timeline import (
     advance_to_target,
@@ -1428,6 +1434,27 @@ class AdjudicationEngineService:
 
         if not runtime.is_v3:
             return ()
+        presentation_evidence: list[NarrationEvidence] = []
+        for event in events:
+            presentation_id = event.payload.get("presentation_id")
+            summary = event.payload.get("player_safe_summary")
+            if (
+                event.visibility != "public"
+                or event.type != "rule.presentation"
+                or not isinstance(presentation_id, str)
+                or not isinstance(summary, str)
+            ):
+                continue
+            presentation_evidence.append(
+                NarrationEvidence(
+                    ref=event.event_id,
+                    kind="rule_presentation",
+                    subject_id=presentation_id,
+                    subject_name=summary,
+                    description=summary,
+                    required_in_narration=True,
+                )
+            )
         candidate_events = tuple(
             event
             for event in events
@@ -1445,7 +1472,7 @@ class AdjudicationEngineService:
             )
         )
         if not candidate_events:
-            return ()
+            return tuple(presentation_evidence)
         final_runtime = runtime.model_copy(
             update={
                 "game_state": new_state,
@@ -1480,7 +1507,7 @@ class AdjudicationEngineService:
                     required_in_narration=True,
                 )
             )
-        return tuple(evidence)
+        return (*evidence, *presentation_evidence)
 
     @staticmethod
     def _validate_identity(
@@ -1569,6 +1596,8 @@ class AdjudicationEngineService:
             if not agent_match_scope_admits(
                 rule,
                 location_id=state.scene_id,
+                state=state,
+                actor_id=adjudication.actor_id,
                 action_family=adjudication.method.family,
                 target_kind=adjudication.target.kind,
                 target_id=adjudication.target.id,
@@ -2090,8 +2119,14 @@ class AdjudicationEngineService:
             rule_id=decision.rule_id,
             option_id=decision.option_id,
         )
-        step, _ = pending_check_for(rule, branch_id)
+        step, prefix_effects = pending_check_for(rule, branch_id)
         if step is not None:
+            if (
+                isinstance(step, CheckStep)
+                and step.check.initiation_kind == "passive_rule"
+            ):
+                # 被动检定由 Agenda 拥有骰点；初始动作只提交阻塞前的确定性 Effect。
+                return tuple(prefix_effects)
             if check_run is None:
                 # 分支要求掷骰，裁决却没带检定：拒绝提交后果，而不是当作成功。
                 return ()
@@ -2106,22 +2141,45 @@ class AdjudicationEngineService:
             # 跑它：Agenda 只装 event 规则，agent_match 的决定只经过这里。于是纯
             # 效果规则被静默吞掉，《追书人》整条地穴终局都不产生任何后果。
             return tuple(walk.effects)
+        # 阻塞前的 Effect 与下方物化的 RuleAgenda 在同一动作事务提交；Executor
+        # 从冻结 cursor 继续，不能重放这些前缀 Effect。
+        return tuple(walk.effects)
 
-        # 既不是检定、也没走到终点：停在 invoke_ruleset_action、循环、未知步或
-        # 预算耗尽上。这类分支要靠 RuleAgenda 恢复才能跑完，而恢复侧还没有生产
-        # worker。只提交走过的那一半会把世界留在半截状态（例如昏迷没生效，却已经
-        # 标记见过身影），比什么都不做更糟——所以明确拒绝，让它可见地失败。
-        AdjudicationEngineService._reject_validation(
-            "RULE_BUDGET_EXCEEDED",
-            repairability="hard_reject",
-            fault="engine",
-            player_safe_reason="规则处理暂时无法完成",
-            internal_reason=(
-                f"Rule {rule.id} 的分支 {branch_id} 停在 {walk.suspended_kind} 上，"
-                "当前没有可恢复的执行器，拒绝提交半截后果"
-            ),
-            classification_coverage="rule_effects_excluded",
+    @staticmethod
+    def _completed_rule_presentation(
+        runtime: EngineRuntimeSnapshot,
+        *,
+        adjudication: ActionAdjudication,
+        passed: bool,
+        check_run: CheckRun | None,
+    ) -> tuple[str, str] | None:
+        """只在成功分支稳定结束后发布模组作者提供的玩家安全摘要。"""
+
+        decision = adjudication.rule_decision
+        if not passed or decision is None or not runtime.is_v3:
+            return None
+        rule, branch_id = resolve_rule_option(
+            runtime.v3,
+            rule_id=decision.rule_id,
+            option_id=decision.option_id,
         )
+        if rule.presentation is None:
+            return None
+        # 含显式 PresentationStep 的多分支规则由路径决定何时公开；不能把一个
+        # 分支的摘要自动套到同 Rule 的其他选项上。
+        if any(isinstance(step, PresentationStep) for step in rule.execution.steps):
+            return None
+        check_step, _ = pending_check_for(rule, branch_id)
+        if check_step is not None:
+            if check_run is None:
+                return None
+            degree = (check_run.final_result or check_run.roll).degree
+            walk = walk_rule_from(rule, check_step.result_routes[degree])
+        else:
+            walk = walk_rule(rule, branch_id=branch_id)
+        if not walk.completed:
+            return None
+        return rule.presentation.id, rule.presentation.player_safe_summary
 
     def _finalize_action(
         self,
@@ -2180,6 +2238,28 @@ class AdjudicationEngineService:
                 offset=len(events) + 1,
             )
             events.extend(emitted)
+        presentation = self._completed_rule_presentation(
+            runtime,
+            adjudication=adjudication,
+            passed=passed,
+            check_run=check_run,
+        )
+        if presentation is not None:
+            presentation_id, player_safe_summary = presentation
+            events.append(
+                self._event_from_state(
+                    state,
+                    room_id=runtime.game_state.room_id,
+                    offset=len(events) + 1,
+                    request_id=request_id,
+                    actor_id=adjudication.actor_id,
+                    event_type="rule.presentation",
+                    payload={
+                        "presentation_id": presentation_id,
+                        "player_safe_summary": player_safe_summary,
+                    },
+                )
+            )
         events.append(
             self._event_from_state(
                 state,
@@ -2191,18 +2271,152 @@ class AdjudicationEngineService:
                 payload={"action_request_id": adjudication.request_id},
             )
         )
+        state = self._materialize_agent_rule_agenda(
+            runtime,
+            state=state,
+            source_event=events[-1],
+            adjudication=adjudication,
+            check_run=check_run,
+        )
         state, events = self._apply_event_rules(
             runtime,
             state=state,
             events=events,
             request_id=request_id,
             actor_id=adjudication.actor_id,
+            check_run=check_run,
         )
         state = state.model_copy(
             update={"event_sequence": runtime.game_state.event_sequence + len(events)},
             deep=True,
         )
         return state, tuple(events)
+
+    def _materialize_agent_rule_agenda(
+        self,
+        runtime: EngineRuntimeSnapshot,
+        *,
+        state: GameState,
+        source_event: DomainEvent,
+        adjudication: ActionAdjudication,
+        check_run: CheckRun | None,
+    ) -> GameState:
+        """把 agent_match 分支的剩余阻塞步骤冻结为可靠 Agenda。"""
+
+        decision = adjudication.rule_decision
+        if decision is None or not runtime.is_v3:
+            return state
+        rule, branch_id = resolve_rule_option(
+            runtime.v3,
+            rule_id=decision.rule_id,
+            option_id=decision.option_id,
+        )
+        check_step, _ = pending_check_for(rule, branch_id)
+        if (
+            isinstance(check_step, CheckStep)
+            and check_step.check.initiation_kind == "passive_rule"
+        ):
+            # 被动检定必须保留在 Agenda 内，由 execution receipt 保证只掷一次。
+            walk = walk_rule(rule, branch_id=branch_id)
+        elif check_step is not None:
+            if check_run is None:
+                return state
+            degree = (check_run.final_result or check_run.roll).degree
+            route = check_step.result_routes[degree]
+            walk = walk_rule_from(rule, route)
+        else:
+            walk = walk_rule(rule, branch_id=branch_id)
+        if walk.completed:
+            return state
+        if walk.suspended_kind in {"loop", "step_budget", "unknown_step"}:
+            self._reject_validation(
+                "RULE_BUDGET_EXCEEDED",
+                repairability="hard_reject",
+                fault="engine",
+                player_safe_reason="规则处理暂时无法完成",
+            )
+        if walk.step_count > rule.limits.max_steps:
+            # Rule 自身的预算必须在初始 Engine 事务内生效，不能先提交前置
+            # Effect，再把一个已经越界的 Agenda 留给后台 Executor 收拾。
+            self._reject_validation(
+                "RULE_BUDGET_EXCEEDED",
+                repairability="hard_reject",
+                fault="engine",
+                player_safe_reason="规则处理暂时无法完成",
+            )
+        turn_id = current_turn_id()
+        actor = state.actors.get(adjudication.actor_id)
+        if turn_id is None or actor is None:
+            # 无可靠 Turn 就没有 receipt 和恢复 owner，禁止提交不可恢复的半链。
+            self._reject_validation(
+                "RULE_BUDGET_EXCEEDED",
+                repairability="hard_reject",
+                fault="engine",
+                player_safe_reason="规则处理暂时无法完成",
+                internal_reason="阻塞 Rule 分支缺少可靠 Turn 身份",
+            )
+        agenda = create_rule_agenda(
+            agenda_id=self._new_id("agenda"),
+            room_id=state.room_id,
+            module=runtime.v3,
+            correlation_id=adjudication.request_id,
+            root_source=AgendaSource(kind="action", id=adjudication.request_id),
+            revision=str(runtime.game_state.event_sequence),
+            origin_turn_id=turn_id,
+            active_turn_id=turn_id,
+            player_id=actor.player_id,
+            actor_id=adjudication.actor_id,
+            current_source_event_id=source_event.event_id,
+        )
+        status = agenda_status_for_walk(rule, walk)
+        boundary_step = next(
+            (
+                step
+                for step in rule.execution.steps
+                if step.id == walk.suspended_at
+                and isinstance(step, AwaitPlayerInputStep)
+            ),
+            None,
+        )
+        agenda = agenda.model_copy(
+            update={
+                "status": status,
+                "source_event_ids": (source_event.event_id,),
+                "queue": (
+                    AgendaItem(
+                        source_event_id=source_event.event_id,
+                        event_sequence=source_event.sequence,
+                        rule_id=rule.id,
+                        rule_priority=rule.priority,
+                        branch_id=branch_id,
+                        status="running",
+                    ),
+                ),
+                "current_rule_id": rule.id,
+                "current_branch_id": branch_id,
+                "current_step_id": walk.suspended_at,
+                "step_count": walk.step_count,
+                "chain_depth": 1,
+                "max_chain_depth": min(
+                    agenda.max_chain_depth, rule.limits.max_chain_depth
+                ),
+                "max_steps": min(agenda.max_steps, rule.limits.max_steps),
+                # 首次提交即可直接停在玩家输入边界；不能依赖 Executor 再 claim
+                # 一次，因为 awaiting_player_input 按定义不可自动 claim。
+                "active_turn_id": None
+                if status == "awaiting_player_input"
+                else turn_id,
+                "pending_boundary_id": (
+                    boundary_step.boundary_id or boundary_step.id
+                    if boundary_step is not None
+                    else None
+                ),
+            },
+            deep=True,
+        )
+        agendas = dict(state.rule_agendas)
+        agendas[agenda.agenda_id] = agenda
+        return state.model_copy(update={"rule_agendas": agendas}, deep=True)
 
     def _apply_event_rules(
         self,
@@ -2212,6 +2426,7 @@ class AdjudicationEngineService:
         events: list[DomainEvent],
         request_id: str,
         actor_id: str,
+        check_run: CheckRun | None = None,
     ) -> tuple[GameState, list[DomainEvent]]:
         if runtime.is_v3:
             return self._apply_v3_event_rules(
@@ -2220,6 +2435,7 @@ class AdjudicationEngineService:
                 events=events,
                 request_id=request_id,
                 actor_id=actor_id,
+                check_run=check_run,
             )
 
         cursor = 0
@@ -2284,6 +2500,7 @@ class AdjudicationEngineService:
         events: list[DomainEvent],
         request_id: str,
         actor_id: str,
+        check_run: CheckRun | None,
     ) -> tuple[GameState, list[DomainEvent]]:
         """Run event Rules in queue order and persist the first blocked cursor.
 
@@ -2291,6 +2508,8 @@ class AdjudicationEngineService:
         and therefore committed atomically by ``commit_adjudication``.
         """
 
+        turn_id = current_turn_id()
+        actor = state.actors.get(actor_id)
         agenda = create_rule_agenda(
             agenda_id=self._new_id("agenda"),
             room_id=runtime.game_state.room_id,
@@ -2298,6 +2517,15 @@ class AdjudicationEngineService:
             correlation_id=request_id,
             root_source=AgendaSource(kind="action", id=request_id),
             revision=str(runtime.game_state.event_sequence),
+            # 可靠 Turn 内的新 Agenda 一律冻结可信身份；无 Turn 的离线旧入口仍按
+            # v1 写入并保持只读兼容，后台执行器不会收养它。
+            origin_turn_id=turn_id,
+            active_turn_id=turn_id,
+            player_id=actor.player_id
+            if turn_id is not None and actor is not None
+            else None,
+            actor_id=actor_id if turn_id is not None else None,
+            current_source_event_id=events[0].event_id if turn_id is not None else None,
         )
         queue = []
         source_event_ids: list[str] = []
@@ -2441,10 +2669,57 @@ class AdjudicationEngineService:
                         "current_rule_id": rule.id,
                         "current_branch_id": queue[item_index].branch_id,
                         "current_step_id": walk.suspended_at,
+                        "current_source_event_id": source_event.event_id,
+                        "pending_check_id": (
+                            check_run.check_id
+                            if walk.suspended_kind == "adjudicated_check"
+                            and check_run is not None
+                            else None
+                        ),
+                        "active_turn_id": None
+                        if status == "awaiting_player_input"
+                        else agenda.active_turn_id,
+                        "pending_boundary_id": (
+                            (
+                                next(
+                                    step
+                                    for step in rule.execution.steps
+                                    if step.id == walk.suspended_at
+                                    and isinstance(step, AwaitPlayerInputStep)
+                                ).boundary_id
+                                or walk.suspended_at
+                            )
+                            if status == "awaiting_player_input"
+                            else None
+                        ),
                     }
                 )
                 suspended = True
                 break
+
+        if suspended and cursor < len(events):
+            # 阻塞前 Effect 已经产生的事件也属于同一权威提交。当前 Rule 不能继续
+            # 执行时，仍要把这些事件匹配成排队项，交给 Agenda 在阻塞解除后处理。
+            # 否则它们既不会被本循环扫描，也不会出现在 Executor 的后续事件集中。
+            for source_event in tuple(events[cursor:]):
+                if source_event.type in {"rule.triggered", "rule.check_resolved"}:
+                    continue
+                pending_rules = []
+                for rule in matching_event_rules(
+                    runtime.v3,
+                    event_type=source_event.type,
+                    state=state,
+                    actor_id=actor_id,
+                ):
+                    fire_key = (rule.id, source_event.event_id)
+                    if fire_key in fired:
+                        continue
+                    fired.add(fire_key)
+                    pending_rules.append(rule)
+                    queue.append(agenda_item_for_event(rule, source_event))
+                if pending_rules and source_event.event_id not in source_event_ids:
+                    source_event_ids.append(source_event.event_id)
+            queue = list(ordered_agenda_items(tuple(queue)))
 
         if not queue:
             return state, events
@@ -2955,13 +3230,13 @@ class AdjudicationEngineService:
                 else (advanced_to_next(runtime.v3, state.world_time),)
             )
             events: list[DomainEvent] = []
-            for index, advanced in enumerate(points, start=offset):
+            for advanced in points:
                 state = state.model_copy(update={"world_time": advanced}, deep=True)
                 events.append(
                     self._event_from_state(
                         state,
                         room_id=room_id,
-                        offset=index,
+                        offset=offset + len(events),
                         request_id=request_id,
                         actor_id=actor_id,
                         event_type="time.point_entered",
@@ -2973,6 +3248,36 @@ class AdjudicationEngineService:
                         },
                     )
                 )
+                # 临时 condition 的到期点属于权威世界时间；时间越过边界时在同一
+                # Effect 段清除，不能依赖进程计时器或 Narrator 记忆。
+                for expired_actor_id, condition in self._expired_conditions(state):
+                    actor = state.actors[expired_actor_id]
+                    conditions = tuple(
+                        item for item in actor.conditions if item != condition
+                    )
+                    actor_state = deepcopy(actor.state)
+                    expirations = actor_state.get("condition_expirations")
+                    if isinstance(expirations, dict):
+                        expirations = deepcopy(expirations)
+                        expirations.pop(condition, None)
+                        actor_state["condition_expirations"] = expirations
+                    actors = dict(state.actors)
+                    actors[expired_actor_id] = actor.model_copy(
+                        update={"conditions": conditions, "state": actor_state},
+                        deep=True,
+                    )
+                    state = state.model_copy(update={"actors": actors}, deep=True)
+                    events.append(
+                        self._event_from_state(
+                            state,
+                            room_id=room_id,
+                            offset=offset + len(events),
+                            request_id=request_id,
+                            actor_id=expired_actor_id,
+                            event_type="actor.condition_expired",
+                            payload={"condition": condition},
+                        )
+                    )
             return state, tuple(events)
         elif isinstance(effect, MarkCoreResolvedEffect):
             state = state.model_copy(update={"core_resolved": True}, deep=True)
@@ -3038,6 +3343,27 @@ class AdjudicationEngineService:
                 event_id=effect_event_id,
             ),
         )
+
+    @staticmethod
+    def _expired_conditions(state: GameState) -> tuple[tuple[str, str], ...]:
+        """读取到期元数据，返回已被当前世界时间越过的临时 condition。"""
+
+        expired: list[tuple[str, str]] = []
+        current_hour = state.world_time.current.absolute_hour
+        for actor_id, actor in state.actors.items():
+            expirations = actor.state.get("condition_expirations")
+            if not isinstance(expirations, dict):
+                continue
+            for condition, target_hour in expirations.items():
+                if (
+                    isinstance(condition, str)
+                    and isinstance(target_hour, int)
+                    and not isinstance(target_hour, bool)
+                    and target_hour <= current_hour
+                    and condition in actor.conditions
+                ):
+                    expired.append((actor_id, condition))
+        return tuple(sorted(expired))
 
     @staticmethod
     def _run_view(check_run: CheckRun):

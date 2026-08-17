@@ -324,7 +324,12 @@ class Narrator:
             for item in required
             if any(
                 label and label in output.text
-                for label in (item.subject_name, *item.subject_aliases)
+                for label in (
+                    item.description
+                    if item.kind == "rule_presentation"
+                    else item.subject_name,
+                    *item.subject_aliases,
+                )
             )
         )
         if len(mentioned_required) != len(required):
@@ -375,11 +380,9 @@ class Narrator:
         shifted_entity_id = unsupported_focus_shift_claim(
             output.text,
             focus_entity_ids=getattr(context, "focus_entity_ids", ()),
-            visible_entities=tuple(
-                (
-                    *getattr(scene, "visible_entities", ()),
-                    *getattr(scene, "visible_actors", ()),
-                )
+            visible_entities=(
+                *getattr(scene, "visible_entities", ()),
+                *getattr(scene, "visible_actors", ()),
             ),
             evidence_subject_ids={
                 item.subject_id for item in getattr(context, "narration_evidence", ())

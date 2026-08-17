@@ -119,6 +119,36 @@
       ],
       "title": "OpeningSceneContext",
       "type": "object"
+    },
+    "WorldClockView": {
+      "additionalProperties": false,
+      "description": "Just the clock, sampled at one point in a turn (#245 §二.2).\n\nA PlayerView only ever carries *now*. A turn that advanced time therefore\nleaves no record of when its earlier steps happened, and the Narrator — who\nis handed the post-turn view — writes the whole turn at the final hour:\nwalk to the inn at noon, sleep until eight, narrated as arriving after dark.\nThis is the one field that repairs that, so it deliberately carries the clock\nalone and none of the other world flags.",
+      "properties": {
+        "day_index": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Day Index",
+          "type": "integer"
+        },
+        "hour_of_day": {
+          "default": 0,
+          "maximum": 23,
+          "minimum": 0,
+          "title": "Hour Of Day",
+          "type": "integer"
+        },
+        "time_of_day": {
+          "default": "day",
+          "enum": [
+            "day",
+            "night"
+          ],
+          "title": "Time Of Day",
+          "type": "string"
+        }
+      },
+      "title": "WorldClockView",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -132,6 +162,9 @@
     },
     "scene": {
       "$ref": "#/$defs/OpeningSceneContext"
+    },
+    "world_time": {
+      "$ref": "#/$defs/WorldClockView"
     },
     "participants": {
       "items": {
@@ -150,6 +183,7 @@
   "required": [
     "background",
     "scene",
+    "world_time",
     "participants"
   ],
   "title": "OpeningNarrationContext",

@@ -282,6 +282,9 @@ class SubmitProposalRequest(ContractModel):
     source_revision: str = Field(min_length=1, max_length=200)
     proposal: SingleActionProposal
     requested_goal: str | None = Field(default=None, min_length=1, max_length=2000)
+    requested_step_kind: (
+        Literal["travel", "wait", "rest", "action", "dialogue"] | None
+    ) = None
 
     @model_validator(mode="after")
     def require_trusted_goal_for_v2(self) -> SubmitProposalRequest:
@@ -348,6 +351,9 @@ class AgendaContinuationCandidate(ContractModel):
 
 
 HostDecisionProposal: TypeAlias = Annotated[
-    ClarificationProposal | SingleActionProposal | ActionPlanProposal,
+    ClarificationProposal
+    | SingleActionProposal
+    | ActionPlanProposal
+    | AgendaContinuationProposal,
     Field(discriminator="kind"),
 ]

@@ -18,6 +18,7 @@ from collaboration_framework.contracts import (
     ModuleContentV3,
     PlotThreadSpec,
     PredicateCondition,
+    PresentationStep,
     RuleInputOption,
     TransitionPlotThreadEffect,
 )
@@ -289,11 +290,11 @@ def test_waiting_input_v2_has_finite_options_and_legacy_step_still_reads() -> No
     )
     assert "next_step_id" not in continuation.model_dump(mode="json")
 
-    # PR1 只发布恢复契约，不提前扩大生产 Host 输出联合。
-    with pytest.raises(ValidationError):
-        TypeAdapter(HostDecisionProposal).validate_python(
-            continuation.model_dump(mode="json")
-        )
+    # PR2 允许 Host 选择服务端发布的有限 option，但仍不暴露 next_step_id。
+    parsed = TypeAdapter(HostDecisionProposal).validate_python(
+        continuation.model_dump(mode="json")
+    )
+    assert parsed == continuation
 
 
 def test_plot_thread_initialization_and_terminal_transition_are_authoritative() -> None:
@@ -444,6 +445,78 @@ def test_host_effect_union_cannot_construct_plot_thread_transition() -> None:
                 "to_status": "resolved",
             }
         )
+
+
+def test_blocking_agent_rule_requires_player_safe_presentation() -> None:
+    """换用其他模组时，阻塞 Agenda 也不能在没有安全结果的情况下发布。"""
+
+    module = _module()
+    rule = next(item for item in module.rules if item.id == "crypt_stench_on_entry")
+    steps = tuple(
+        step.model_copy(update={"next_step_id": "crypt_finish"}, deep=True)
+        if step.id == "faint_willing"
+        else step
+        for step in rule.execution.steps
+        if not isinstance(step, PresentationStep)
+    )
+    changed_rule = rule.model_copy(
+        update={
+            "presentation": None,
+            "execution": rule.execution.model_copy(update={"steps": steps}, deep=True),
+        },
+        deep=True,
+    )
+    changed = module.model_copy(
+        update={
+            "rules": tuple(
+                changed_rule if item.id == changed_rule.id else item
+                for item in module.rules
+            )
+        },
+        deep=True,
+    )
+
+    report = validate_module_v3(changed)
+
+    assert "MODULE_V3_AGENDA_PRESENTATION_REQUIRED" in {
+        issue.code for issue in report.errors
+    }
+
+
+def test_blocking_agent_rule_rejects_presentation_on_unrelated_branch() -> None:
+    """其他分支存在 Presentation，也不能掩盖阻塞结果路径缺少安全证据。"""
+
+    module = _module()
+    rule = next(item for item in module.rules if item.id == "crypt_stench_on_entry")
+    steps = tuple(
+        step.model_copy(update={"next_step_id": "present_faint"}, deep=True)
+        if step.id == "enter_safely"
+        else step.model_copy(update={"next_step_id": "crypt_finish"}, deep=True)
+        if step.id == "faint_willing"
+        else step
+        for step in rule.execution.steps
+    )
+    changed_rule = rule.model_copy(
+        update={
+            "execution": rule.execution.model_copy(update={"steps": steps}, deep=True)
+        },
+        deep=True,
+    )
+    changed = module.model_copy(
+        update={
+            "rules": tuple(
+                changed_rule if item.id == changed_rule.id else item
+                for item in module.rules
+            )
+        },
+        deep=True,
+    )
+
+    report = validate_module_v3(changed)
+
+    assert "MODULE_V3_AGENDA_PRESENTATION_REQUIRED" in {
+        issue.code for issue in report.errors
+    }
 
 
 def test_module_validation_checks_plot_dependencies_and_transition_targets() -> None:

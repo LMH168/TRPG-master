@@ -21,10 +21,12 @@ from collaboration_framework.contracts import (
     ActionTarget,
     AdjudicationExecution,
     AdvanceWorldTimeEffect,
+    AgendaContinuationProposal,
     CancelActionPlanRequest,
     CancelCheckChoice,
     ChangeEntityStateEffect,
     CheckDecisionRequest,
+    CommittedResult,
     ConsumeEntityEffect,
     ContractError,
     EnsureRuntimeEntityEffect,
@@ -37,21 +39,25 @@ from collaboration_framework.contracts import (
     KeeperCapabilityView,
     MarkCoreResolvedEffect,
     MoveEntityEffect,
+    NarrationEvidence,
     NarrativeOnlyEffect,
     NoAdjudicationCheck,
     PlayerInput,
     PlayerView,
     PostRollDecisionRequest,
-    RequiredAdjudicationCheck,
     RevealInformationEffect,
-    RuleDecisionRef,
     SetEndingAvailabilityEffect,
     SetVisibilityEffect,
     SingleActionProposal,
-    SkillCheckCandidate,
     WorldClockView,
 )
-from collaboration_framework.engine import AdjudicationEngineService, EngineStore, RuleEngineService
+from collaboration_framework.engine import (
+    AdjudicationEngineService,
+    AgendaStepExecution,
+    EngineStore,
+    RuleAgendaExecutor,
+    RuleEngineService,
+)
 from collaboration_framework.host.adapters import InMemoryActionPlanRunStore
 from collaboration_framework.host.application import (
     ActionPlanOrchestrator,
@@ -86,6 +92,7 @@ from collaboration_framework.memory import (
     MemoryReadScope,
     MemoryStore,
 )
+from collaboration_framework.runtime_context import current_turn_id
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -362,6 +369,19 @@ class DeterministicHostTurnDecisionModel:
 
     async def generate(self, context: HostAgentContext) -> HostDecisionProposal:
         utterance = context.player_input.utterance
+        continuation_matches = [
+            (candidate, option)
+            for candidate in context.agenda_continuation_candidates
+            for option in candidate.options
+            if any(hint in utterance for hint in option.semantic_hints)
+        ]
+        if len(continuation_matches) == 1:
+            candidate, option = continuation_matches[0]
+            return AgendaContinuationProposal(
+                agenda_id=candidate.agenda_id,
+                boundary_id=candidate.boundary_id,
+                option_id=option.option_id,
+            )
         separators = ("然后", "接着", "随后", "再去", "，再", ";", "；")
         pieces = [utterance]
         for separator in separators:
@@ -409,6 +429,15 @@ class DeterministicHostTurnDecisionModel:
                 )
             )
 
+        published_proposal = _proposal_from_published_rule_scope(
+            capabilities=context.keeper_capabilities,
+            semantic_goal=utterance,
+        )
+        if published_proposal is not None:
+            # 单动作 Fake Host 与计划步骤遵守同一边界：这里只表达玩家安全的
+            # 动作范围，具体 Rule、技能和 Effect 由 Engine 权威绑定。
+            return published_proposal
+
         # A single action uses the same player-safe Rule Match View as a plan
         # step.  Without this bridge, the Fake planner returned narrative_only
         # for every non-travel utterance, so CI could exercise v3 rules only by
@@ -447,6 +476,30 @@ class DeterministicHostTurnDecisionModel:
                 success_effects=(NarrativeOnlyEffect(),),
             )
         )
+
+
+class TravelFirstHostTurnDecisionModel:
+    """优先解析玩家安全视图中唯一、明确的纯移动，再调用不可信 Host 模型。"""
+
+    def __init__(self, fallback: HostTurnDecisionModel) -> None:
+        self._fallback = fallback
+
+    async def generate(self, context: HostAgentContext) -> HostDecisionProposal:
+        """纯移动不需要模型猜测；复合行动和歧义输入仍完整交给 Host。"""
+
+        proposal = _direct_travel_proposal(
+            context.player_view,
+            context.player_input.utterance,
+        )
+        if proposal is not None:
+            return proposal
+        compound = _compound_travel_plan_proposal(
+            context.player_view,
+            context.player_input.utterance,
+        )
+        if compound is not None:
+            return compound
+        return await self._fallback.generate(context)
 
 
 def _compact_travel_plan(view: PlayerView, utterance: str) -> ActionPlan | None:
@@ -697,6 +750,87 @@ def _match_travel_target(view: PlayerView, text: str) -> _TravelTarget | None:
     return ranked[0][2]
 
 
+def _direct_travel_proposal(
+    view: PlayerView,
+    utterance: str,
+) -> SingleActionProposal | None:
+    """把“去 + 唯一已知地点”编译为 Proposal，不截断同行或后续动作。"""
+
+    destination = _match_travel_target(view, utterance)
+    if destination is None or destination.id == view.scene.id:
+        return None
+
+    labels: list[str] = [
+        destination.name,
+        destination.id,
+        *_ambient_venue_aliases(destination.id),
+    ]
+    for exit_view in view.scene.available_exits:
+        if exit_view.destination is None or exit_view.destination.scene_id != destination.id:
+            continue
+        labels.extend((exit_view.name, exit_view.id, *exit_view.aliases))
+    anchor = _best_label_overlap(utterance, tuple(labels))
+    if anchor is None:
+        return None
+
+    residual = utterance.replace(anchor, "", 1)
+    residual = re.sub(r"[\s，,。.!！?？；;]+", "", residual)
+    # 这里只接受完整语义等于“移动”的短句。任何额外主体、同行要求、调查或
+    # 后续步骤都会令匹配失败，原句随即原样交给 Host/ActionPlan。
+    simple_travel = re.fullmatch(
+        r"(?:我|我们)?"
+        r"(?:现在|马上|立刻|这就|直接|先|再)?"
+        r"(?:想要|想|要|打算|准备|决定)?"
+        r"(?:现在|马上|立刻|这就|直接|先|再)?"
+        r"(?:去|前往|进入|抵达|到)"
+        r"(?:一下)?(?:吧|了)?",
+        residual,
+    )
+    if simple_travel is None:
+        return None
+
+    return _proposal_from_adjudication(
+        ActionAdjudication(
+            request_id="application-owned",
+            source_revision=view.revision,
+            actor_id=view.actor_id,
+            summary=utterance,
+            target=ActionTarget(kind="location", id=destination.id),
+            method=ActionMethod(family="travel", description=utterance),
+            check=NoAdjudicationCheck(),
+            success_effects=(EnterLocationEffect(location_id=destination.id),),
+        )
+    )
+
+
+def _compound_travel_plan_proposal(
+    view: PlayerView,
+    utterance: str,
+) -> ActionPlanProposal | None:
+    """保留带明确连接词的复合行动，并确定其中至少一个可信移动步骤。"""
+
+    clauses = tuple(
+        clause.strip(" \t，,。；;")
+        for clause in re.split(
+            r"\s*(?:，|,)?(?:然后|接着|随后)\s*"
+            r"|\s*[；;]\s*"
+            r"|\s*[，,]\s*(?=再(?:去|前往|进入|抵达|到))",
+            utterance,
+        )
+        if clause.strip(" \t，,。；;")
+    )
+    if len(clauses) < 2:
+        return None
+    # 只有至少一个子句能由当前 PlayerView 唯一证明为纯移动时才接管拆分；
+    # 其他子句只保留玩家原话，不在这里猜测动作类型、技能或 Effect。
+    if not any(_direct_travel_proposal(view, clause) is not None for clause in clauses):
+        return None
+    return ActionPlanProposal(
+        semantic_goal=utterance,
+        steps=tuple(ActionPlanProposalStep(semantic_goal=clause) for clause in clauses),
+    )
+
+
 def _best_travel_label_score(
     text: str,
     labels: tuple[str, ...],
@@ -854,6 +988,7 @@ class ActionPlanTurnApplication:
         recent_history_source: RecentHistorySource,
         recent_history_budget: RecentHistoryBudget,
         recent_history_enabled: bool,
+        agenda_executor: RuleAgendaExecutor | None = None,
         memory_store: MemoryStore | None = None,
         memory_budget: MemoryBudget | None = None,
     ) -> None:
@@ -867,6 +1002,7 @@ class ActionPlanTurnApplication:
         self._recent_history_enabled = recent_history_enabled
         self._memory_store = memory_store
         self._memory_budget = memory_budget or MemoryBudget()
+        self._agenda_executor = agenda_executor
         self._narrator = narrator
         self._projector = PlayerViewProjector(engine)
         self._dispatcher = HostTurnDecisionExecutor(
@@ -955,6 +1091,15 @@ class ActionPlanTurnApplication:
             player_input=player_input,
             player_view=view,
         )
+        agenda_candidates = (
+            await self._agenda_executor.continuation_candidates(
+                room_id=room_id,
+                player_id=player_id,
+                actor_id=actor_id,
+            )
+            if self._agenda_executor is not None
+            else ()
+        )
         try:
             decision = await self._planner.generate(
                 HostAgentContext(
@@ -962,6 +1107,7 @@ class ActionPlanTurnApplication:
                     player_view=view,
                     recent_history=recent_history,
                     memory_context=memory_context,
+                    agenda_continuation_candidates=agenda_candidates,
                     # A single action is adjudicated right here in the planner call,
                     # so it needs the same Keeper vocabulary a plan step gets.
                     keeper_capabilities=keeper_capabilities,
@@ -984,6 +1130,14 @@ class ActionPlanTurnApplication:
                 player_view=view,
             )
         await _emit_phase(on_phase, "executing_action")
+        if isinstance(decision, AgendaContinuationProposal):
+            return await self._from_agenda_continuation(
+                player_input=player_input,
+                decision=decision,
+                initial_view=view,
+                recent_history=recent_history,
+                on_phase=on_phase,
+            )
         result = await self._dispatcher.execute(
             player_input,
             decision,
@@ -1510,10 +1664,12 @@ class ActionPlanTurnApplication:
                 "行动计划尚未到达可返回状态",
                 retryable=True,
             )
+        agenda_executions = await self._drain_rule_agendas(player_input)
         context = await self._orchestrator.build_narration_context(
             player_input,
             verify_fingerprint=verify_fingerprint,
         )
+        context = self._merge_agenda_results(context, agenda_executions)
         narration = await self._narrate(context)
         return ActionPlanTurnResult(
             player_input=player_input,
@@ -1522,6 +1678,131 @@ class ActionPlanTurnApplication:
             execution=result.latest_execution,
             narration=narration,
             plan_id=run.plan_id,
+        )
+
+    async def _from_agenda_continuation(
+        self,
+        *,
+        player_input: PlayerInput,
+        decision: AgendaContinuationProposal,
+        initial_view: PlayerView,
+        recent_history: RecentTurnContext | None,
+        on_phase: TurnPhaseObserver | None,
+    ) -> ActionPlanTurnResult:
+        """恢复有限规则选择，并按最终权威证据生成本轮叙事。"""
+
+        if self._agenda_executor is None:
+            raise TurnExecutionError(
+                "AGENDA_CONTINUATION_UNAVAILABLE",
+                "当前等待选择暂时无法恢复",
+                retryable=True,
+            )
+        turn_id = current_turn_id()
+        if turn_id is None:
+            raise TurnExecutionError(
+                "AGENDA_CONTINUATION_UNAVAILABLE",
+                "当前等待选择缺少可靠回合身份",
+                retryable=True,
+            )
+        await self._agenda_executor.resume_continuation(
+            decision,
+            room_id=player_input.room_id,
+            player_id=player_input.player_id,
+            actor_id=player_input.actor_id,
+            turn_id=turn_id,
+            source_revision=initial_view.revision,
+        )
+        await self._agenda_executor.drain(
+            room_id=player_input.room_id,
+            turn_id=turn_id,
+        )
+        executions = await self._agenda_executor.executions_for_turn(
+            room_id=player_input.room_id,
+            turn_id=turn_id,
+        )
+        agenda_status = await self._agenda_executor.continuation_status(
+            room_id=player_input.room_id,
+            agenda_id=decision.agenda_id,
+            player_id=player_input.player_id,
+            actor_id=player_input.actor_id,
+        )
+        final_view = await self._projector.project(player_input)
+        await _emit_phase(on_phase, "refreshing_player_view")
+        await _emit_phase(on_phase, "generating_narration")
+
+        if agenda_status == "awaiting_player_input":
+            candidates = await self._agenda_executor.continuation_candidates(
+                room_id=player_input.room_id,
+                player_id=player_input.player_id,
+                actor_id=player_input.actor_id,
+            )
+            candidate = next(
+                (item for item in candidates if item.agenda_id == decision.agenda_id),
+                None,
+            )
+            if candidate is None:
+                raise TurnExecutionError(
+                    "AGENDA_CONTINUATION_UNAVAILABLE",
+                    "当前等待选择暂时无法恢复",
+                    retryable=True,
+                )
+            option_text = " / ".join(option.semantic_hints[0] for option in candidate.options)
+            # 有限选项来自固定 ModuleVersion，可以确定性展示；无需让模型改写后
+            # 再承担漏项或暴露隐藏游标的风险。当前 Turn 正常结束并释放房间。
+            return ActionPlanTurnResult(
+                player_input=player_input,
+                player_view=final_view,
+                status="completed",
+                narration=NarrationOutput(
+                    text=f"{candidate.player_safe_prompt}（可选：{option_text}）"
+                ),
+            )
+
+        if agenda_status == "failed":
+            return ActionPlanTurnResult(
+                player_input=player_input,
+                player_view=final_view,
+                status="completed",
+                narration=NarrationOutput(text="这个选择未能继续推进当前规则流程，请换一种行动。"),
+            )
+        if agenda_status != "stable":
+            raise TurnExecutionError(
+                "AGENDA_CONTINUATION_UNSETTLED",
+                "当前规则流程尚未到达稳定状态",
+                retryable=True,
+            )
+
+        summary = CompletedPlanStepSummary(
+            step_index=0,
+            semantic_goal=player_input.utterance,
+            outcome="success",
+            goal_outcome="legacy_unknown",
+            view_revision=final_view.revision,
+            world_time_after=WorldClockView.from_world(final_view.world),
+        )
+        context = NarrationContext(
+            background=final_view.background,
+            player_input=player_input,
+            plan_goal=player_input.utterance,
+            termination_status="resolved",
+            completed_steps=(summary,),
+            player_view=final_view,
+            recent_history=self._rebind_recent_history(
+                recent_history,
+                player_view=final_view,
+            ),
+            memory_context=await self._read_memory_context(
+                player_input=player_input,
+                player_view=final_view,
+            ),
+            opening_world_time=WorldClockView.from_world(initial_view.world),
+        )
+        context = self._merge_agenda_results(context, executions)
+        return ActionPlanTurnResult(
+            player_input=player_input,
+            player_view=final_view,
+            status="completed",
+            narration=await self._narrate(context),
         )
 
     async def _from_single(
@@ -1560,6 +1841,14 @@ class ActionPlanTurnApplication:
                 "行动目标状态尚未完成，请重试",
                 retryable=True,
             )
+        agenda_executions = await self._drain_rule_agendas(player_input)
+        # Agenda 可能提交 SAN、condition 或规则 Effect；Narrator 只能读取 drain
+        # 后的最终视图，不能继续使用裁决返回时的旧快照。
+        final_view = await self._projector.project(player_input)
+        result = SingleActionTurnResult(
+            execution=result.execution,
+            player_view=final_view,
+        )
         completed_summary = CompletedPlanStepSummary(
             step_index=0,
             semantic_goal=summary,
@@ -1591,12 +1880,116 @@ class ActionPlanTurnApplication:
             allowed_evidence_refs=execution.public_event_refs,
             narration_evidence=execution.narration_evidence,
         )
+        context = self._merge_agenda_results(context, agenda_executions)
         return ActionPlanTurnResult(
             player_input=player_input,
             player_view=result.player_view,
             status="completed",
             execution=execution,
             narration=await self._narrate(context),
+        )
+
+    async def _drain_rule_agendas(
+        self,
+        player_input: PlayerInput,
+    ) -> tuple[AgendaStepExecution, ...]:
+        """推进 Agenda 并读取本 Turn 全部证明，覆盖提交后恢复场景。"""
+
+        turn_id = current_turn_id()
+        if self._agenda_executor is None or turn_id is None:
+            return ()
+        await self._agenda_executor.drain(
+            room_id=player_input.room_id,
+            turn_id=turn_id,
+        )
+        return await self._agenda_executor.executions_for_turn(
+            room_id=player_input.room_id,
+            turn_id=turn_id,
+        )
+
+    @staticmethod
+    def _merge_agenda_results(
+        context: NarrationContext,
+        executions: tuple[AgendaStepExecution, ...],
+    ) -> NarrationContext:
+        """把 Agenda 已提交的公开结果归入当前动作，供 Narrator 与恢复共用。"""
+
+        if not executions or not context.completed_steps:
+            return context
+        public_refs: list[str] = []
+        committed_results: list[CommittedResult] = []
+        narration_evidence: list[NarrationEvidence] = []
+        for execution in executions:
+            raw_refs = execution.result.get("public_event_refs", [])
+            if isinstance(raw_refs, list):
+                public_refs.extend(item for item in raw_refs if isinstance(item, str))
+            raw_results = execution.result.get("committed_results", [])
+            if not isinstance(raw_results, list):
+                continue
+            for payload in raw_results:
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    committed_results.append(CommittedResult.model_validate(payload))
+                except ValueError:
+                    # 历史或损坏的派生摘要不能扩大 Narrator 权限；权威状态仍保留。
+                    logger.warning(
+                        "agenda_narration_result_ignored",
+                        execution_id=execution.execution_id,
+                    )
+            raw_evidence = execution.result.get("narration_evidence", [])
+            if not isinstance(raw_evidence, list):
+                continue
+            for payload in raw_evidence:
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    narration_evidence.append(NarrationEvidence.model_validate(payload))
+                except ValueError:
+                    logger.warning(
+                        "agenda_narration_evidence_ignored",
+                        execution_id=execution.execution_id,
+                    )
+
+        last = context.completed_steps[-1]
+        event_refs = tuple(dict.fromkeys((*last.event_refs, *public_refs)))
+        results_by_identity = {
+            (
+                item.event_ref,
+                item.kind,
+                item.target_id,
+                item.state_key,
+                repr(item.state_value),
+            ): item
+            for item in (*last.committed_results, *committed_results)
+            if item.event_ref in event_refs
+        }
+        merged_last = last.model_copy(
+            update={
+                "view_revision": context.player_view.revision,
+                "event_refs": event_refs,
+                "committed_results": tuple(results_by_identity.values()),
+                "narration_evidence": tuple(
+                    {
+                        item.ref: item
+                        for item in (*last.narration_evidence, *narration_evidence)
+                        if item.ref in event_refs
+                    }.values()
+                ),
+            }
+        )
+        completed_steps = (*context.completed_steps[:-1], merged_last)
+        allowed_refs = tuple(
+            dict.fromkeys(ref for step in completed_steps for ref in step.event_refs)
+        )
+        return context.model_copy(
+            update={
+                "completed_steps": completed_steps,
+                "allowed_evidence_refs": allowed_refs,
+                "narration_evidence": tuple(
+                    item for step in completed_steps for item in step.narration_evidence
+                ),
+            }
         )
 
     async def _from_single_clarification(
@@ -1652,13 +2045,8 @@ class ActionPlanTurnApplication:
         self,
         context: NarrationContext,
     ) -> NarrationOutput:
-        if any(
-            getattr(step, "goal_outcome", "legacy_unknown")
-            in {"partially_achieved", "not_achieved"}
-            for step in context.completed_steps
-        ):
-            # 未完成持久目标时不让自由文本从检定成功外推伤势、死亡或物品变化。
-            return self._safe_narration_fallback(context)
+        # goal_outcome 未完成不等于“没有可叙述结果”。Narrator 仍可表达本轮
+        # committed_results，但后续持久声明校验会阻止它把检定成功外推为目标完成。
         for attempt in range(2):
             try:
                 return await self._narrator.narrate(context)
@@ -1759,6 +2147,9 @@ class ActionPlanTurnApplication:
             )
         sentences: list[str] = []
         for item in required:
+            if item.kind == "rule_presentation":
+                sentences.append(item.description.rstrip("。！？!?；;，,") + "。")
+                continue
             sentences.append(f"随着调查深入，你很快辨认出{item.subject_name}。")
             description = item.description.strip()
             if description:
@@ -2023,6 +2414,7 @@ def build_action_plan_turn_application(
     client=None,
     recent_history_source: RecentHistorySource | None = None,
     memory_store: MemoryStore | None = None,
+    agenda_executor: RuleAgendaExecutor | None = None,
 ) -> ActionPlanTurnApplication:
     """Compose the finite-plan path without changing the single-intent Engine."""
 
@@ -2092,6 +2484,24 @@ def build_action_plan_turn_application(
     )
     memory_budget = MemoryBudget(max_entries=8, max_chars=4000)
     history_source = recent_history_source or _EmptyRecentHistorySource()
+
+    async def drain_committed_step(player_input: PlayerInput) -> str | None:
+        """在 ActionPlan 两个步骤之间推进当前可靠 Turn 的自动 Agenda。"""
+
+        turn_id = current_turn_id()
+        if agenda_executor is None or turn_id is None:
+            return None
+        await agenda_executor.drain(
+            room_id=player_input.room_id,
+            turn_id=turn_id,
+        )
+        # 进程可能在 Agenda 已提交边界、ActionPlan 尚未保存状态时退出；恢复时
+        # 本次 drain 不会再次返回旧 execution，因此必须重新读取持久化边界。
+        return await agenda_executor.boundary_for_turn(
+            room_id=player_input.room_id,
+            turn_id=turn_id,
+        )
+
     orchestrator = ActionPlanOrchestrator(
         store=plan_store,
         adjudicator=adjudicator,
@@ -2103,17 +2513,19 @@ def build_action_plan_turn_application(
         recent_history_budget=recent_history_budget,
         memory_store=memory_store,
         memory_budget=memory_budget,
+        on_step_committed=drain_committed_step,
     )
     return ActionPlanTurnApplication(
         store=store,
         engine=engine,
         adjudication_engine=adjudication_engine,
-        planner=planner,
+        planner=TravelFirstHostTurnDecisionModel(planner),
         orchestrator=orchestrator,
         narrator=Narrator(narration_model),
         recent_history_source=history_source,
         recent_history_budget=recent_history_budget,
         recent_history_enabled=resolved.recent_history_enabled,
+        agenda_executor=agenda_executor,
         memory_store=memory_store,
         memory_budget=memory_budget,
     )
@@ -2124,6 +2536,13 @@ class _DeterministicStepAdjudicator:
     # fully implied by the safe view, then falls back to narrative-only.
 
     async def adjudicate(self, context: ActionPlanStepContext) -> SingleActionProposal:
+        published_proposal = _proposal_from_published_rule_scope(
+            capabilities=context.keeper_capabilities,
+            semantic_goal=context.step.semantic_goal,
+        )
+        if published_proposal is not None:
+            return published_proposal
+
         adjudication = _deterministic_step_adjudication(context)
         if adjudication is not None:
             return _proposal_from_adjudication(adjudication)
@@ -2162,6 +2581,15 @@ class _RuleFirstStepAdjudicator:
         self._fallback = fallback
 
     async def adjudicate(self, context: ActionPlanStepContext) -> SingleActionProposal:
+        published_proposal = _proposal_from_published_rule_scope(
+            capabilities=context.keeper_capabilities,
+            semantic_goal=context.step.semantic_goal,
+        )
+        if published_proposal is not None:
+            # 已发布 Rule 必须先于普通对话/观察快路径处理，否则同一句玩家输入会
+            # 被降级成 narrative-only，从而跳过模组规定的检定与结果。
+            return published_proposal
+
         # 确定性路径只处理当前 PlayerView 已完整证明的动作；无法确定时才调用
         # Host。整个异常收束由 ActionPlanOrchestrator 的步骤冻结边界统一负责。
         adjudication = _deterministic_step_adjudication(context)
@@ -2263,65 +2691,6 @@ def _deterministic_step_adjudication(
         "",
     ).strip(" ，,。")
     target = _match_visible_entity(context.player_view, action_text)
-    candidate, option = _match_rule_candidate(
-        context.keeper_capabilities,
-        action_text,
-        target.id if target is not None else None,
-    )
-    if candidate is not None and option is not None:
-        target_kind = (
-            candidate.target_kinds[0]
-            if candidate.target_kinds
-            else "entity"
-            if target is not None
-            else "location"
-        )
-        # 不掷骰的分支（例如 proceed）不能为了凑格式编一个技能出来：option id
-        # 不是技能名，`proceed` / `STR` 提交上去会被 Ruleset 快照拒绝。带检定的
-        # 分支才沿用 option id 作技能，Engine 仍会再校验一次。
-        check = (
-            RequiredAdjudicationCheck(
-                candidates=(
-                    SkillCheckCandidate(
-                        candidate_id=option.id,
-                        skill_id=option.id,
-                        difficulty="regular",
-                        method_summary=context.step.semantic_goal,
-                        player_safe_reason="使用当前地点公开的检定方式",
-                    ),
-                )
-            )
-            if option.requires_check
-            else NoAdjudicationCheck()
-        )
-        return ActionAdjudication(
-            request_id=context.step_request_id,
-            source_revision=context.player_view.revision,
-            actor_id=context.player_input.actor_id,
-            summary=context.step.semantic_goal,
-            target=ActionTarget(
-                kind=target_kind,
-                id=(
-                    candidate.target_ids[0]
-                    if candidate.target_ids
-                    else target.id
-                    if target is not None
-                    else context.player_view.scene.id
-                ),
-            ),
-            method=ActionMethod(
-                family=(
-                    candidate.action_families[0] if candidate.action_families else context.step.kind
-                ),
-                description=context.step.semantic_goal,
-            ),
-            rule_decision=RuleDecisionRef(rule_id=candidate.rule_id, option_id=option.id),
-            check=check,
-            # Effects belong to the rule (#226 §5), not to this stand-in.
-            success_effects=(),
-            failure_effects=(),
-        )
-
     # Once the planner has identified a visible conversation partner, ordinary
     # dialogue needs no second model call to invent an adjudication.  Keeping
     # this path narrative-only is also an information boundary: authored rules
@@ -2410,75 +2779,85 @@ def _requested_companions(
     return tuple(requested)
 
 
-def _match_rule_candidate(capabilities, text: str, target_id: str | None):
-    """Pick at most one v3 Rule the player's words clearly mean.
-
-    The Fake stands in for the Agent's semantic judgement, so it only matches on
-    the player-safe hints the Match View published — it never reads the module.
-    Ambiguity yields nothing: guessing between two rules is exactly the mistake
-    a real Agent would be asked not to make.
-
-    Option hints have to participate in that judgement, not just candidate hints.
-    In the published fixture every rule aimed at the same NPC carries that NPC's
-    name as its candidate hint, and the word that actually tells them apart
-    （"侦查" / "贿赂" / "威吓"）lives on the options. Scoring candidate hints alone
-    therefore made all four caretaker rules tie on every utterance, and the tie
-    was resolved as "no match" — the Fake could never reach a rule at all.
-    """
+def _match_published_rule_scope(capabilities, text: str):
+    """Fake Host 仅按模组公开提示确定唯一动作范围，不解释技能或结果。"""
 
     if capabilities is None:
-        return None, None
-    scored = []
+        return None
+    normalized = "".join(text.casefold().split())
+    matches = []
     for candidate in capabilities.rule_candidates:
-        if target_id is not None and candidate.target_ids and target_id not in candidate.target_ids:
+        if (
+            len(candidate.action_families) != 1
+            or len(candidate.target_kinds) != 1
+            or len(candidate.target_ids) != 1
+        ):
             continue
-        family_hits = [
-            hint
-            for family in candidate.action_families
-            for hint in _ACTION_FAMILY_HINTS.get(family, ())
-            if hint in text
-        ]
-        candidate_hits = [hint for hint in candidate.semantic_hints if hint and hint in text]
-        best_option = None
-        best_option_hit = 0
-        for option in candidate.options:
-            hits = [hint for hint in option.semantic_hints if hint and hint in text]
-            if hits and max(len(hint) for hint in hits) > best_option_hit:
-                best_option = option
-                best_option_hit = max(len(hint) for hint in hits)
-        if not family_hits and not candidate_hits and best_option is None:
-            continue
-        # Option evidence outranks candidate evidence: sibling rules share the
-        # target's name, so only the option words carry discriminating power.
-        score = (
-            best_option_hit,
-            max((len(hint) for hint in family_hits), default=0),
-            max((len(hint) for hint in candidate_hits), default=0),
+        hints = (
+            *candidate.semantic_hints,
+            *(hint for option in candidate.options for hint in option.semantic_hints),
         )
-        scored.append((score, candidate, best_option))
-    if not scored:
-        return None, None
-    best = max(score for score, _, _ in scored)
-    finalists = [(candidate, option) for score, candidate, option in scored if score == best]
-    if len(finalists) != 1:
-        return None, None
-    candidate, option = finalists[0]
-    if option is not None:
-        return candidate, option
-    return candidate, candidate.options[0] if candidate.options else None
+        matched_hints = {
+            "".join(hint.casefold().split())
+            for hint in hints
+            if "".join(hint.casefold().split()) in normalized
+        }
+        if matched_hints:
+            # 多条作者提示共同命中时证据强于单条方法提示；完全同分仍视为歧义，
+            # Fake Host 不替模型猜测玩家意图。
+            score = (
+                sum(len(hint) for hint in matched_hints),
+                max(len(hint) for hint in matched_hints),
+                len(matched_hints),
+            )
+            matches.append((score, candidate.rule_id, candidate))
+    if not matches:
+        return None
+    matches.sort(
+        key=lambda item: (
+            -item[0][0],
+            -item[0][1],
+            -item[0][2],
+            item[1],
+        )
+    )
+    if len(matches) > 1 and matches[0][0] == matches[1][0]:
+        return None
+    candidate = matches[0][2]
+    return (
+        candidate.action_families[0],
+        candidate.target_kinds[0],
+        candidate.target_ids[0],
+    )
 
 
-# Match View action families are stable contract identifiers. These localized
-# words merely recognize the player's explicit verb; they do not add a rule or
-# reveal module-only facts. Ties still yield no match below.
-_ACTION_FAMILY_HINTS: dict[str, tuple[str, ...]] = {
-    "observe": ("仔细观察", "观察", "察看", "查看"),
-    "search": ("搜索", "搜查", "查找", "找线索", "寻找"),
-    "research": ("研究", "查阅", "检索", "翻阅", "查旧报"),
-    "social": ("留下好印象", "博取信任", "说服"),
-    "intimidate": ("恐吓", "威吓"),
-    "bribe": ("贿赂", "收买"),
-}
+def _proposal_from_published_rule_scope(
+    *,
+    capabilities: KeeperCapabilityView | None,
+    semantic_goal: str,
+) -> SingleActionProposal | None:
+    """把唯一公开 Rule 语义范围转换为无授权 Proposal。"""
+
+    published_scope = _match_published_rule_scope(capabilities, semantic_goal)
+    if published_scope is None:
+        return None
+    family, target_kind, target_id = published_scope
+    return SingleActionProposal.model_validate(
+        {
+            "kind": "single_action",
+            "schema_version": 2,
+            "semantic_goal": semantic_goal,
+            "semantic_focus": {"kind": target_kind, "id": target_id},
+            "target_interaction": "other",
+            "method_family": family,
+            "method_description": semantic_goal,
+            "execution_means": {"kind": "intrinsic"},
+            "check_proposal": {"mode": "none", "candidates": []},
+            "success_effect_proposals": [],
+            "failure_effect_proposals": [],
+            "completion": {"kind": "process", "interaction": "other"},
+        }
+    )
 
 
 __all__ = [
@@ -2498,6 +2877,7 @@ def _production_application() -> ActionPlanTurnApplication:
         action_plan_store,
         adjudication_engine_service,
         engine_store,
+        rule_agenda_executor,
         rule_engine_service,
     )
 
@@ -2508,6 +2888,7 @@ def _production_application() -> ActionPlanTurnApplication:
         plan_store=action_plan_store,
         recent_history_source=SqlAlchemyRecentHistorySource(async_session_factory),
         memory_store=SqlAlchemyMemoryStore(async_session_factory),
+        agenda_executor=rule_agenda_executor,
     )
 
 

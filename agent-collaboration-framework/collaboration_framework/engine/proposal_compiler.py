@@ -26,14 +26,24 @@ from collaboration_framework.contracts import (
     MarkCoreResolvedEffect,
     MoveEntityEffect,
     NarrativeOnlyEffect,
+    NoAdjudicationCheck,
     PersistenceIntent,
     ProposalRef,
+    RequiredAdjudicationCheck,
     RevealInformationEffect,
+    RuleDecisionRef,
     SetEndingAvailabilityEffect,
     SetVisibilityEffect,
     SingleActionProposal,
+    SkillCheckCandidate,
     SubmitProposalRequest,
     ValidationResult,
+)
+from collaboration_framework.contracts.module_v3 import (
+    AdjudicatedCheckStep,
+    AgentMatchTriggerSpec,
+    CheckStep,
+    RuleSpecV3,
 )
 from collaboration_framework.contracts.proposal import (
     AdvanceWorldTimeEffectProposal,
@@ -60,6 +70,11 @@ from collaboration_framework.contracts.validation import Repairability, Validati
 
 from .models import EngineRuntimeSnapshot, ValidatedActionCommand
 from .persistent_results import validate_persistent_effects
+from .rules_v3 import (
+    agent_match_scope_admits,
+    pending_check_for,
+    resolve_rule_option,
+)
 
 _HOST_FORBIDDEN_EFFECTS = (
     MarkCoreResolvedEffectProposal,
@@ -145,20 +160,6 @@ class ProposalCompiler:
                 "动作提议改变了玩家目标，请重新确认行动",
                 repairability="requires_player_choice",
             )
-        if proposal.rule_ref is not None and (
-            proposal.success_effect_proposals or proposal.failure_effect_proposals
-        ):
-            self._reject(
-                "RULE_EFFECT_OVERRIDE",
-                "规则已经拥有结果，不能同时提交 Host 结果",
-            )
-        if proposal.rule_ref is not None and proposal.target_interaction is None:
-            # 规则可以拥有最终 Effect，但不能替 Host 补猜它如何作用于目标；否则
-            # 已死亡 NPC 仍可能借一条社交规则进入检定并产出新的回应。
-            self._reject(
-                "TARGET_INTERACTION_REQUIRED",
-                "当前行动缺少目标交互类型，请重新确认行动",
-            )
         self._reject_forbidden_host_effects(
             (*proposal.success_effect_proposals, *proposal.failure_effect_proposals)
         )
@@ -190,6 +191,38 @@ class ProposalCompiler:
                 request, proposal.completion.requirements, runtime_refs
             )
         focus = self._resolve_focus(runtime, proposal, runtime_refs)
+        rule_decision, check = self._bind_rule_and_check(runtime, request, focus)
+        if rule_decision is not None and (
+            proposal.success_effect_proposals or proposal.failure_effect_proposals
+        ):
+            self._reject(
+                "RULE_EFFECT_OVERRIDE",
+                "规则已经拥有结果，不能同时提交 Host 结果",
+            )
+        if rule_decision is not None and proposal.target_interaction is None:
+            # 规则可以拥有最终 Effect，但不能替 Host 补猜它如何作用于目标。
+            self._reject(
+                "TARGET_INTERACTION_REQUIRED",
+                "当前行动缺少目标交互类型，请重新确认行动",
+            )
+        if (
+            rule_decision is None
+            and completion_mode == "process"
+            and process_interaction == "other"
+            and focus.kind == "actor"
+            and focus.id == request.actor_id
+            and check.mode != "none"
+            and not success
+            and not failure
+        ):
+            # 单独报出技能名不构成行动目标；继续掷骰只会得到无法授权任何结果的
+            # 空成功。要求玩家先说明想观察、影响或完成什么。
+            self._reject(
+                "CHECK_GOAL_REQUIRED",
+                "请先说明这次检定想达成什么目标",
+                repairability="requires_player_choice",
+                fault="player",
+            )
         adjudication = ActionAdjudication(
             request_id=request.request_id,
             source_revision=request.source_revision,
@@ -203,8 +236,8 @@ class ProposalCompiler:
             persistence_intent=self._derive_persistence_intent(
                 proposal.method_family, success, failure
             ),
-            check=proposal.check_proposal,
-            rule_decision=proposal.rule_ref,
+            check=check,
+            rule_decision=rule_decision,
             success_effects=success,
             failure_effects=failure,
         )
@@ -219,7 +252,7 @@ class ProposalCompiler:
                 process_interaction=process_interaction,
                 requirements=completion_requirements,
                 success_effects=success,
-                rule_owned=proposal.rule_ref is not None,
+                rule_owned=rule_decision is not None,
             )
         # v1 仅供历史读取，继续沿用原完整性规则；生产 writer 不再依赖 family 词表。
         elif proposal.rule_ref is None:
@@ -249,6 +282,243 @@ class ProposalCompiler:
             process_interaction=process_interaction,
             completion_requirements=completion_requirements,
         )
+
+    def _bind_rule_and_check(
+        self,
+        runtime: EngineRuntimeSnapshot,
+        request: SubmitProposalRequest,
+        focus: ActionTarget,
+    ):
+        """绑定唯一必选 Rule，并从固定规则图编译权威检定。"""
+
+        proposal = request.proposal
+        requested_goal = request.requested_goal or proposal.semantic_goal
+        self._validate_trusted_step_completion(request)
+        if not runtime.is_v3:
+            return proposal.rule_ref, proposal.check_proposal
+        scoped_required = tuple(
+            rule
+            for rule in runtime.v3.rules
+            if isinstance(rule.trigger, AgentMatchTriggerSpec)
+            and rule.trigger.required
+            and agent_match_scope_admits(
+                rule,
+                location_id=runtime.game_state.scene_id,
+                action_family=proposal.method_family,
+                target_kind=focus.kind,
+                target_id=focus.id,
+            )
+        )
+        matching = tuple(
+            rule
+            for rule in scoped_required
+            if agent_match_scope_admits(
+                rule,
+                location_id=runtime.game_state.scene_id,
+                state=runtime.game_state,
+                actor_id=request.actor_id,
+                action_family=proposal.method_family,
+                target_kind=focus.kind,
+                target_id=focus.id,
+            )
+        )
+        decision = proposal.rule_ref
+        auto_bound = decision is None
+        # 必选 Rule 的数量和前置条件由 Engine 决定，不能因为 Host 主动填写
+        # rule_ref 就跳过歧义检查或改选同 scope 下的可选 Rule。
+        if not matching and scoped_required:
+            self._reject(
+                "RULE_PRECONDITION_UNMET",
+                "当前条件尚不允许执行这项行动",
+                repairability="requires_player_choice",
+                fault="player",
+            )
+        if len(matching) > 1:
+            self._reject(
+                "RULE_SELECTION_AMBIGUOUS",
+                "当前行动同时匹配多个规则，请进一步说明行动方式",
+                repairability="requires_player_choice",
+                fault="player",
+            )
+        if (
+            decision is not None
+            and len(matching) == 1
+            and decision.rule_id != matching[0].id
+        ):
+            self._reject(
+                "RULE_OUT_OF_SCOPE",
+                "当前行动必须使用模组规定的规则",
+                repairability="auto_repairable",
+                fault="agent",
+            )
+        if decision is None and len(matching) == 1:
+            rule = matching[0]
+            trigger = rule.trigger
+            assert isinstance(trigger, AgentMatchTriggerSpec)
+            options = trigger.options
+            if len(options) == 1:
+                decision = RuleDecisionRef(
+                    rule_id=rule.id,
+                    option_id=options[0].id,
+                )
+            else:
+                decision = self._decision_from_player_words(
+                    requested_goal,
+                    rule,
+                )
+                if decision is None:
+                    self._reject(
+                        "RULE_OPTION_REQUIRED",
+                        "请明确选择一种处理方式："
+                        + " / ".join(option.semantic_hints[0] for option in options),
+                        repairability="requires_player_choice",
+                        fault="player",
+                    )
+        if decision is None:
+            return None, proposal.check_proposal
+        rule, option_id = resolve_rule_option(
+            runtime.v3,
+            rule_id=decision.rule_id,
+            option_id=decision.option_id,
+        )
+        trigger = rule.trigger
+        if not isinstance(trigger, AgentMatchTriggerSpec):
+            self._reject("RULE_OUT_OF_SCOPE", "当前行动不能使用该规则选项")
+        if not agent_match_scope_admits(
+            rule,
+            location_id=runtime.game_state.scene_id,
+            state=runtime.game_state,
+            actor_id=request.actor_id,
+            action_family=proposal.method_family,
+            target_kind=focus.kind,
+            target_id=focus.id,
+        ):
+            self._reject(
+                "RULE_OUT_OF_SCOPE",
+                "当前行动不能使用该规则选项",
+                repairability="auto_repairable",
+                fault="agent",
+            )
+        if (
+            len(trigger.options) > 1
+            and self._decision_from_player_words(
+                requested_goal,
+                rule,
+            )
+            != decision
+        ):
+            self._reject(
+                "RULE_OPTION_UNCONFIRMED",
+                "请明确选择一种处理方式："
+                + " / ".join(option.semantic_hints[0] for option in trigger.options),
+                repairability="requires_player_choice",
+                fault="player",
+            )
+        check_step, _ = pending_check_for(rule, option_id)
+        if check_step is None:
+            canonical_check = NoAdjudicationCheck()
+        elif isinstance(check_step, CheckStep):
+            if check_step.check.initiation_kind != "active_action":
+                canonical_check = NoAdjudicationCheck()
+            else:
+                skill_id = check_step.check.parameters.get("skill_id")
+                if not isinstance(skill_id, str) or not skill_id:
+                    self._reject("RULE_CHECK_INVALID", "模组规则缺少可执行的检定技能")
+                canonical_check = RequiredAdjudicationCheck(
+                    candidates=(
+                        SkillCheckCandidate(
+                            candidate_id=option_id,
+                            skill_id=skill_id,
+                            difficulty=check_step.check.difficulty,
+                            method_summary=requested_goal,
+                            player_safe_reason="使用模组规则声明的检定方式",
+                        ),
+                    )
+                )
+        elif isinstance(check_step, AdjudicatedCheckStep):
+            canonical_check = proposal.check_proposal
+        else:
+            canonical_check = NoAdjudicationCheck()
+        if not (
+            auto_bound
+            and proposal.check_proposal.mode == "none"
+            and canonical_check.mode == "required"
+        ) and not self._check_shape_matches(proposal.check_proposal, canonical_check):
+            # 自动绑定时允许 Host 省略未知的 Rule-owned check；一旦 Host 主动
+            # 提供技能，仍必须与固定 ModuleVersion 完全一致。
+            self._reject(
+                "RULE_CHECK_MISMATCH",
+                "当前检定方式与模组规则不一致",
+                repairability="auto_repairable",
+                fault="agent",
+            )
+        return decision, canonical_check
+
+    def _validate_trusted_step_completion(
+        self,
+        request: SubmitProposalRequest,
+    ) -> None:
+        """按 Coordinator 冻结的步骤类型校验最低完成条件。
+
+        ``method_family`` 是 Host 可自由表达的字符串，不能承担授权。等待步骤只有
+        实际推进世界时间才算完成，避免模型用 narrative_only 冒充“等到晚上”。
+        """
+
+        if request.requested_step_kind != "wait":
+            return
+        proposal = request.proposal
+        completion = proposal.completion
+        success_advances_time = any(
+            isinstance(effect, AdvanceWorldTimeEffectProposal)
+            for effect in proposal.success_effect_proposals
+        )
+        completion_advances_time = isinstance(
+            completion, EffectsGoalCompletionProposal
+        ) and any(
+            isinstance(requirement, AdvanceWorldTimeEffectProposal)
+            for requirement in completion.requirements
+        )
+        if not success_advances_time or not completion_advances_time:
+            self._reject(
+                "WAIT_REQUIRES_TIME_EFFECT",
+                "等待目标必须由实际时间推进结果完成",
+                repairability="auto_repairable",
+                fault="agent",
+            )
+
+    @staticmethod
+    def _decision_from_player_words(
+        goal: str, rule: RuleSpecV3
+    ) -> RuleDecisionRef | None:
+        """只用模组作者发布的提示确认多分支选择，不解释任意动作词表。"""
+
+        trigger = rule.trigger
+        if not isinstance(trigger, AgentMatchTriggerSpec):
+            return None
+        normalized = "".join(goal.casefold().split())
+        matched = [
+            option
+            for option in trigger.options
+            if any(
+                "".join(hint.casefold().split()) in normalized
+                for hint in option.semantic_hints
+            )
+        ]
+        if len(matched) != 1:
+            return None
+        return RuleDecisionRef(rule_id=rule.id, option_id=matched[0].id)
+
+    @staticmethod
+    def _check_shape_matches(proposed, canonical) -> bool:
+        """忽略不可信 candidate ID，但技能、难度与是否掷骰必须一致。"""
+
+        if proposed.mode != canonical.mode:
+            return False
+        if proposed.mode == "none":
+            return True
+        return tuple(
+            (item.skill_id, item.difficulty) for item in proposed.candidates
+        ) == tuple((item.skill_id, item.difficulty) for item in canonical.candidates)
 
     def _validate_completion_contract(
         self,

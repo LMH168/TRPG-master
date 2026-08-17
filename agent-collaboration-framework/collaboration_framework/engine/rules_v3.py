@@ -345,8 +345,25 @@ def agenda_claim_key(agenda: RuleAgenda) -> tuple[int, int, str, str]:
 
 
 def agenda_is_claimable(agenda: RuleAgenda, *, now: datetime) -> bool:
+    """判断 Agenda 是否可以由自动执行器接管。
+
+    等待玩家和主动检定必须由新的玩家 Turn 恢复；其余阻塞点都属于确定性后台
+    工作，不能因为状态名不是 ``running`` 而永久滞留。
+    """
+
     return (
-        agenda.status == "running"
+        (
+            agenda.status
+            in {
+                "running",
+                "awaiting_passive_check",
+                "awaiting_presentation",
+            }
+            or (
+                agenda.status == "awaiting_active_check"
+                and agenda.pending_check_id is not None
+            )
+        )
         and (agenda.next_attempt_at is None or agenda.next_attempt_at <= now)
         and (agenda.lease_expires_at is None or agenda.lease_expires_at <= now)
     )
@@ -426,6 +443,8 @@ def agent_match_scope_admits(
     rule: RuleSpecV3,
     *,
     location_id: str,
+    state: GameState | None = None,
+    actor_id: str | None = None,
     action_family: str | None = None,
     target_kind: str | None = None,
     target_id: str | None = None,
@@ -443,6 +462,12 @@ def agent_match_scope_admits(
 
     trigger = rule.trigger
     if not isinstance(trigger, AgentMatchTriggerSpec):
+        return False
+    if state is not None and not evaluate_condition(
+        trigger.when,
+        state=state,
+        actor_id=actor_id or "",
+    ):
         return False
     scope = trigger.scope
     if scope.location_ids and location_id not in scope.location_ids:

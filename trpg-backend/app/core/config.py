@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     host_agent_max_tool_calls: int = Field(default=8, gt=0, le=50)
     host_agent_tool_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     host_agent_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+    # 开场优先由模型根据玩家安全 Context 生成沉浸式文本；精确时钟、参与者和
+    # 无证据事实校验不通过时，服务层自动降级到确定性安全模板。
     opening_narration_mode: Literal["model", "template"] = "model"
     # 10 秒对真实 provider 太紧：DeepSeek 生成开场稳定在 10s 上下，几乎每局都
     # 撞上超时、退回确定性模板——玩家看到的就是"开场变死板了"，而日志里是

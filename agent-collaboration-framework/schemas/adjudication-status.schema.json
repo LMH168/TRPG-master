@@ -415,7 +415,10 @@
           "type": "string"
         },
         "kind": {
-          "const": "entity_discovered",
+          "enum": [
+            "entity_discovered",
+            "rule_presentation"
+          ],
           "title": "Kind",
           "type": "string"
         },

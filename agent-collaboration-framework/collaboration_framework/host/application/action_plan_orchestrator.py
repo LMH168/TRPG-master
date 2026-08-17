@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import uuid4
@@ -126,6 +127,7 @@ class ActionPlanOrchestrator:
         recent_history_budget: RecentHistoryBudget | None = None,
         memory_store: MemoryStore | None = None,
         memory_budget: MemoryBudget | None = None,
+        on_step_committed: Callable[[PlayerInput], Awaitable[str | None]] | None = None,
     ) -> None:
         if lease_seconds < 1:
             raise ValueError("lease_seconds 必须大于 0")
@@ -140,6 +142,7 @@ class ActionPlanOrchestrator:
         self._recent_history_budget = recent_history_budget or RecentHistoryBudget()
         self._memory_store = memory_store
         self._memory_budget = memory_budget or MemoryBudget()
+        self._on_step_committed = on_step_committed
 
     @property
     def policy(self) -> ActionPlanPolicy:
@@ -378,6 +381,7 @@ class ActionPlanOrchestrator:
                                 source_revision=step_run.source_revision or "",
                                 proposal=step_run.proposal,
                                 requested_goal=step_run.step.semantic_goal,
+                                requested_step_kind=step_run.step.kind,
                             )
                         )
                     break
@@ -504,6 +508,14 @@ class ActionPlanOrchestrator:
                 )
 
             assert latest is not None
+            agenda_boundary: str | None = None
+            if self._on_step_committed is not None and latest.status not in {
+                "awaiting_skill_choice",
+                "awaiting_post_roll_decision",
+            }:
+                # 当前步骤的 RuleAgenda 必须先到稳定边界；下一步骤随后重新投影
+                # PlayerView，不能在旧 revision 上越过被动规则后果。
+                agenda_boundary = await self._on_step_committed(player_input)
             view = await self._player_view_projector.refresh_adjudication(
                 player_input,
                 latest,
@@ -513,6 +525,19 @@ class ActionPlanOrchestrator:
                 latest,
                 world_time_after=WorldClockView.from_world(view.world),
             )
+            if agenda_boundary in {"awaiting_player_input", "failed"}:
+                # 当前动作已经提交，但 Agenda 需要玩家选择或遇到确定性失败；保留
+                # 本步结果并停止剩余步骤，绝不能静默跳过后继续执行计划。
+                run = await self._transition(
+                    run,
+                    status="stopped",
+                    release_lease=True,
+                )
+                return ActionPlanAdvanceResult(
+                    run=run,
+                    player_view=view,
+                    latest_execution=latest,
+                )
             if run.status == "waiting_for_player":
                 run = await self._release_lease(run)
                 await self._emit(
@@ -1349,18 +1374,27 @@ class ActionPlanOrchestrator:
                 code="PENDING_ADJUDICATION_MISSING",
             )
             return failed, None
+        agenda_boundary = (
+            await self._on_step_committed(player_input)
+            if self._on_step_committed is not None
+            else None
+        )
         view = await self._player_view_projector.refresh_adjudication(
             player_input,
             status.execution,
         )
-        return (
-            await self._apply_execution(
-                run,
-                status.execution,
-                world_time_after=WorldClockView.from_world(view.world),
-            ),
+        reconciled = await self._apply_execution(
+            run,
             status.execution,
+            world_time_after=WorldClockView.from_world(view.world),
         )
+        if agenda_boundary in {"awaiting_player_input", "failed"}:
+            reconciled = await self._transition(
+                reconciled,
+                status="stopped",
+                release_lease=True,
+            )
+        return reconciled, status.execution
 
     async def _apply_execution(
         self,
@@ -1768,7 +1802,7 @@ class HostTurnDecisionExecutor:
                 recent_history=recent_history,
             )
         raise TypeError(
-            "Host 只能提交 Clarification、SingleAction 或 ActionPlan Proposal"
+            "AgendaContinuation 必须由 Engine 等待边界处理，不能进入普通动作执行器"
         )
 
     async def _execute_single_proposal(
@@ -1800,6 +1834,7 @@ class HostTurnDecisionExecutor:
                         source_revision=view.revision,
                         proposal=candidate,
                         requested_goal=player_input.utterance,
+                        requested_step_kind=self._proposal_step_kind(candidate),
                     )
                 )
                 break

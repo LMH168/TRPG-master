@@ -25,6 +25,7 @@ from collaboration_framework.contracts import (
     ActionMethod,
     ActionPlan,
     ActionPlanPolicy,
+    ActionPlanProposal,
     ActionPlanStep,
     ActionTarget,
     EnsureRuntimeLocationEffect,
@@ -38,6 +39,7 @@ from collaboration_framework.contracts import (
     PlayerView,
     RequiredAdjudicationCheck,
     SingleActionDecision,
+    SingleActionProposal,
 )
 from collaboration_framework.engine import InMemoryEngineStore, RuleEngineService
 from collaboration_framework.engine.initialization import create_initial_game_state
@@ -56,6 +58,7 @@ from collaboration_framework.memory import MemoryContext
 
 from app.core.action_plan_turn import (
     DeterministicHostTurnDecisionModel,
+    TravelFirstHostTurnDecisionModel,
     _deterministic_step_adjudication,
     _DeterministicStepAdjudicator,
     _match_travel_target,
@@ -160,6 +163,22 @@ async def test_engine_publishes_rule_candidates_where_the_actor_stands() -> None
     assert "observe_caretaker" in rule_ids
 
 
+async def test_fake_host_only_expresses_published_rule_scope() -> None:
+    """Fake 不再伪造 option/技能，只把公开提示映射成 Compiler 可绑定的范围。"""
+
+    proposal = await _DeterministicStepAdjudicator().adjudicate(
+        await _cemetery_context("用侦查观察守墓人")
+    )
+
+    assert isinstance(proposal, SingleActionProposal)
+    assert proposal.semantic_focus.kind == "entity"
+    assert proposal.semantic_focus.id == "melodias"
+    assert proposal.method_family == "observe"
+    assert proposal.rule_ref is None
+    assert isinstance(proposal.check_proposal, NoAdjudicationCheck)
+    assert proposal.success_effect_proposals == ()
+
+
 async def test_rule_candidates_reach_the_model_payload() -> None:
     """候选必须真的进到发给模型的 JSON 里。
 
@@ -240,11 +259,10 @@ async def test_natural_chinese_action_family_reaches_the_unique_rule() -> None:
     assert isinstance(adjudication.check, RequiredAdjudicationCheck)
 
 
-@pytest.mark.skip(reason="旧 ActionAdjudication 字段断言已由 Proposal 契约测试替代")
 async def test_fake_single_action_uses_the_same_rule_match_view() -> None:
     """单动作不能绕过 v3 Rule Match 而静默退化成纯叙事。"""
 
-    step_context = await _cemetery_context("仔细观察守墓人")
+    step_context = await _cemetery_context("用侦查观察守墓人")
     decision = await DeterministicHostTurnDecisionModel().generate(
         HostAgentContext(
             player_input=step_context.player_input,
@@ -261,13 +279,13 @@ async def test_fake_single_action_uses_the_same_rule_match_view() -> None:
         )
     )
 
-    assert isinstance(decision, SingleActionDecision)
-    assert decision.adjudication.rule_decision is not None
-    assert decision.adjudication.rule_decision.rule_id == "observe_caretaker"
-    assert isinstance(decision.adjudication.check, RequiredAdjudicationCheck)
+    assert isinstance(decision, SingleActionProposal)
+    assert decision.semantic_focus.id == "melodias"
+    assert decision.method_family == "observe"
+    assert decision.rule_ref is None
+    assert isinstance(decision.check_proposal, NoAdjudicationCheck)
 
 
-@pytest.mark.skip(reason="旧 ActionAdjudication 字段断言已由 Proposal 契约测试替代")
 async def test_rule_first_adjudicator_does_not_call_model_for_unique_match() -> None:
     """线上裁决对唯一 Match View 候选也走确定性路径。"""
 
@@ -276,12 +294,17 @@ async def test_rule_first_adjudicator_does_not_call_model_for_unique_match() -> 
             del context
             raise AssertionError("唯一规则候选不应调用模型")
 
-    adjudication: Any = await _RuleFirstStepAdjudicator(FailingFallback()).adjudicate(
-        await _cemetery_context("仔细观察守墓人")
+    proposal = await _RuleFirstStepAdjudicator(FailingFallback()).adjudicate(
+        await _cemetery_context(
+            "用信用评级给守墓人留下好印象并询问线索",
+            step_kind="dialogue",
+        )
     )
 
-    assert adjudication.rule_decision is not None
-    assert adjudication.rule_decision.rule_id == "observe_caretaker"
+    assert proposal.semantic_focus.id == "melodias"
+    assert proposal.method_family == "social"
+    assert proposal.rule_ref is None
+    assert isinstance(proposal.check_proposal, NoAdjudicationCheck)
 
 
 @pytest.mark.skip(reason="旧 ActionAdjudication 字段断言已由 Proposal 契约测试替代")
@@ -431,6 +454,110 @@ async def test_visible_travel_uses_v2_deterministic_proposal_without_model() -> 
     assert proposal.success_effect_proposals[0].location_ref.id == "cemetery"
     assert proposal.completion is not None
     assert proposal.completion.kind == "effects"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("utterance", "uses_fallback", "expected_location_id"),
+    (
+        ("去墓地", False, "cemetery"),
+        ("我现在想去墓地", False, "cemetery"),
+        ("去墓地吧", False, "cemetery"),
+        ("去图书馆", False, "library"),
+        ("带托马斯一起去墓地", True, None),
+        ("去墓地调查守墓人", True, None),
+    ),
+)
+async def test_production_planner_only_shortcuts_unambiguous_travel(
+    utterance: str,
+    uses_fallback: bool,
+    expected_location_id: str | None,
+) -> None:
+    """纯移动必须稳定命中；同行和后续动作不能被快捷路径静默截断。"""
+
+    class RecordingFallback:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate(self, context):
+            self.calls += 1
+            return await DeterministicHostTurnDecisionModel().generate(context)
+
+    step_context = await _cemetery_context(
+        utterance,
+        step_kind="travel",
+        semantic_goal=utterance,
+        scene_id="thomas_office",
+    )
+    host_context = HostAgentContext(
+        player_input=step_context.player_input,
+        player_view=step_context.player_view,
+        recent_history=RecentTurnContext.empty(
+            player_input=step_context.player_input,
+            player_view=step_context.player_view,
+        ),
+        memory_context=MemoryContext.empty(
+            player_input=step_context.player_input,
+            player_view=step_context.player_view,
+        ),
+        keeper_capabilities=step_context.keeper_capabilities,
+    )
+    fallback = RecordingFallback()
+
+    proposal = await TravelFirstHostTurnDecisionModel(fallback).generate(host_context)
+
+    assert fallback.calls == int(uses_fallback)
+    if not uses_fallback:
+        assert isinstance(proposal, SingleActionProposal)
+        assert proposal.semantic_goal == utterance
+        assert proposal.semantic_focus.id == expected_location_id
+        assert proposal.success_effect_proposals[0].type == "enter_location"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("utterance", "expected_steps"),
+    (
+        ("去墓地，然后调查守墓人", ("去墓地", "调查守墓人")),
+        ("放下随身物品，随后去图书馆", ("放下随身物品", "去图书馆")),
+        ("去墓地，再去图书馆", ("去墓地", "再去图书馆")),
+    ),
+)
+async def test_compound_action_preserves_travel_and_other_steps_without_model(
+    utterance: str,
+    expected_steps: tuple[str, ...],
+) -> None:
+    """明确连接的复合行动应保留全部原句步骤，不能因移动快捷路径丢失其余目标。"""
+
+    class FailingFallback:
+        async def generate(self, context):
+            del context
+            raise AssertionError("含可信移动子句的明确计划不应依赖 Host 随机拆分")
+
+    step_context = await _cemetery_context(
+        utterance,
+        step_kind="action",
+        semantic_goal=utterance,
+        scene_id="thomas_office",
+    )
+    context = HostAgentContext(
+        player_input=step_context.player_input,
+        player_view=step_context.player_view,
+        recent_history=RecentTurnContext.empty(
+            player_input=step_context.player_input,
+            player_view=step_context.player_view,
+        ),
+        memory_context=MemoryContext.empty(
+            player_input=step_context.player_input,
+            player_view=step_context.player_view,
+        ),
+        keeper_capabilities=step_context.keeper_capabilities,
+    )
+
+    proposal = await TravelFirstHostTurnDecisionModel(FailingFallback()).generate(context)
+
+    assert isinstance(proposal, ActionPlanProposal)
+    assert tuple(step.semantic_goal for step in proposal.steps) == expected_steps
 
 
 @pytest.mark.asyncio
