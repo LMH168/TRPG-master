@@ -18,6 +18,7 @@ from collaboration_framework.contracts import (
     SubmitProposalRequest,
 )
 from collaboration_framework.engine import (
+    ActorResources,
     ActorState,
     AdjudicationEngineService,
     EngineRuntimeSnapshot,
@@ -53,6 +54,7 @@ def _runtime(*, slab_moved: bool = True) -> EngineRuntimeSnapshot:
                 name="调查员",
                 source_character_id="character-1",
                 source_character_version=1,
+                resources=ActorResources(san=60),
                 state={"skills": {"spot-hidden": 60, "dodge": 40, "luck": 50}},
             )
         },
@@ -65,7 +67,19 @@ def _runtime(*, slab_moved: bool = True) -> EngineRuntimeSnapshot:
         },
     }
     state = state.model_copy(
-        update={"scene_id": "cemetery", "entities": entities}, deep=True
+        update={
+            "scene_id": "cemetery",
+            "entities": entities,
+            "plot_threads": {
+                **state.plot_threads,
+                "crypt_entry_investigation": state.plot_threads[
+                    "crypt_entry_investigation"
+                ].model_copy(
+                    update={"status": "in_progress" if slab_moved else "available"}
+                ),
+            },
+        },
+        deep=True,
     )
     return EngineRuntimeSnapshot(
         module_id=module.module_id,
@@ -488,8 +502,8 @@ def test_check_without_external_goal_is_rejected_before_execution() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hold_breath_entry_commits_once_without_check_or_agenda() -> None:
-    """无阻塞分支直接提交权威进入，不制造检定或后台 Agenda。"""
+async def test_hold_breath_entry_commits_once_then_runs_first_sight_agenda() -> None:
+    """屏息不制造虚假主动检定，但首次见到食尸鬼仍只触发一次被动 SAN。"""
 
     runtime = _runtime()
     store = InMemoryEngineStore()
@@ -512,7 +526,16 @@ async def test_hold_breath_entry_commits_once_without_check_or_agenda() -> None:
     assert execution.status == "resolved"
     assert final.scene_id == "crypt"
     assert final.entities["crypt_entrance"]["entered"] is True
-    assert final.rule_agendas == {}
+    agenda = next(iter(final.rule_agendas.values()))
+    assert agenda.status == "awaiting_passive_check"
+    executions = await RuleAgendaExecutor(store, engine=engine).drain(
+        room_id="room-rule-binding",
+        turn_id="turn-safe-entry",
+    )
+    assert next(
+        iter(store.inspect_state("room-rule-binding").rule_agendas.values())
+    ).status == ("stable")
+    assert sum(item.execution_kind == "passive_check" for item in executions) == 1
     events = store.inspect_domain_events("room-rule-binding")
     assert sum(event.type == "travel.resolved" for event in events) == 1
     assert not any(event.type == "check.resolved" for event in events)
@@ -559,6 +582,7 @@ async def test_direct_entry_reaches_awake_stable_boundary_once() -> None:
     assert next(iter(final.rule_agendas.values())).status == "stable"
     assert {item.execution_kind for item in executions} == {
         "effect_segment",
+        "passive_check",
         "ruleset_action",
         "npc_opportunity",
         "presentation",

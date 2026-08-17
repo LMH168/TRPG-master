@@ -35,7 +35,9 @@ from collaboration_framework.engine import (
     DiceRoller,
     DomainEvent,
     EngineRuntimeSnapshot,
+    GameState,
     InMemoryEngineStore,
+    PlotThreadState,
     RuleAgendaExecutor,
     SequenceDiceSource,
     create_initial_game_state,
@@ -52,6 +54,26 @@ FIXTURE = (
     / "追书人"
     / "module-content-v3.json"
 )
+
+
+def _make_douglas_available(state: GameState) -> GameState:
+    """把合成测试推进到首次见到道格拉斯之前的权威剧情边界。"""
+
+    current = state.plot_threads["douglas_case"]
+    return state.model_copy(
+        update={
+            "plot_threads": {
+                **state.plot_threads,
+                "douglas_case": PlotThreadState(
+                    thread_id=current.thread_id,
+                    status="available",
+                    version=current.version + 1,
+                    last_transition_event_id="evt-douglas-available",
+                ),
+            }
+        },
+        deep=True,
+    )
 
 
 @pytest.mark.asyncio
@@ -74,6 +96,7 @@ async def test_passive_check_commits_once_and_recovery_does_not_reroll() -> None
             )
         },
     )
+    state = _make_douglas_available(state)
     store.register_room(module_content=module, initial_state=state)
     engine = AdjudicationEngineService(store)
 
@@ -424,6 +447,7 @@ async def test_transient_agenda_failure_uses_its_own_retry_budget() -> None:
             )
         },
     )
+    state = _make_douglas_available(state)
     store.register_room(module_content=module, initial_state=state)
     engine = AdjudicationEngineService(store)
     with engine_turn_context("turn-1"):
@@ -471,20 +495,23 @@ async def test_effect_event_before_blocking_step_is_queued() -> None:
     payload = ModuleContentV3.model_validate_json(
         FIXTURE.read_text(encoding="utf-8")
     ).to_json_dict()
+    case_tracker = next(
+        item for item in payload["entities"] if item["id"] == "case_tracker"
+    )
+    case_tracker["state"]["synthetic_followed"] = False
     payload["rules"].append(
         {
             "id": "follow_first_sight_marker",
             "priority": 10,
             "trigger": {
                 "kind": "event",
-                "event_type": "entity.state_changed",
+                "event_type": "plot_thread.transitioned",
                 "when": {
                     "op": "predicate",
-                    "predicate": "entity_state_is",
+                    "predicate": "plot_thread_status_is",
                     "args": {
-                        "entity_id": "case_tracker",
-                        "key": "first_ghoul_sight_resolved",
-                        "value": True,
+                        "thread_id": "douglas_case",
+                        "status": "in_progress",
                     },
                 },
                 "entry_branch_id": "default",
@@ -498,7 +525,7 @@ async def test_effect_event_before_blocking_step_is_queued() -> None:
                         "effect": {
                             "type": "change_entity_state",
                             "entity_id": "case_tracker",
-                            "key": "surveillance_available",
+                            "key": "synthetic_followed",
                             "value": True,
                         },
                         "next_step_id": "finish",
@@ -523,6 +550,7 @@ async def test_effect_event_before_blocking_step_is_queued() -> None:
             )
         },
     )
+    state = _make_douglas_available(state)
     store.register_room(module_content=module, initial_state=state)
     engine = AdjudicationEngineService(store)
     with engine_turn_context("turn-1"):

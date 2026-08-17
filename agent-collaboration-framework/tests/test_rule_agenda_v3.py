@@ -22,6 +22,7 @@ from collaboration_framework.engine import (
     AgendaSource,
     GameState,
     InMemoryEngineStore,
+    PlotThreadState,
     RevisionConflictError,
     RuleAgenda,
 )
@@ -62,7 +63,18 @@ def game_state(**updates) -> GameState:
         },
         "entities": {
             "cemetery_figure": {"true_form_seen": False},
-            "case_tracker": {"first_ghoul_sight_resolved": False},
+            "case_tracker": {},
+        },
+        "plot_threads": {
+            "crypt_entry_investigation": PlotThreadState(
+                thread_id="crypt_entry_investigation",
+                status="resolved",
+            ),
+            "douglas_case": PlotThreadState(
+                thread_id="douglas_case",
+                status="available",
+                last_transition_event_id="evt-douglas-available",
+            ),
         },
     }
     values.update(updates)
@@ -166,7 +178,7 @@ class RuleAgendaRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         state = store.inspect_state(ROOM)
-        self.assertTrue(state.entities["case_tracker"]["first_ghoul_sight_resolved"])
+        self.assertEqual(state.plot_threads["douglas_case"].status, "in_progress")
         self.assertEqual(len(state.rule_agendas), 1)
         persisted = next(iter(state.rule_agendas.values()))
         self.assertEqual(persisted.status, "awaiting_passive_check")

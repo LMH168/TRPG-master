@@ -16,6 +16,7 @@ from collaboration_framework.contracts import (
     EffectStep,
     HostDecisionProposal,
     ModuleContentV3,
+    NarrationPlotThread,
     PlotThreadSpec,
     PredicateCondition,
     PresentationStep,
@@ -24,11 +25,14 @@ from collaboration_framework.contracts import (
 )
 from collaboration_framework.engine import (
     ActorState,
+    AdjudicationEngineService,
     AgendaSource,
     AgendaStepExecution,
+    EngineRuntimeSnapshot,
     InMemoryEngineStore,
     RuleAgenda,
     create_initial_game_state,
+    project_narration_plot_threads,
     transition_plot_thread,
 )
 from collaboration_framework.engine.rules_v3 import (
@@ -434,6 +438,88 @@ def test_plot_thread_dependencies_gate_initialization_and_unlock() -> None:
         event_id="event-unlock",
     )
     assert unlocked.status == "available"
+
+
+def test_plot_thread_visibility_controls_events_and_narration_projection() -> None:
+    """隐藏线程即使发生转换，也不能通过 Event 或 NarrationContext 泄露。"""
+
+    module = _module().model_copy(
+        update={
+            "plot_threads": (
+                PlotThreadSpec(
+                    id="public-thread",
+                    initial_status="available",
+                    visibility="player",
+                    player_safe_summary="公开调查方向",
+                ),
+                PlotThreadSpec(
+                    id="keeper-thread",
+                    initial_status="available",
+                    visibility="hidden",
+                ),
+            )
+        },
+        deep=True,
+    )
+    state = create_initial_game_state(
+        module,
+        room_id="room-1",
+        actors={
+            "actor-1": ActorState(
+                player_id="player-1",
+                name="调查员",
+                source_character_id="character-1",
+                source_character_version=1,
+            )
+        },
+    )
+    store = InMemoryEngineStore()
+    engine = AdjudicationEngineService(store)
+    runtime = EngineRuntimeSnapshot(
+        module_id=module.module_id,
+        module_version=module.version,
+        module_content=module,
+        game_state=state,
+        revision=str(state.event_sequence),
+    )
+
+    state, public_events = engine._apply_effect(
+        runtime,
+        state,
+        TransitionPlotThreadEffect(
+            thread_id="public-thread",
+            to_status="in_progress",
+        ),
+        room_id="room-1",
+        request_id="request-public",
+        actor_id="actor-1",
+        offset=1,
+    )
+    state, hidden_events = engine._apply_effect(
+        runtime,
+        state,
+        TransitionPlotThreadEffect(
+            thread_id="keeper-thread",
+            to_status="in_progress",
+        ),
+        room_id="room-1",
+        request_id="request-hidden",
+        actor_id="actor-1",
+        offset=2,
+    )
+
+    assert public_events[0].visibility == "public"
+    assert "player_safe_summary" in public_events[0].payload
+    assert hidden_events[0].visibility == "hidden"
+    assert "player_safe_summary" not in hidden_events[0].payload
+    assert project_narration_plot_threads(module, state) == (
+        NarrationPlotThread(
+            thread_id="public-thread",
+            status="in_progress",
+            player_safe_summary="公开调查方向；调查正在推进。",
+            last_transition_event_ref=public_events[0].event_id,
+        ),
+    )
 
 
 def test_host_effect_union_cannot_construct_plot_thread_transition() -> None:
