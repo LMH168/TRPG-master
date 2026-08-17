@@ -101,6 +101,9 @@ class KeeperRuleCandidate(ContractModel):
     question_kind: Literal["action_declaration", "method", "intent_relation"]
     semantic_hints: tuple[str, ...] = ()
     action_families: tuple[str, ...] = ()
+    target_interactions: tuple[
+        Literal["observe", "social", "physical", "other"], ...
+    ] = ()
     target_kinds: tuple[
         Literal["information", "entity", "location", "actor", "world"], ...
     ] = ()

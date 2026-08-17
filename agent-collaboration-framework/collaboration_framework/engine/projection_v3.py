@@ -22,6 +22,7 @@ from __future__ import annotations
 from collaboration_framework.contracts import (
     AgentMatchTriggerSpec,
     ContractError,
+    DefaultWithOverridesSelectionPolicy,
     EntitySpecV3,
     InventoryItemView,
     ItemInstance,
@@ -712,6 +713,13 @@ def _rule_candidates(
             actor_id=actor_id,
         ):
             continue
+        if isinstance(
+            trigger.selection_policy,
+            DefaultWithOverridesSelectionPolicy,
+        ):
+            # 默认后果及其主动例外都由 Engine 从可信玩家原话解析；Host 既不
+            # 需要构造 rule_ref，也不能据此提前向玩家泄露规避方式。
+            continue
         scope = trigger.scope
         candidates.append(
             KeeperRuleCandidate(
@@ -719,6 +727,7 @@ def _rule_candidates(
                 question_kind=trigger.question.kind,
                 semantic_hints=trigger.question.semantic_hints,
                 action_families=scope.action_families,
+                target_interactions=scope.target_interactions,
                 target_kinds=scope.target_kinds,
                 target_ids=scope.target_ids,
                 options=tuple(

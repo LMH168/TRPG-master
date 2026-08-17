@@ -45,6 +45,7 @@ from collaboration_framework.contracts import (
     LocationKnowledge,
     MarkCoreResolvedEffect,
     MoveEntityEffect,
+    MoveEntityToBoundActorEffect,
     NarrationEvidence,
     NarrativeOnlyEffect,
     PendingCheckOption,
@@ -86,15 +87,15 @@ from .models import (
     ValidatedActionCommand,
     WorldTimeState,
 )
+from .narration_evidence import EvidenceAssembler
 from .navigation import resolve_location_target
 from .persistent_results import (
     committed_results_from_events,
     is_public_standard_state,
     validate_persistent_effects,
 )
-from .plot_threads import transition_plot_thread
+from .plot_threads import player_safe_plot_thread_summary, transition_plot_thread
 from .ports import EngineStore
-from .projection_v3 import project_v3
 from .proposal_compiler import ProposalCompiler
 from .rules_v3 import (
     agenda_item_for_event,
@@ -102,7 +103,6 @@ from .rules_v3 import (
     agent_match_scope_admits,
     create_rule_agenda,
     effects_after_degree,
-    entity_state,
     matching_event_rules,
     ordered_agenda_items,
     pending_check_for,
@@ -1430,84 +1430,15 @@ class AdjudicationEngineService:
         player_id: str,
         actor_id: str,
     ) -> tuple[NarrationEvidence, ...]:
-        """Project newly discovered entities through the final player-safe view."""
+        """通过唯一 EvidenceAssembler 编译本次提交的玩家安全结果。"""
 
-        if not runtime.is_v3:
-            return ()
-        presentation_evidence: list[NarrationEvidence] = []
-        for event in events:
-            presentation_id = event.payload.get("presentation_id")
-            summary = event.payload.get("player_safe_summary")
-            if (
-                event.visibility != "public"
-                or event.type != "rule.presentation"
-                or not isinstance(presentation_id, str)
-                or not isinstance(summary, str)
-            ):
-                continue
-            presentation_evidence.append(
-                NarrationEvidence(
-                    ref=event.event_id,
-                    kind="rule_presentation",
-                    subject_id=presentation_id,
-                    subject_name=summary,
-                    description=summary,
-                    required_in_narration=True,
-                )
-            )
-        candidate_events = tuple(
-            event
-            for event in events
-            if (
-                event.visibility == "public"
-                and event.type == "entity.state_changed"
-                and event.payload.get("key") == "discovered"
-                and event.payload.get("value") is True
-                and isinstance(event.payload.get("entity_id"), str)
-                and entity_state(
-                    runtime.game_state,
-                    event.payload["entity_id"],
-                ).get("discovered")
-                is not True
-            )
+        return EvidenceAssembler.from_committed_events(
+            runtime,
+            final_state=new_state,
+            events=events,
+            player_id=player_id,
+            actor_id=actor_id,
         )
-        if not candidate_events:
-            return tuple(presentation_evidence)
-        final_runtime = runtime.model_copy(
-            update={
-                "game_state": new_state,
-                "revision": str(new_state.event_sequence),
-            },
-            deep=True,
-        )
-        visible = {
-            item.id: item
-            for item in project_v3(
-                final_runtime,
-                player_id=player_id,
-                actor_id=actor_id,
-            ).scene.visible_entities
-        }
-        evidence: list[NarrationEvidence] = []
-        for event in candidate_events:
-            entity_id = event.payload.get("entity_id")
-            if not isinstance(entity_id, str):
-                continue
-            projected = visible.get(entity_id)
-            if projected is None:
-                continue
-            evidence.append(
-                NarrationEvidence(
-                    ref=event.event_id,
-                    kind="entity_discovered",
-                    subject_id=projected.id,
-                    subject_name=projected.name,
-                    subject_aliases=projected.aliases,
-                    description=projected.description,
-                    required_in_narration=True,
-                )
-            )
-        return (*evidence, *presentation_evidence)
 
     @staticmethod
     def _validate_identity(
@@ -2799,8 +2730,16 @@ class AdjudicationEngineService:
         actor_id: str,
         offset: int,
     ) -> tuple[GameState, tuple[DomainEvent, ...]]:
+        # Rule 只能通过绑定占位符指向当前可信角色；落地前转换为现有 custody
+        # Effect，后续版本、事件和 PlayerView 继续共用同一条写入路径。
+        if isinstance(effect, MoveEntityToBoundActorEffect):
+            effect = MoveEntityEffect(
+                entity_id=effect.entity_id,
+                holder_actor_id=actor_id,
+            )
         event_type: str | None = None
         effect_event_id: str | None = None
+        event_visibility: Literal["public", "hidden"] = "public"
         payload: dict[str, JsonValue] = {}
         if isinstance(effect, NarrativeOnlyEffect):
             return state, ()
@@ -3128,6 +3067,21 @@ class AdjudicationEngineService:
             }
         elif isinstance(effect, ChangeEntityStateEffect):
             item = state.item_instances.get(effect.entity_id)
+            existing_value: object
+            if item is not None:
+                existing_value = item.state.values.get(effect.key, object())
+            else:
+                existing_state = state.runtime_entities.get(effect.entity_id)
+                if existing_state is None:
+                    existing_state = state.entities.get(effect.entity_id, {})
+                existing_value = existing_state.get(effect.key, object())
+            public_state_already_registered = not is_public_standard_state(
+                effect
+            ) or effect.key in state.public_entity_state_keys.get(effect.entity_id, ())
+            if existing_value == effect.value and public_state_already_registered:
+                # 同值写入不是新的世界变化。统一在 Engine 层去重后，模组无需为
+                # 每个一次性事件额外维护 `*_resolved` 流程布尔字段。
+                return state, ()
             if item is not None:
                 effect_event_id = self._new_id("evt")
                 revision = str(state.event_sequence + offset)
@@ -3290,7 +3244,15 @@ class AdjudicationEngineService:
             payload = {"available": effect.available}
         elif isinstance(effect, TransitionPlotThreadEffect):
             current_thread = state.plot_threads.get(effect.thread_id)
-            if current_thread is None:
+            thread_spec = next(
+                (
+                    item
+                    for item in runtime.v3.plot_threads
+                    if item.id == effect.thread_id
+                ),
+                None,
+            )
+            if current_thread is None or thread_spec is None:
                 self._reject_validation(
                     "PLOT_THREAD_NOT_FOUND",
                     repairability="hard_reject",
@@ -3316,6 +3278,16 @@ class AdjudicationEngineService:
                 "to_status": transitioned.status,
                 "thread_version": transitioned.version,
             }
+            # 隐藏线程的身份和状态都不能进入公开 Event/Memory；玩家线程只携带
+            # 模组预先声明的安全摘要，不暴露触发条件、Rule 或 Agenda 游标。
+            event_visibility = (
+                "public" if thread_spec.visibility == "player" else "hidden"
+            )
+            if event_visibility == "public":
+                payload["player_safe_summary"] = player_safe_plot_thread_summary(
+                    thread_spec,
+                    transitioned.status,
+                )
         elif isinstance(effect, CommitTerminalEndingEffect):
             self._reject_validation(
                 "ENDING_REQUIRES_DRAFT",
@@ -3340,6 +3312,7 @@ class AdjudicationEngineService:
                 actor_id=actor_id,
                 event_type=event_type,
                 payload=payload,
+                visibility=event_visibility,
                 event_id=effect_event_id,
             ),
         )

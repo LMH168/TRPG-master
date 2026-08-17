@@ -287,9 +287,14 @@ Runtime、Host 和后端不得直接依赖 `ModuleDraft`。
 
 1. 为什么需要：隔离所有确定性规则、状态和 Event 权威。
 2. 如果没有：A 会直接修改状态，或 B 的内部模型泄漏到所有模块。
-3. 边界：实现 `ActionExecutor`/`PlayerViewSource`；对 A 只返回安全契约。当前实现是 Fake。
+3. 边界：实现 `ActionExecutor`/`PlayerViewSource`；RuleAgenda 的每个提交段在同一事务写入状态、Event、execution、receipt 和下一游标。PlotThread 只能由已发布 Rule 推进，对 A 只返回玩家安全摘要和证据。
 4. 类型：B 的业务核心与其内部模型。
 5. LangGraph 迁移：不需要修改；LangGraph 不能取代或进入确定性权威边界。
+
+Narration 生产入口在调用模型前重新读取最终 Engine snapshot：公开且非 locked 的
+PlotThread 投影进入内部 `NarrationContext`，隐藏线程、Rule 条件和 Agenda 游标不会进入
+Prompt。公开 transition 可以单向投影为长期 Memory；Memory 与历史 Narration 都不能覆盖
+当前 PlotThread，也不能获得 Engine 写端口。
 
 ### `module/`
 

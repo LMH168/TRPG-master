@@ -104,6 +104,54 @@ def _evaluate_predicate(
     actor_id: str,
 ) -> bool:
     args = condition.args
+    if condition.predicate == "actor_profile_matches_any":
+        actor = state.actors.get(actor_id)
+        if actor is None:
+            return False
+        occupations = args.get("occupations", [])
+        background_terms = args.get("background_terms", [])
+        if not isinstance(occupations, list) or not all(
+            isinstance(item, str) for item in occupations
+        ):
+            return False
+        if not isinstance(background_terms, list) or not all(
+            isinstance(item, str) for item in background_terms
+        ):
+            return False
+        occupation = actor.state.get("occupation")
+        background = actor.state.get("background")
+        normalized_occupation = (
+            "".join(occupation.casefold().split())
+            if isinstance(occupation, str)
+            else ""
+        )
+        normalized_background = (
+            "".join(background.casefold().split())
+            if isinstance(background, str)
+            else ""
+        )
+        return any(
+            "".join(item.casefold().split()) == normalized_occupation
+            for item in occupations
+        ) or any(
+            "".join(item.casefold().split()) in normalized_background
+            for item in background_terms
+        )
+    if condition.predicate == "item_custody_is":
+        entity_id = args.get("entity_id")
+        kind = args.get("kind")
+        if not isinstance(entity_id, str) or kind not in {
+            "actor_inventory",
+            "location",
+            "entity",
+            "retired",
+        }:
+            return False
+        item = state.item_instances.get(entity_id)
+        if item is None or item.custody.kind != kind:
+            return False
+        expected_ref = actor_id if args.get("ref") == "actor" else args.get("ref_id")
+        return isinstance(expected_ref, str) and item.custody.ref_id == expected_ref
     if condition.predicate == "entity_state_is":
         entity_id = args.get("entity_id")
         key = args.get("key")
@@ -446,6 +494,7 @@ def agent_match_scope_admits(
     state: GameState | None = None,
     actor_id: str | None = None,
     action_family: str | None = None,
+    target_interaction: str | None = None,
     target_kind: str | None = None,
     target_id: str | None = None,
 ) -> bool:
@@ -476,6 +525,12 @@ def agent_match_scope_admits(
         action_family is not None
         and scope.action_families
         and action_family not in scope.action_families
+    ):
+        return False
+    if (
+        target_interaction is not None
+        and scope.target_interactions
+        and target_interaction not in scope.target_interactions
     ):
         return False
     if (

@@ -57,10 +57,12 @@ from collaboration_framework.engine import (
     EngineStore,
     RuleAgendaExecutor,
     RuleEngineService,
+    project_narration_plot_threads,
 )
 from collaboration_framework.host.adapters import InMemoryActionPlanRunStore
 from collaboration_framework.host.application import (
     ActionPlanOrchestrator,
+    ContextAssembler,
     HostTurnDecisionExecutor,
     NarrationValidationError,
     Narrator,
@@ -955,7 +957,11 @@ class DeterministicNarrationModel:
             item.ref for item in context.narration_evidence if item.required_in_narration
         )
         required_text = "；".join(
-            f"你发现了{item.subject_name}" + (f"：{item.description}" if item.description else "")
+            (
+                item.description.rstrip("。！？!?；;，,")
+                if item.description
+                else f"你注意到{item.subject_name}"
+            )
             for item in context.narration_evidence
             if item.required_in_narration
         )
@@ -1860,8 +1866,7 @@ class ActionPlanTurnApplication:
             narration_evidence=execution.narration_evidence,
             committed_results=execution.committed_results,
         )
-        context = NarrationContext(
-            background=result.player_view.background,
+        context = ContextAssembler().for_narration(
             player_input=player_input,
             plan_goal=summary,
             termination_status=("cancelled" if execution.status == "cancelled" else "resolved"),
@@ -1877,8 +1882,6 @@ class ActionPlanTurnApplication:
             ),
             focus_entity_ids=focus_entity_ids,
             opening_world_time=result.opening_world_time,
-            allowed_evidence_refs=execution.public_event_refs,
-            narration_evidence=execution.narration_evidence,
         )
         context = self._merge_agenda_results(context, agenda_executions)
         return ActionPlanTurnResult(
@@ -1982,12 +1985,28 @@ class ActionPlanTurnApplication:
         allowed_refs = tuple(
             dict.fromkeys(ref for step in completed_steps for ref in step.event_refs)
         )
+        scene = getattr(context.player_view, "scene", None)
+        visible_entity_ids = {item.id for item in getattr(scene, "visible_entities", ())} | {
+            item.id for item in getattr(scene, "visible_actors", ())
+        }
+        agenda_focus_ids = tuple(
+            dict.fromkeys(
+                item.subject_id
+                for item in narration_evidence
+                if item.kind == "npc_opportunity" and item.subject_id in visible_entity_ids
+            )
+        )
         return context.model_copy(
             update={
                 "completed_steps": completed_steps,
                 "allowed_evidence_refs": allowed_refs,
                 "narration_evidence": tuple(
                     item for step in completed_steps for item in step.narration_evidence
+                ),
+                # Agenda 新产生的当前可见 NPC 是本轮后续叙事的权威焦点；否则
+                # Narrator 会继续围绕 Proposal 原目标或历史 NPC，自行跳走。
+                "focus_entity_ids": tuple(
+                    dict.fromkeys((*context.focus_entity_ids, *agenda_focus_ids))
                 ),
             }
         )
@@ -2045,6 +2064,35 @@ class ActionPlanTurnApplication:
         self,
         context: NarrationContext,
     ) -> NarrationOutput:
+        # PlotThread 不进入公开 PlayerView；每次叙事都从最终 Engine snapshot
+        # 重新投影，避免历史 Context 覆盖刚由 Agenda 提交的剧情阶段。
+        try:
+            async with self._store.transaction(context.player_input.room_id) as transaction:
+                runtime = await transaction.load_runtime()
+            plot_threads = (
+                project_narration_plot_threads(runtime.v3, runtime.game_state)
+                if runtime.is_v3
+                else ()
+            )
+        except Exception as exc:
+            # Engine 已提交后，这次只读投影失败不能把回合重新打成内部错误。
+            # 清空可能过时的线程摘要，Narrator 仍可依赖最终 PlayerView 与当轮 evidence。
+            logger.exception(
+                "narration_plot_thread_projection_failed",
+                action=context.player_input.client_action_id,
+                error_type=type(exc).__name__,
+            )
+            plot_threads = ()
+        context = context.model_copy(update={"plot_threads": plot_threads})
+        blocked_travel = tuple(
+            item
+            for item in context.narration_evidence
+            if item.kind == "travel_interrupted" and item.required_in_narration
+        )
+        if blocked_travel:
+            # 受阻旅行的地点与边界已经由 Engine 确认。这里直接使用结构化事实，
+            # 不让模型把“抵达入口”扩写成“打开入口”或“已经进入”。
+            return self._safe_narration_fallback(context, prefer_evidence=True)
         # goal_outcome 未完成不等于“没有可叙述结果”。Narrator 仍可表达本轮
         # committed_results，但后续持久声明校验会阻止它把检定成功外推为目标完成。
         for attempt in range(2):
@@ -2147,13 +2195,15 @@ class ActionPlanTurnApplication:
             )
         sentences: list[str] = []
         for item in required:
-            if item.kind == "rule_presentation":
+            if item.kind == "entity_discovered":
+                sentences.append(f"随着调查深入，你很快辨认出{item.subject_name}。")
+                if item.description:
+                    sentences.append(item.description.rstrip("。！？!?；;，,") + "。")
+                continue
+            if item.description:
                 sentences.append(item.description.rstrip("。！？!?；;，,") + "。")
                 continue
             sentences.append(f"随着调查深入，你很快辨认出{item.subject_name}。")
-            description = item.description.strip()
-            if description:
-                sentences.append(description.rstrip("。！？!?；;，,") + "。")
         return NarrationOutput(
             text="".join(sentences),
             claimed_evidence_refs=tuple(item.ref for item in required),
@@ -2222,10 +2272,19 @@ class ActionPlanTurnApplication:
         statements.extend(
             f"{inventory_names[result.target_id]}已经放入你的背包。" for result in inventory_results
         )
+        location_results = tuple(result for result, _label in results if result.kind == "location")
+        scene = getattr(context.player_view, "scene", None)
+        scene_id = getattr(scene, "id", None)
+        scene_name = getattr(scene, "name", "")
+        statements.extend(
+            f"你已经抵达{scene_name}。"
+            for result in location_results
+            if result.target_id == scene_id and scene_name
+        )
         refs = tuple(
             result.event_ref
             for result, label in results
-            if label is not None or result in inventory_results
+            if label is not None or result in inventory_results or result in location_results
         )
         outcomes = tuple(step.outcome for step in context.completed_steps)
         # 历史上下文没有目标完成字段，必须按未知处理，不能倒推出目标已经达成。
@@ -2691,6 +2750,15 @@ def _deterministic_step_adjudication(
         "",
     ).strip(" ，,。")
     target = _match_visible_entity(context.player_view, action_text)
+    if context.step.kind == "dialogue" and target is None and not _addresses_keeper(action_text):
+        # “询问眼前的人”没有名字，但当前只有一个可见 NPC 时没有歧义；在此
+        # 绑定该实体，避免后续把地点当作 social 目标。明确称呼守秘人/KP 的
+        # 输入属于主持接口查询，绝不能借此自动选择场景中的 NPC。
+        visible_npcs = tuple(
+            entity for entity in context.player_view.scene.visible_entities if entity.kind == "npc"
+        )
+        if len(visible_npcs) == 1:
+            target = visible_npcs[0]
     # Once the planner has identified a visible conversation partner, ordinary
     # dialogue needs no second model call to invent an adjudication.  Keeping
     # this path narrative-only is also an information boundary: authored rules
@@ -2724,6 +2792,13 @@ def _match_visible_entity(view: PlayerView, text: str):
     if len(matches) > 1 and matches[0][0] == matches[1][0]:
         return None
     return matches[0][2]
+
+
+def _addresses_keeper(text: str) -> bool:
+    """判断玩家是否明确称呼主持接口，而不是模组中的在场角色。"""
+
+    normalized = text.strip().casefold()
+    return any(marker in normalized for marker in ("守秘人", "主持人", "kp"))
 
 
 def _companion_move_effects(

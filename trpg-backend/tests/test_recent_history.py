@@ -10,6 +10,7 @@ from collaboration_framework.contracts import (
     PlayerView,
     SceneView,
     SelfActorView,
+    VisibleEntity,
     VisibleFact,
 )
 from collaboration_framework.engine import EngineExecutionResult
@@ -17,9 +18,15 @@ from collaboration_framework.host.schemas import RecentHistoryBudget
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters import SqlAlchemyRecentHistorySource
-from app.models.engine import ActionExecution
+from app.core.turn_runtime import TurnCommitReceipt, TurnInputSnapshot, new_turn_record
+from app.models.engine import (
+    ActionExecution,
+    AdjudicationCommandExecution,
+    AgendaStepExecutionRecord,
+)
 from app.models.event import Event
 from app.models.room import Player, Room
+from app.models.turn import TurnCommitReceiptRecord
 
 SECRET = "RECENT_HISTORY_SECRET_SENTINEL"
 
@@ -256,6 +263,304 @@ async def test_sql_history_projects_public_and_own_private_without_secret(
         budget=RecentHistoryBudget(max_turns=6, max_chars=6000),
     )
     assert retried.model_dump_json() == context.model_dump_json()
+
+
+async def test_sql_history_restores_visible_npc_from_agenda_evidence(
+    db_session: AsyncSession,
+    recent_history_source: SqlAlchemyRecentHistorySource,
+    turn_store_factory,
+) -> None:
+    """下一轮必须从 Agenda 提交证明恢复新出现 NPC，不能依赖旧 Proposal 焦点。"""
+
+    room_id = "51000000-0000-0000-0000-000000000001"
+    player_id = "51000000-0000-0000-0000-000000000002"
+    db_session.add(Room(id=room_id, room_code="RH0170", room_name="规则焦点", max_players=1))
+    db_session.add(
+        Player(
+            id=player_id,
+            room_id=room_id,
+            nickname="调查员",
+            reconnect_token="51000000-0000-0000-0000-000000000012",
+        )
+    )
+    await db_session.commit()
+    base = datetime(2026, 8, 17, tzinfo=UTC)
+    proposed = new_turn_record(
+        TurnInputSnapshot(
+            room_id=room_id,
+            player_id=player_id,
+            actor_id="actor-viewer",
+            client_action_id="prior-agenda-turn",
+            utterance="进入通道",
+        ),
+        now=base,
+    )
+    turn, _ = await turn_store_factory().create_or_get(proposed)
+    execution_id = "c" * 64
+    db_session.add_all(
+        [
+            Event(
+                id="51000000-0000-0000-0000-000000000101",
+                room_id=room_id,
+                player_id=player_id,
+                turn_id=turn.turn_id,
+                event_type="action.broadcast",
+                correlation_id="prior-agenda-turn",
+                visibility="public",
+                actor_id="actor-viewer",
+                scene_id="passage",
+                view_revision="4",
+                payload={"utterance": "进入通道"},
+                created_at=base,
+            ),
+            Event(
+                id="51000000-0000-0000-0000-000000000102",
+                room_id=room_id,
+                player_id=player_id,
+                event_type="action.broadcast",
+                correlation_id="current",
+                visibility="public",
+                actor_id="actor-viewer",
+                scene_id="study",
+                view_revision="9",
+                payload={"utterance": "我和眼前的人交谈"},
+                created_at=base + timedelta(seconds=2),
+            ),
+        ]
+    )
+    db_session.add(
+        execution(
+            room_id=room_id,
+            player_id=player_id,
+            actor_id="actor-viewer",
+            correlation_id="prior-agenda-turn",
+            summary="进入通道",
+            created_at=base,
+        )
+    )
+    receipt = TurnCommitReceipt(
+        room_id=room_id,
+        engine_request_id=execution_id,
+        turn_id=turn.turn_id,
+        action_request_id="prior-agenda-turn",
+        committed_state_version=5,
+        first_event_sequence=None,
+        last_event_sequence=None,
+        created_at=base + timedelta(seconds=1),
+    )
+    db_session.add(
+        TurnCommitReceiptRecord(
+            room_id=receipt.room_id,
+            engine_request_id=receipt.engine_request_id,
+            turn_id=receipt.turn_id,
+            action_request_id=receipt.action_request_id,
+            committed_state_version=receipt.committed_state_version,
+            first_event_sequence=receipt.first_event_sequence,
+            last_event_sequence=receipt.last_event_sequence,
+            created_at=receipt.created_at,
+        )
+    )
+    db_session.add(
+        AgendaStepExecutionRecord(
+            execution_id=execution_id,
+            room_id=room_id,
+            origin_turn_id=turn.turn_id,
+            execution_turn_id=turn.turn_id,
+            agenda_id="agenda-1",
+            source_event_id="evt-source",
+            rule_id="rule-1",
+            branch_id="branch-1",
+            step_id="npc-step",
+            execution_kind="npc_opportunity",
+            schema_version=1,
+            request_schema_version=1,
+            request_json={},
+            result_schema_version=1,
+            result_json={
+                "narration_evidence": [
+                    {
+                        "schema_version": 1,
+                        "ref": "evt-npc",
+                        "kind": "npc_opportunity",
+                        "subject_id": "new-npc",
+                        "subject_name": "眼前的人",
+                        "subject_aliases": [],
+                        "description": "眼前的人现在就在你面前。",
+                        "required_in_narration": True,
+                    }
+                ]
+            },
+            committed_state_version=5,
+            created_at=base + timedelta(seconds=1),
+        )
+    )
+    await db_session.commit()
+
+    player_input, player_view = current_scope(room_id, player_id)
+    player_view = player_view.model_copy(
+        update={
+            "scene": SceneView(
+                id="study",
+                name="书房",
+                description="安静的书房",
+                visible_entities=(
+                    VisibleEntity(
+                        id="new-npc",
+                        kind="npc",
+                        name="眼前的人",
+                        description="一名刚刚出现的人。",
+                    ),
+                ),
+            )
+        }
+    )
+    context = await recent_history_source.read(
+        player_input=player_input,
+        player_view=player_view,
+        exclude_correlation_id="current",
+        budget=RecentHistoryBudget(max_turns=6, max_chars=6000),
+    )
+
+    assert context.turns[0].participants == ("actor-viewer", "new-npc")
+    assert f"agenda_execution:{execution_id}" in context.turns[0].evidence_refs
+
+
+async def test_sql_history_reads_current_adjudication_writer(
+    db_session: AsyncSession,
+    recent_history_source: SqlAlchemyRecentHistorySource,
+) -> None:
+    """生产 Proposal writer 必须恢复可信目标与 NPC participant。"""
+
+    room_id = "52000000-0000-0000-0000-000000000001"
+    player_id = "52000000-0000-0000-0000-000000000002"
+    other_id = "52000000-0000-0000-0000-000000000003"
+    db_session.add(Room(id=room_id, room_code="RH0171", room_name="生产历史", max_players=2))
+    db_session.add_all(
+        [
+            Player(
+                id=player_id,
+                room_id=room_id,
+                nickname="调查员",
+                reconnect_token="52000000-0000-0000-0000-000000000012",
+            ),
+            Player(
+                id=other_id,
+                room_id=room_id,
+                nickname="同伴",
+                reconnect_token="52000000-0000-0000-0000-000000000013",
+            ),
+        ]
+    )
+    base = datetime(2026, 8, 17, 1, 0, tzinfo=UTC)
+    db_session.add_all(
+        [
+            Event(
+                id="52000000-0000-0000-0000-000000000101",
+                room_id=room_id,
+                player_id=player_id,
+                event_type="action.broadcast",
+                correlation_id="own-production-action",
+                visibility="public",
+                actor_id="actor-viewer",
+                scene_id="study",
+                view_revision="4",
+                payload={"utterance": "继续问他"},
+                created_at=base,
+            ),
+            Event(
+                id="52000000-0000-0000-0000-000000000102",
+                room_id=room_id,
+                player_id=other_id,
+                event_type="action.broadcast",
+                correlation_id="other-production-action",
+                visibility="public",
+                actor_id="actor-other",
+                scene_id="study",
+                view_revision="5",
+                payload={"utterance": "其他玩家行动"},
+                created_at=base + timedelta(seconds=1),
+            ),
+            Event(
+                id="52000000-0000-0000-0000-000000000103",
+                room_id=room_id,
+                player_id=player_id,
+                event_type="action.broadcast",
+                correlation_id="current",
+                visibility="public",
+                actor_id="actor-viewer",
+                scene_id="study",
+                view_revision="9",
+                payload={"utterance": "过个侦察"},
+                created_at=base + timedelta(seconds=2),
+            ),
+        ]
+    )
+    command_payload = {
+        "request_id": "own-production-action",
+        "room_id": room_id,
+        "player_id": player_id,
+        "actor_id": "actor-viewer",
+        "source_revision": "4",
+        "requested_goal": "继续问他",
+        "proposal": {
+            "semantic_goal": "询问眼前的人",
+            "semantic_focus": {"kind": "entity", "id": "new-npc"},
+        },
+    }
+    db_session.add(
+        AdjudicationCommandExecution(
+            room_id=room_id,
+            request_id="own-production-action",
+            action_request_id="own-production-action",
+            request_schema_version=3,
+            request_json=command_payload,
+            result_schema_version=5,
+            result_json={
+                "execution": {
+                    "status": "resolved",
+                    "outcome": "success",
+                    "goal_outcome": "achieved",
+                    "view_revision": "7",
+                }
+            },
+            committed_state_version=7,
+            created_at=base,
+        )
+    )
+    await db_session.commit()
+
+    player_input, player_view = current_scope(room_id, player_id)
+    player_view = player_view.model_copy(
+        update={
+            "scene": SceneView(
+                id="study",
+                name="书房",
+                description="安静的书房",
+                visible_entities=(
+                    VisibleEntity(
+                        id="new-npc",
+                        kind="npc",
+                        name="眼前的人",
+                        description="正在与你交谈。",
+                    ),
+                ),
+            )
+        }
+    )
+    context = await recent_history_source.read(
+        player_input=player_input,
+        player_view=player_view,
+        exclude_correlation_id="current",
+        budget=RecentHistoryBudget(max_turns=6, max_chars=6000),
+    )
+
+    own = next(turn for turn in context.turns if turn.correlation_id == "own-production-action")
+    other = next(turn for turn in context.turns if turn.correlation_id == "other-production-action")
+    assert own.accepted_intent_summary == "继续问他"
+    assert own.participants == ("actor-viewer", "new-npc")
+    assert own.committed_view_revision == "7"
+    assert "adjudication_execution:own-production-action" in own.evidence_refs
+    assert not any(ref.startswith("adjudication_execution:") for ref in other.evidence_refs)
 
 
 async def test_sql_history_selection_keeps_adjacent_then_prefers_same_scene(

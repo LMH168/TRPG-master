@@ -322,6 +322,11 @@ class CandidateScopeSpec(ContractModel):
     """
 
     action_families: tuple[str, ...] = ()
+    # interaction 描述目标受到的结构化作用；与 Host 可自由表达的 method family
+    # 分离后，模组规则无需枚举“推、撬、搬”等自然语言动作词。
+    target_interactions: tuple[
+        Literal["observe", "social", "physical", "other"], ...
+    ] = ()
     location_ids: tuple[Identifier, ...] = ()
     target_kinds: tuple[TargetKind, ...] = ()
     target_ids: tuple[Identifier, ...] = ()
@@ -344,6 +349,29 @@ class MatchOptionAuthorSpec(ContractModel):
     semantic_hints: tuple[str, ...] = Field(min_length=1)
 
 
+class ExplicitChoiceSelectionPolicy(ContractModel):
+    """玩家必须明确选择的公开分支，缺少选择时 Engine 请求澄清。"""
+
+    kind: Literal["explicit_choice"] = "explicit_choice"
+
+
+class DefaultWithOverridesSelectionPolicy(ContractModel):
+    """默认执行固定分支，仅以玩家原话中明确出现的提示选择例外。
+
+    该策略用于表达守秘人掌握的默认后果。例外提示只供 Engine 匹配，不能投影
+    成 Host 可以主动建议的候选，避免把模组中的隐藏处理方式泄露给玩家。
+    """
+
+    kind: Literal["default_with_overrides"] = "default_with_overrides"
+    default_option_id: Identifier
+
+
+AgentMatchSelectionPolicy: TypeAlias = Annotated[
+    ExplicitChoiceSelectionPolicy | DefaultWithOverridesSelectionPolicy,
+    Field(discriminator="kind"),
+]
+
+
 class BindingSlotSpec(ContractModel):
     name: str = Field(min_length=1, max_length=100, pattern=IDENTIFIER_PATTERN)
     source: Literal["actor", "target", "scene", "location"]
@@ -359,11 +387,20 @@ class AgentMatchTriggerSpec(ContractModel):
     when: ConditionExpr | None = None
     question: MatchQuestionSpec
     options: tuple[MatchOptionAuthorSpec, ...] = Field(min_length=1)
+    selection_policy: AgentMatchSelectionPolicy = Field(
+        default_factory=ExplicitChoiceSelectionPolicy
+    )
     bindings: tuple[BindingSlotSpec, ...] = ()
 
     @model_validator(mode="after")
     def validate_options(self) -> AgentMatchTriggerSpec:
         _require_unique_ids(self.options, "Rule match option")
+        if isinstance(
+            self.selection_policy, DefaultWithOverridesSelectionPolicy
+        ) and self.selection_policy.default_option_id not in {
+            option.id for option in self.options
+        }:
+            raise ValueError("Rule 默认 option 必须存在于 options")
         names = [binding.name for binding in self.bindings]
         if len(names) != len(set(names)):
             raise ValueError("Rule binding name 必须唯一")
@@ -414,7 +451,17 @@ class TransitionPlotThreadEffect(ContractModel):
     to_status: Literal["available", "in_progress", "resolved", "failed"]
 
 
-RuleEffect: TypeAlias = ActionEffect | TransitionPlotThreadEffect
+class MoveEntityToBoundActorEffect(ContractModel):
+    """把模组物品交给当前可信角色，不允许作者填写外部 actor ID。"""
+
+    type: Literal["move_entity_to_bound_actor"] = "move_entity_to_bound_actor"
+    entity_id: Identifier
+    actor_binding: Literal["actor"] = "actor"
+
+
+RuleEffect: TypeAlias = (
+    ActionEffect | TransitionPlotThreadEffect | MoveEntityToBoundActorEffect
+)
 
 
 class EffectStep(ContractModel):
@@ -614,6 +661,14 @@ class RuleLimitsSpec(ContractModel):
     max_steps: int = Field(default=128, ge=1, le=1024)
 
 
+class SourceReferenceSpec(ContractModel):
+    """解析 Agent 保留的原文依据，用于发布审查而不进入玩家投影。"""
+
+    document_id: Identifier
+    page: int = Field(ge=1)
+    excerpt: str = Field(min_length=1, max_length=1000)
+
+
 class RuleSpecV3(ContractModel):
     """One authored rule.
 
@@ -628,6 +683,7 @@ class RuleSpecV3(ContractModel):
     execution: RuleExecutionSpec
     presentation: RulePresentationSpec | None = None
     limits: RuleLimitsSpec = Field(default_factory=RuleLimitsSpec)
+    source_refs: tuple[SourceReferenceSpec, ...] = ()
 
     @model_validator(mode="after")
     def validate_entry_branch(self) -> RuleSpecV3:
@@ -650,6 +706,14 @@ class RuleSpecV3(ContractModel):
                 raise ValueError(
                     f"agent_match rule {self.id} 的候选没有对应分支: {', '.join(missing)}"
                 )
+            if (
+                isinstance(
+                    self.trigger.selection_policy,
+                    DefaultWithOverridesSelectionPolicy,
+                )
+                and not self.source_refs
+            ):
+                raise ValueError("带默认隐藏后果的 Rule 必须保留原文 source_refs")
         return self
 
 
@@ -792,6 +856,15 @@ class PlotThreadSpec(ContractModel):
         return self
 
 
+class NarrationPlotThread(ContractModel):
+    """交给 Narrator 的玩家安全剧情线程摘要，不包含隐藏条件或规则游标。"""
+
+    thread_id: Identifier
+    status: Literal["available", "in_progress", "resolved", "failed"]
+    player_safe_summary: str = Field(min_length=1, max_length=500)
+    last_transition_event_ref: str | None = Field(default=None, min_length=1)
+
+
 # --------------------------------------------------------------------------- #
 # root
 # --------------------------------------------------------------------------- #
@@ -847,6 +920,7 @@ __all__ = [
     "IDENTIFIER_PATTERN",
     "ActorPlacementSpec",
     "AdjudicatedCheckStep",
+    "AgentMatchSelectionPolicy",
     "AgentMatchTriggerSpec",
     "AllCondition",
     "AnyCondition",
@@ -859,6 +933,7 @@ __all__ = [
     "CoreResolutionSpec",
     "CreateNpcActionOpportunityStep",
     "CreateTimeTaskStep",
+    "DefaultWithOverridesSelectionPolicy",
     "EffectStep",
     "EndingAnchorSpec",
     "EndingPolicySpec",
@@ -867,6 +942,7 @@ __all__ = [
     "EntitySpecV3",
     "EventTriggerSpec",
     "ExecutionBranchSpec",
+    "ExplicitChoiceSelectionPolicy",
     "FinishStep",
     "Identifier",
     "InformationAudienceSpec",
@@ -883,6 +959,8 @@ __all__ = [
     "MatchQuestionSpec",
     "ModuleContentV3",
     "ModuleTimePolicySpec",
+    "MoveEntityToBoundActorEffect",
+    "NarrationPlotThread",
     "NotCondition",
     "PlotThreadSpec",
     "PlotThreadStatus",
@@ -897,6 +975,7 @@ __all__ = [
     "RuleSpecV3",
     "RuleStepSpec",
     "RuleTriggerSpec",
+    "SourceReferenceSpec",
     "TargetKind",
     "TimePointSpec",
     "TransitionPlotThreadEffect",

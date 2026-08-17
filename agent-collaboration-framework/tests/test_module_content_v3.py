@@ -14,9 +14,10 @@ import copy
 import unittest
 from typing import Any
 
+from pydantic import ValidationError
+
 from collaboration_framework.contracts import ModuleContentV3
 from collaboration_framework.module import validate_module_v3, validate_module_v3_json
-from pydantic import ValidationError
 
 
 def module_payload() -> dict[str, Any]:
@@ -79,7 +80,11 @@ def module_payload() -> dict[str, Any]:
                 "traversal": "gated",
                 "access_point_id": "library_door",
                 "conditions": [
-                    {"op": "predicate", "predicate": "door_unlocked", "args": {"id": "library_door"}}
+                    {
+                        "op": "predicate",
+                        "predicate": "door_unlocked",
+                        "args": {"id": "library_door"},
+                    }
                 ],
                 "travel_cost": {"minutes": 10},
             }
@@ -222,7 +227,9 @@ class ModuleContentV3ContractTests(unittest.TestCase):
     def test_json_entry_point_matches(self) -> None:
         import json
 
-        report = validate_module_v3_json(json.dumps(module_payload(), ensure_ascii=False))
+        report = validate_module_v3_json(
+            json.dumps(module_payload(), ensure_ascii=False)
+        )
         self.assertEqual(report.status, "pass", report.errors)
 
     def test_v3_root_matches_the_frozen_field_list(self) -> None:
@@ -274,7 +281,9 @@ class ReferenceIntegrityTests(unittest.TestCase):
 
     def test_effect_revealing_missing_information(self) -> None:
         payload = mutate()
-        payload["rules"][0]["execution"]["steps"][1]["effect"]["information_id"] = "ghost"
+        payload["rules"][0]["execution"]["steps"][1]["effect"]["information_id"] = (
+            "ghost"
+        )
         self.assert_single_error(payload, "MODULE_V3_INFORMATION_NOT_FOUND")
 
     def test_core_resolution_pointing_at_missing_goal(self) -> None:
@@ -308,6 +317,18 @@ class ReferenceIntegrityTests(unittest.TestCase):
 
 
 class RuleGraphTests(unittest.TestCase):
+    def test_hidden_default_rule_requires_source_reference(self) -> None:
+        """解析 Agent 不能在没有原文依据时创作隐藏默认后果。"""
+
+        payload = module_payload()
+        payload["rules"][0]["trigger"]["selection_policy"] = {
+            "kind": "default_with_overrides",
+            "default_option_id": "by_date",
+        }
+
+        with self.assertRaisesRegex(ValidationError, "source_refs"):
+            ModuleContentV3.model_validate(payload)
+
     def test_agent_match_option_without_a_branch_is_rejected(self) -> None:
         payload = mutate()
         payload["rules"][0]["trigger"]["options"].append(
@@ -367,10 +388,15 @@ class DomainRuleTests(unittest.TestCase):
 
     def test_strict_information_must_declare_its_sources(self) -> None:
         payload = mutate()
-        payload["information"][0]["recovery"] = {"policy": "strict", "allowed_source_types": []}
+        payload["information"][0]["recovery"] = {
+            "policy": "strict",
+            "allowed_source_types": [],
+        }
         with self.assertRaises(ValidationError) as raised:
             ModuleContentV3.model_validate(payload)
-        self.assertIn("strict Information 必须声明 allowed_source_types", str(raised.exception))
+        self.assertIn(
+            "strict Information 必须声明 allowed_source_types", str(raised.exception)
+        )
 
     def test_time_points_must_be_ordered_and_contiguous(self) -> None:
         payload = mutate()

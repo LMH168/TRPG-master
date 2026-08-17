@@ -55,7 +55,9 @@ class PaperChaseV3FixtureTests(unittest.TestCase):
                     reached.add(neighbour)
                     frontier.append(neighbour)
         travelable = {
-            location.id for location in self.content.locations if location.kind != "region"
+            location.id
+            for location in self.content.locations
+            if location.kind != "region"
         }
         self.assertEqual(travelable - reached, set(), "存在走不到的地点")
 
@@ -126,6 +128,18 @@ class PaperChaseV3FixtureTests(unittest.TestCase):
             )
             self.assertNotEqual(item.player_content, "", f"{item.id} 缺少玩家正文")
 
+    def test_plot_thread_summary_does_not_reveal_unconfirmed_identity(self) -> None:
+        """玩家安全剧情摘要不能抢在权威线索之前公开人影身份。"""
+
+        thread = next(
+            item
+            for item in self.content.plot_threads
+            if item.id == "cemetery_encounter"
+        )
+        player_safe_payload = f"{thread.id} {thread.player_safe_summary}"
+        self.assertNotIn("douglas", player_safe_payload.lower())
+        self.assertNotIn("道格拉斯", player_safe_payload)
+
     def test_narrative_beats_did_not_become_places(self) -> None:
         # v2 modelled "与道格拉斯交谈" and "食尸鬼群现身" as Scenes. They are beats,
         # not locations, and migrating them as places would put the player
@@ -136,20 +150,27 @@ class PaperChaseV3FixtureTests(unittest.TestCase):
 
     def test_the_study_is_a_room_rather_than_an_object(self) -> None:
         # v2 made 书房 an Entity, so "搜索书房" targeted a thing you were not in.
-        study = next(item for item in self.content.locations if item.id == "kimball_study")
+        study = next(
+            item for item in self.content.locations if item.id == "kimball_study"
+        )
         self.assertEqual(study.kind, "room")
         self.assertEqual(study.parent_location_id, "kimball_house")
-        self.assertNotIn("kimball_study", {entity.id for entity in self.content.entities})
+        self.assertNotIn(
+            "kimball_study", {entity.id for entity in self.content.entities}
+        )
 
     def test_every_v2_checkpoint_has_a_successor_rule(self) -> None:
         v2 = json.loads(
             (FIXTURE.with_name("module-content-draft.json")).read_text(encoding="utf-8")
         )
         migrated = {rule.id for rule in self.content.rules}
+        # `enter_crypt` 的旧单分支 writer 已由带前置条件和稳定恢复边界的
+        # `crypt_stench_on_entry` 完整替代，不再保留双轨规则。
+        replacements = {"enter_crypt": "crypt_stench_on_entry"}
         missing = [
             checkpoint["id"]
             for checkpoint in v2["checkpoints"]
-            if checkpoint["id"] not in migrated
+            if replacements.get(checkpoint["id"], checkpoint["id"]) not in migrated
         ]
         self.assertEqual(missing, [], "有 v2 checkpoint 在 v3 里没有对应规则")
 

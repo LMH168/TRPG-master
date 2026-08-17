@@ -440,7 +440,21 @@ class NarrationEvidence(ContractModel):
     """Player-safe meaning of one public event that narration may rely on."""
 
     ref: str = Field(min_length=1)
-    kind: Literal["entity_discovered", "rule_presentation"]
+    kind: Literal[
+        "entity_discovered",
+        "rule_presentation",
+        "plot_thread_transition",
+        "travel_interrupted",
+        "actor_condition",
+        "world_time",
+        "location_transition",
+        "npc_opportunity",
+        "passive_check",
+        "actor_resource_change",
+        "information_revealed",
+        "entity_state_change",
+        "entity_moved",
+    ]
     subject_id: str = Field(min_length=1)
     subject_name: str = Field(min_length=1)
     subject_aliases: tuple[str, ...] = ()

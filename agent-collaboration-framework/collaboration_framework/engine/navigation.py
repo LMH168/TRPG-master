@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from itertools import pairwise
 
 from collaboration_framework.contracts import (
     AccessBoundary,
@@ -266,7 +267,7 @@ def resolve_location_target(
         actor_id=actor_id,
     )
     if structural_path is not None:
-        for source_id, destination_id in zip(structural_path, structural_path[1:]):
+        for source_id, destination_id in pairwise(structural_path):
             edge = next(
                 item
                 for item in edges
@@ -298,6 +299,44 @@ def resolve_location_target(
         ),
         safe_reason="当前没有完整可达路线",
     )
+
+
+def travel_access_point_id(
+    module: ModuleContentV3,
+    state: GameState,
+    *,
+    actor_id: str,
+    target_id: str,
+) -> str | None:
+    """返回本次旅行抵达目标前经过的最后一个 Canon 入口实体。
+
+    Compiler 用它把 ``enter_location`` 绑定到固定导航图声明的门、洞口或关卡，
+    而不是要求 Host 猜测隐藏 Rule 的目标 ID。受阻路线直接使用已解析边界；可达
+    路线则只读取最终一段 authored edge，Runtime 路线没有入口时返回 ``None``。
+    """
+
+    resolution = resolve_location_target(
+        module,
+        state,
+        actor_id=actor_id,
+        target_id=target_id,
+    )
+    if resolution.status == "known_blocked" and resolution.boundary is not None:
+        entity_ids = {entity.id for entity in module.entities}
+        return resolution.boundary.id if resolution.boundary.id in entity_ids else None
+    if resolution.status != "known_reachable" or len(resolution.path) < 2:
+        return None
+    source_id, destination_id = resolution.path[-2:]
+    edge = next(
+        (
+            item
+            for item in module.location_edges
+            if item.from_location_id == source_id
+            and item.to_location_id == destination_id
+        ),
+        None,
+    )
+    return None if edge is None else edge.access_point_id
 
 
 def _known_route_edges(

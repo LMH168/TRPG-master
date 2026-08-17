@@ -90,7 +90,7 @@ _REPAIR_HINTS: dict[str, str] = {
     "RULE_OUT_OF_SCOPE": (
         "所选 rule_decision 与本次 method.family 或 target 不匹配。"
         "keeper_capabilities.rule_candidates 里一条候选的 action_families、"
-        "target_kinds、target_ids 为空即表示该维度不设限，非空才要求本次裁决落在"
+        "target_interactions、target_kinds、target_ids 为空即表示该维度不设限，非空才要求本次裁决落在"
         "其中——逐个字段判断，非空的都命中才能保留 rule_decision；一条都对不上就"
         "去掉 rule_decision，按普通裁决重新给出这一步。"
     ),
@@ -509,6 +509,13 @@ class ActionPlanOrchestrator:
 
             assert latest is not None
             agenda_boundary: str | None = None
+            # 先验证裁决返回的 revision 确实对应提交后的权威快照。Agenda 可能随后
+            # 提交时间、SAN 或状态变化；若先 drain 再做等值校验，会把合法的新
+            # revision 误判成裁决结果不一致。
+            view = await self._player_view_projector.refresh_adjudication(
+                player_input,
+                latest,
+            )
             if self._on_step_committed is not None and latest.status not in {
                 "awaiting_skill_choice",
                 "awaiting_post_roll_decision",
@@ -516,10 +523,7 @@ class ActionPlanOrchestrator:
                 # 当前步骤的 RuleAgenda 必须先到稳定边界；下一步骤随后重新投影
                 # PlayerView，不能在旧 revision 上越过被动规则后果。
                 agenda_boundary = await self._on_step_committed(player_input)
-            view = await self._player_view_projector.refresh_adjudication(
-                player_input,
-                latest,
-            )
+                view = await self._player_view_projector.project(player_input)
             run = await self._apply_execution(
                 run,
                 latest,
@@ -1175,17 +1179,13 @@ class ActionPlanOrchestrator:
                     step_status="stopped",
                     code="HOST_PROPOSAL_REQUIRED",
                 )
-            if candidate.semantic_goal != current.step.semantic_goal:
-                return await self._mark_step_failure(
-                    run,
-                    plan_status="needs_clarification",
-                    step_status="stopped",
-                    code="PROPOSAL_SEMANTIC_GOAL_CHANGED",
-                )
+            # semantic_goal 的可信来源是冻结计划步骤；Host 只负责结构化做法与
+            # 目标。服务端绑定可避免同义改写被误判，同时不放宽 Effect 权限。
+            candidate = candidate.model_copy(
+                update={"semantic_goal": current.step.semantic_goal}
+            )
             if current.repair_proposal_baseline is not None and (
-                candidate.semantic_goal
-                != current.repair_proposal_baseline.semantic_goal
-                or candidate.method_family
+                candidate.method_family
                 != current.repair_proposal_baseline.method_family
                 or candidate.target_interaction
                 != current.repair_proposal_baseline.target_interaction
@@ -1374,15 +1374,15 @@ class ActionPlanOrchestrator:
                 code="PENDING_ADJUDICATION_MISSING",
             )
             return failed, None
-        agenda_boundary = (
-            await self._on_step_committed(player_input)
-            if self._on_step_committed is not None
-            else None
-        )
+        # 恢复路径同样先对账裁决 revision，再允许 Agenda 推进权威状态。
         view = await self._player_view_projector.refresh_adjudication(
             player_input,
             status.execution,
         )
+        agenda_boundary = None
+        if self._on_step_committed is not None:
+            agenda_boundary = await self._on_step_committed(player_input)
+            view = await self._player_view_projector.project(player_input)
         reconciled = await self._apply_execution(
             run,
             status.execution,
@@ -1821,7 +1821,11 @@ class HostTurnDecisionExecutor:
             )
         opening_view = await self._player_view_projector.project(player_input)
         view = opening_view
-        candidate = proposal
+        # 玩家原话是单动作目标的唯一可信来源；保留 Host 的结构化字段并在
+        # 提交前覆盖回显文本，避免模型同义改写触发永久澄清循环。
+        candidate = proposal.model_copy(
+            update={"semantic_goal": player_input.utterance}
+        )
         repair_attempts = 0
         while True:
             try:
@@ -1899,11 +1903,20 @@ class HostTurnDecisionExecutor:
                     ),
                 )
                 repaired = await self._repair_adjudicator.adjudicate(context)
+                if not isinstance(repaired, SingleActionProposal):
+                    return SingleActionClarificationResult(
+                        player_view=view,
+                        player_safe_reason="修复后的动作改变了玩家原意，请明确目标或做法",
+                        opening_world_time=WorldClockView.from_world(
+                            opening_view.world
+                        ),
+                    )
+                repaired = repaired.model_copy(
+                    update={"semantic_goal": player_input.utterance}
+                )
                 if (
-                    not isinstance(repaired, SingleActionProposal)
-                    or repaired.semantic_goal != proposal.semantic_goal
-                    or repaired.method_family != proposal.method_family
-                    or repaired.target_interaction != proposal.target_interaction
+                    repaired.method_family != candidate.method_family
+                    or repaired.target_interaction != candidate.target_interaction
                 ):
                     return SingleActionClarificationResult(
                         player_view=view,

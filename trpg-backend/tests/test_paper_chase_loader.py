@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete
@@ -16,6 +17,33 @@ from app.models.engine import ModuleVersion
 from app.service import paper_chase_loader as loader
 
 
+@pytest.mark.asyncio
+async def test_startup_publishes_latest_builtin_module(monkeypatch) -> None:
+    """本地 uvicorn 与容器启动都必须发布最新版，不能依赖额外手动脚本。"""
+
+    from app import main
+
+    session = object()
+
+    class _SessionContext:
+        async def __aenter__(self):
+            return session
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    ensure_seed = AsyncMock()
+    publish_module = AsyncMock()
+    monkeypatch.setattr(main, "async_session_factory", _SessionContext)
+    monkeypatch.setattr(main, "ensure_seed_content", ensure_seed)
+    monkeypatch.setattr(main, "load_paper_chase", publish_module)
+
+    await main._load_builtin_content()
+
+    ensure_seed.assert_awaited_once_with(session)
+    publish_module.assert_awaited_once_with(session)
+
+
 async def test_loader_is_idempotent_and_reports_real_content(
     db_session: AsyncSession,
 ) -> None:
@@ -23,12 +51,12 @@ async def test_loader_is_idempotent_and_reports_real_content(
 
     assert result.outcome == "unchanged"
     assert result.module_id == BUILTIN_MODULE_ID
-    assert result.version == "3.0.8"
+    assert result.version == "3.0.11"
     assert result.world_ref == "coc-7e"
     assert result.location_count == 12
     assert result.entity_count == 15
-    assert result.information_count == 9
-    assert result.rule_count == 27
+    assert result.information_count == 10
+    assert result.rule_count == 30
     assert result.ending_anchor_count == 4
     assert "result: unchanged" in result.summary_lines()
 
@@ -48,7 +76,7 @@ async def test_paper_chase_models_caretaker_bottle_as_discoverable_state() -> No
     """
 
     payload = json.loads(loader.PAPER_CHASE_SOURCE_PATH.read_text(encoding="utf-8"))
-    assert payload["version"] == "3.0.8"
+    assert payload["version"] == "3.0.11"
     entities = {entity["id"]: entity for entity in payload["entities"]}
     information = {item["id"]: item for item in payload["information"]}
     rules = {rule["id"]: rule for rule in payload["rules"]}
@@ -72,7 +100,7 @@ def test_paper_chase_keeps_previous_v2_snapshots() -> None:
     """切到 v3 不删旧快照——已经开局的房间可能还钉在某个 v2 版本上。"""
 
     current = json.loads(loader.PAPER_CHASE_SOURCE_PATH.read_text(encoding="utf-8"))
-    assert current["version"] == "3.0.8"
+    assert current["version"] == "3.0.11"
     assert current["content_schema_version"] == 3
 
     for name, version in (
@@ -210,7 +238,7 @@ async def test_loader_preserves_rooms_pinned_legacy_version(
 
     result = await loader.load_paper_chase(db_session)
 
-    assert result.version == "3.0.8"
+    assert result.version == "3.0.11"
     legacy = await db_session.get(ModuleVersion, (BUILTIN_MODULE_ID, "1.0.1"))
     assert legacy is not None
     assert legacy.content_json == legacy_content

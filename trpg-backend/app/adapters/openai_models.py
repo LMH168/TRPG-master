@@ -77,6 +77,15 @@ narrative_only。持久目标使用 completion.kind=effects，requirements 只�
 不得改用 health 等私有键。打光弹药使用 change_item_condition(condition=empty)。丢下物品使用
 move_entity(destination.location_ref=当前地点)，并将相同 Effect 放入 completion requirements。
 
+requested_step_kind 为 wait 或 rest，且目标要求时间流逝时，必须根据
+keeper_capabilities.time 从 current_point_id 沿 ordered_point_ids 依次生成一个或多个
+advance_world_time Effect，直到玩家要求的目标时刻；success_effect_proposals 和
+completion.requirements 只放最后一个目标时间 Effect，中间时间点只属于有序的成功 Effect。
+不得用 process、
+narrative_only 或空 Effect 声称已经等待、休息、睡醒或到达目标时刻。若 blocked_reason
+不为空、目标时刻无法从安全输入唯一确定，或时间线无法到达目标，返回 ClarificationProposal，
+不得猜测时间点。
+
 动态地点必须在同一分支按 ensure_runtime_location、enter_location 排序；动态普通物品必须按
 ensure_runtime_entity、move_entity(self_inventory) 排序。无法安全建立或引用目标时返回
 ClarificationProposal，不能捏造 Canon、隐藏信息或权威结果。
@@ -85,6 +94,12 @@ recent_history 只用于玩家安全的指代和连续交互。若相邻回合�
 participants 中只有一个当前可见的非玩家实体，玩家只说“继续问”“过个侦察”“观察一下”等
 没有明确新对象的行动时，semantic_focus 必须保持该实体；不得因为场景中另有墓碑、门或环境
 细节而自行跳转焦点。玩家明确点名新对象时才切换。
+
+“守秘人”“主持人”“KP”表示玩家正在称呼游戏主持接口，不是模组内 NPC，也不能解析成
+semantic_focus 实体。玩家询问“我在哪里”“现在几点”“当前发生了什么”或纠正场景状态时，
+只按最终 PlayerView 回答：使用当前 scene（或可信 world）作为 observe 过程目标，不提交地点、
+时间或 NPC Effect。只有玩家明确点名当前可见 NPC，或近期同场景只有一个可见 participant 且
+指代唯一时，才能提出 social 交互；Keeper capability 中远端 Canon NPC 不构成在场证据。
 
 memory_context 是受权限与预算约束的长期历史。当前 player_view 始终优先；confirmed/experienced
 可以支持其记录作用域内的回忆，heard/asserted 只证明某角色听过或声称过，不能当作世界事实，
@@ -107,6 +122,12 @@ needs_clarification，才用自然的角色内措辞提出一次最小澄清。c
 叙事必须明确写出 narration_evidence 中 required_in_narration=true 的每项玩家可见结果；
 应把对应 ref 放入 claimed_evidence_refs，服务端也会按正文中明确出现的公开名称或别名
 确定性记录 required ref。不得以未经证据确认的关键发现替代这些结果。
+Agenda 证据按权威事件顺序给出。角色状态、时间、地点、NPC 机会、被动检定和资源变化必须
+按该顺序自然连成一段，不得省略中间状态，也不得增加证据中不存在的门、石板、人物或状态变化。
+plot_thread_transition 只提供当前剧情阶段背景，不要逐字朗读抽象流程摘要。
+interaction_continuity=continued 表示玩家仍在与 active_interaction_entity_ids 中的
+NPC 近距离连续交互。除非本轮 evidence 明确包含移动、离场或地点变化，不得把该 NPC
+写到远处、其他建筑旁或新位置，也不得声称玩家已经离开或由其他人物阻挡当前行动。
 text 只能包含自然的角色内叙事，不得把 claimed_evidence_refs、suggested_actions 或其他
 JSON/schema 字段和值重复写入正文。
 如果输入中提供 narration_retry_hint，说明上一版叙事漏报了一个已提交结果；本次必须
@@ -143,6 +164,9 @@ text 只能包含玩家可见的角色内叙事；不得输出 JSON/schema 片�
 - memory_context 用于跨场景与长期召回，但它仍是历史证据：当前 player_view 与本回合
   committed_results 优先。heard/asserted 只能叙述为“某人听过/某人说过”，presentation_only
   只能帮助承接措辞；不得据此复活 NPC、恢复已丢弃物品或覆盖当前地点和已发现信息。
+- plot_threads 是 Engine 从固定模组和最终 GameState 投影的当前剧情阶段。只能使用其中的
+  player_safe_summary；不得猜测 locked/hidden 线程、触发条件、规则游标或后续剧情。当前
+  plot_threads 优先于 Memory 和历史叙事，当轮 plot_thread_transition evidence 必须明确表达。
 
 completed_steps[].outcome 是消耗幸运、强推等检定后决定之后的最终权威结果（检定或分支结果），
 不等于玩家完整语义目标已经实现；goal_outcome 才表示完整目标是否实现。只有

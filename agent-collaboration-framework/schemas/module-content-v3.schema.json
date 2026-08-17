@@ -184,6 +184,24 @@
           "title": "Options",
           "type": "array"
         },
+        "selection_policy": {
+          "discriminator": {
+            "mapping": {
+              "default_with_overrides": "#/$defs/DefaultWithOverridesSelectionPolicy",
+              "explicit_choice": "#/$defs/ExplicitChoiceSelectionPolicy"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ExplicitChoiceSelectionPolicy"
+            },
+            {
+              "$ref": "#/$defs/DefaultWithOverridesSelectionPolicy"
+            }
+          ],
+          "title": "Selection Policy"
+        },
         "bindings": {
           "default": [],
           "items": {
@@ -459,6 +477,20 @@
             "type": "string"
           },
           "title": "Action Families",
+          "type": "array"
+        },
+        "target_interactions": {
+          "default": [],
+          "items": {
+            "enum": [
+              "observe",
+              "social",
+              "physical",
+              "other"
+            ],
+            "type": "string"
+          },
+          "title": "Target Interactions",
           "type": "array"
         },
         "location_ids": {
@@ -768,6 +800,30 @@
       "title": "CreateTimeTaskStep",
       "type": "object"
     },
+    "DefaultWithOverridesSelectionPolicy": {
+      "additionalProperties": false,
+      "description": "默认执行固定分支，仅以玩家原话中明确出现的提示选择例外。\n\n该策略用于表达守秘人掌握的默认后果。例外提示只供 Engine 匹配，不能投影\n成 Host 可以主动建议的候选，避免把模组中的隐藏处理方式泄露给玩家。",
+      "properties": {
+        "kind": {
+          "const": "default_with_overrides",
+          "default": "default_with_overrides",
+          "title": "Kind",
+          "type": "string"
+        },
+        "default_option_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$",
+          "title": "Default Option Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "default_option_id"
+      ],
+      "title": "DefaultWithOverridesSelectionPolicy",
+      "type": "object"
+    },
     "EffectStep": {
       "additionalProperties": false,
       "properties": {
@@ -857,6 +913,9 @@
             },
             {
               "$ref": "#/$defs/TransitionPlotThreadEffect"
+            },
+            {
+              "$ref": "#/$defs/MoveEntityToBoundActorEffect"
             }
           ],
           "title": "Effect"
@@ -1334,6 +1393,20 @@
         "entry_step_id"
       ],
       "title": "ExecutionBranchSpec",
+      "type": "object"
+    },
+    "ExplicitChoiceSelectionPolicy": {
+      "additionalProperties": false,
+      "description": "玩家必须明确选择的公开分支，缺少选择时 Engine 请求澄清。",
+      "properties": {
+        "kind": {
+          "const": "explicit_choice",
+          "default": "explicit_choice",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "title": "ExplicitChoiceSelectionPolicy",
       "type": "object"
     },
     "FinishStep": {
@@ -2347,6 +2420,36 @@
       "title": "MoveEntityEffect",
       "type": "object"
     },
+    "MoveEntityToBoundActorEffect": {
+      "additionalProperties": false,
+      "description": "把模组物品交给当前可信角色，不允许作者填写外部 actor ID。",
+      "properties": {
+        "type": {
+          "const": "move_entity_to_bound_actor",
+          "default": "move_entity_to_bound_actor",
+          "title": "Type",
+          "type": "string"
+        },
+        "entity_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$",
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "actor_binding": {
+          "const": "actor",
+          "default": "actor",
+          "title": "Actor Binding",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_id"
+      ],
+      "title": "MoveEntityToBoundActorEffect",
+      "type": "object"
+    },
     "NarrativeOnlyEffect": {
       "additionalProperties": false,
       "properties": {
@@ -2850,6 +2953,14 @@
         },
         "limits": {
           "$ref": "#/$defs/RuleLimitsSpec"
+        },
+        "source_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SourceReferenceSpec"
+          },
+          "title": "Source Refs",
+          "type": "array"
         }
       },
       "required": [
@@ -2923,6 +3034,37 @@
         "visible"
       ],
       "title": "SetVisibilityEffect",
+      "type": "object"
+    },
+    "SourceReferenceSpec": {
+      "additionalProperties": false,
+      "description": "解析 Agent 保留的原文依据，用于发布审查而不进入玩家投影。",
+      "properties": {
+        "document_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$",
+          "title": "Document Id",
+          "type": "string"
+        },
+        "page": {
+          "minimum": 1,
+          "title": "Page",
+          "type": "integer"
+        },
+        "excerpt": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Excerpt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "document_id",
+        "page",
+        "excerpt"
+      ],
+      "title": "SourceReferenceSpec",
       "type": "object"
     },
     "TimePointSpec": {

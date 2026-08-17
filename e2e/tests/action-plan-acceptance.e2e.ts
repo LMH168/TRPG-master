@@ -149,6 +149,7 @@ interface CanonCase {
   destinationEntityId: string
   destinationCheckpointId: string
   assertFinal(view: AgentPlayerView): void
+  assertNarration(text: string): void
 }
 
 const CANON_CASES: CanonCase[] = [
@@ -164,6 +165,9 @@ const CANON_CASES: CanonCase[] = [
         '成功搜索后应在最终 PlayerView 中看到已找到的日记',
       )
     },
+    assertNarration(text) {
+      assert.ok(text.trim().length > 0, '书房搜索必须返回玩家可见叙事')
+    },
   },
   {
     name: '图书馆旧报',
@@ -177,6 +181,10 @@ const CANON_CASES: CanonCase[] = [
         '成功查阅后应公开墓地旧报信息',
       )
     },
+    assertNarration(text) {
+      assert.match(text, /图书馆/)
+      assert.match(text, /旧报|公墓跳舞|怪异脚印/)
+    },
   },
   {
     name: '墓地询问',
@@ -187,6 +195,10 @@ const CANON_CASES: CanonCase[] = [
     assertFinal(view) {
       const caretaker = view.scene.visible_entities.find((entity) => entity.id === 'melodias')
       assert.ok(caretaker, '最终 PlayerView 应保留目的地可见守墓人')
+    },
+    assertNarration(text) {
+      assert.match(text, /墓地/)
+      assert.match(text, /道格拉斯|墓碑/)
     },
   },
 ]
@@ -343,7 +355,9 @@ for (const canon of CANON_CASES) {
         turn.player_view.revision,
       )
       canon.assertFinal(turn.player_view)
-      assert.match(turn.narration.text, /依次完成/)
+      // 验证权威结果的玩家可见语义，不把某个 fallback 措辞
+      // 锁定为成功标志，允许 Narrator 在证据边界内自然表达。
+      canon.assertNarration(turn.narration.text)
 
       const actionEchoes = observed.filter(
         (event) =>

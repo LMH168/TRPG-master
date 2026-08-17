@@ -12,19 +12,15 @@ from collaboration_framework.contracts import (
     ActionAdjudication,
     ActionPlanProposal,
     ActionPlanStep,
-    ActionResult,
-    DefaultCheck,
     Intent,
-    MatchedTarget,
     ModuleContent,
+    NarrationPlotThread,
     PlayerInput,
     PlayerView,
-    RuleCheckResult,
     SceneView,
     SelfActorView,
     SingleActionProposal,
     VisibleEntity,
-    VisibleFact,
 )
 from collaboration_framework.engine import (
     ActorResources,
@@ -38,6 +34,7 @@ from collaboration_framework.host.application import PlayerViewProjector, TurnEx
 from collaboration_framework.host.ports import ActionPlanStepFailure
 from collaboration_framework.host.schemas import (
     ActionPlanStepContext,
+    CompletedPlanStepSummary,
     HostAgentContext,
     IntentContext,
     NarrationContext,
@@ -351,7 +348,7 @@ async def test_prompts_treat_scene_orientation_as_narration_not_form_validation(
             ),
         )
     )
-    intent = Intent.model_validate(intent_payload)
+    Intent.model_validate(intent_payload)
     narration = await PromptNarrationModel(client).generate(
         NarrationContext(
             background="禁酒令时期的密歇根州；叙事安静、克制。",
@@ -360,21 +357,8 @@ async def test_prompts_treat_scene_orientation_as_narration_not_form_validation(
                 player_input=player_input,
                 player_view=player_view,
             ),
-            intent=intent,
-            action_result=ActionResult(
-                request_id="where-am-i",
-                action_id="action:where-am-i",
-                resolution="unrecognized",
-                outcome="not_applicable",
-                visible_facts=(
-                    VisibleFact(
-                        id="action:where-am-i:unrecognized:result:1",
-                        text="没有找到与该说法对应的当前场景目标。",
-                    ),
-                ),
-                narration_constraints=("不得编造目标或状态变化。",),
-                view_revision="0",
-            ),
+            plan_goal=player_input.utterance,
+            termination_status="needs_clarification",
             player_view=player_view,
             recent_history=RecentTurnContext.empty(
                 player_input=player_input,
@@ -405,6 +389,7 @@ async def test_prompts_treat_scene_orientation_as_narration_not_form_validation(
     assert "不要追问" in narration_instructions
     assert "这项限制同样适用于角色对白" in narration_instructions
     assert "检定失败时尤其不得用对白补发新事实" in narration_instructions
+    assert "plot_threads 优先于 Memory 和历史叙事" in narration_instructions
     assert "text 只能包含玩家可见的角色内叙事" in narration_instructions
     assert "claimed_fact_ids" in narration_instructions
     assert "JSON/schema 片段" in narration_instructions
@@ -418,7 +403,7 @@ async def test_prompts_treat_scene_orientation_as_narration_not_form_validation(
     assert narration["claimed_fact_ids"] == []
 
 
-async def test_narration_receives_authoritative_default_check_result() -> None:
+async def test_narration_receives_canonical_completed_step_result() -> None:
     player_input = PlayerInput(
         room_id="room_prompt",
         player_id="player_1",
@@ -441,34 +426,11 @@ async def test_narration_receives_authoritative_default_check_result() -> None:
             description="房间里只有钟表规律的滴答声。",
         ),
     )
-    intent = Intent(
-        kind="action",
-        verb="listen",
-        target=MatchedTarget(id="quiet_room"),
-        check=DefaultCheck(proposed_skills=("listen",)),
-        summary="侧耳倾听周围的声音",
-    )
-    action_result = ActionResult(
-        request_id="listen-carefully",
-        action_id="action:listen-carefully",
-        resolution="direct",
+    completed_step = CompletedPlanStepSummary(
+        step_index=0,
+        semantic_goal="侧耳倾听周围的声音",
         outcome="failure",
-        check_result=RuleCheckResult(
-            checkpoint_id=None,
-            skill_id="listen",
-            target_value=40,
-            roll_value=72,
-            difficulty="regular",
-            success_level="failure",
-            passed=False,
-        ),
-        visible_facts=(
-            VisibleFact(
-                id="action:listen-carefully:direct:result:1",
-                text="你在这次尝试中没能充分发挥相应技巧。",
-            ),
-        ),
-        narration_constraints=("检定未通过；不得声称发现新的隐藏信息。",),
+        goal_outcome="not_achieved",
         view_revision="0",
     )
     client = ImmersionPromptCaptureClient()
@@ -481,29 +443,38 @@ async def test_narration_receives_authoritative_default_check_result() -> None:
                 player_input=player_input,
                 player_view=player_view,
             ),
-            intent=intent,
-            action_result=action_result,
+            plan_goal=completed_step.semantic_goal,
+            termination_status="resolved",
+            completed_steps=(completed_step,),
             player_view=player_view,
             recent_history=RecentTurnContext.empty(
                 player_input=player_input,
                 player_view=player_view,
             ),
+            plot_threads=(
+                NarrationPlotThread(
+                    thread_id="quiet-room-investigation",
+                    status="in_progress",
+                    player_safe_summary="安静房间的调查正在推进。",
+                    last_transition_event_ref="evt-thread-started",
+                ),
+            ),
         )
     )
 
     serialized = client.inputs["trpg_narration"]
-    assert serialized["intent"]["check"]["route"] == "default"
-    assert serialized["intent"]["target"]["id"] == "quiet_room"
-    assert serialized["action_result"]["outcome"] == "failure"
-    assert serialized["action_result"]["check_result"] == {
-        "checkpoint_id": None,
-        "skill_id": "listen",
-        "target_value": 40,
-        "roll_value": 72,
-        "difficulty": "regular",
-        "success_level": "failure",
-        "passed": False,
-    }
+    assert "intent" not in serialized
+    assert "action_result" not in serialized
+    assert serialized["completed_steps"][0]["outcome"] == "failure"
+    assert serialized["completed_steps"][0]["goal_outcome"] == "not_achieved"
+    assert serialized["plot_threads"] == [
+        {
+            "thread_id": "quiet-room-investigation",
+            "status": "in_progress",
+            "player_safe_summary": "安静房间的调查正在推进。",
+            "last_transition_event_ref": "evt-thread-started",
+        }
+    ]
 
 
 class ScriptedTurnDecisionClient:

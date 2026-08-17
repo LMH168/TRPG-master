@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Literal, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,11 +11,19 @@ from collaboration_framework.contracts import (
     AgendaContinuationProposal,
     CommittedResult,
     NarrationEvidence,
+    NarrationPlotThread,
     PlayerInput,
     PlayerView,
     PostRollDecisionRequest,
 )
-from collaboration_framework.engine import AgendaStepExecution, engine_turn_context
+from collaboration_framework.engine import (
+    ActorState,
+    AgendaStepExecution,
+    InMemoryEngineStore,
+    PlotThreadState,
+    create_initial_game_state,
+    engine_turn_context,
+)
 from collaboration_framework.host.application import (
     NarrationValidationError,
 )
@@ -31,6 +39,52 @@ from collaboration_framework.host.schemas import (
 from collaboration_framework.memory import MemoryContext
 
 from app.core.action_plan_turn import ActionPlanTurnApplication
+from app.service.paper_chase_loader import PAPER_CHASE_SOURCE_PATH
+
+
+def _narration_store(
+    room_id: str,
+    *,
+    crypt_status: Literal["locked", "available", "in_progress", "resolved", "failed"] = "locked",
+) -> InMemoryEngineStore:
+    """构造 Narrator 读取最终 PlotThread snapshot 所需的最小真实 Store。"""
+
+    from collaboration_framework.contracts import ModuleContentV3
+
+    module = ModuleContentV3.model_validate_json(
+        PAPER_CHASE_SOURCE_PATH.read_text(encoding="utf-8")
+    )
+    state = create_initial_game_state(
+        module,
+        room_id=room_id,
+        actors={
+            "actor-281": ActorState(
+                player_id="player-281",
+                name="调查员",
+                source_character_id="character-281",
+                source_character_version=1,
+            )
+        },
+    )
+    if crypt_status != "locked":
+        current = state.plot_threads["crypt_entry_investigation"]
+        state = state.model_copy(
+            update={
+                "plot_threads": {
+                    **state.plot_threads,
+                    "crypt_entry_investigation": PlotThreadState(
+                        thread_id=current.thread_id,
+                        status=crypt_status,
+                        version=current.version + 1,
+                        last_transition_event_id="evt-final-thread",
+                    ),
+                }
+            },
+            deep=True,
+        )
+    store = InMemoryEngineStore()
+    store.register_room(module_content=module, initial_state=state)
+    return store
 
 
 def _run(*, cancel_id: str | None) -> SimpleNamespace:
@@ -108,6 +162,7 @@ class _NarrationContextStub:
         self.termination_status = termination_status
         self.narration_retry_hint: str | None = None
         self.player_input = SimpleNamespace(
+            room_id="room-281",
             client_action_id="action-narration-test",
             utterance="",
         )
@@ -115,14 +170,31 @@ class _NarrationContextStub:
             scene=SimpleNamespace(visible_entities=()),
         )
         self.completed_steps: tuple[object, ...] = ()
+        self.plot_threads: tuple[NarrationPlotThread, ...] = ()
 
     def model_copy(self, *, update: dict[str, object]):
         copied = _NarrationContextStub(
             self.narration_evidence[0],
             self.termination_status,
         )
-        copied.narration_retry_hint = cast(str | None, update["narration_retry_hint"])
+        for key, value in update.items():
+            setattr(copied, key, value)
         return copied
+
+
+class _FailingNarrationStore:
+    """模拟 Engine 已提交后，Narrator 的只读 snapshot 瞬态不可用。"""
+
+    class _Transaction:
+        async def __aenter__(self):
+            raise OSError("snapshot unavailable")
+
+        async def __aexit__(self, exc_type, exc, traceback) -> None:
+            del exc_type, exc, traceback
+
+    def transaction(self, room_id: str) -> _Transaction:
+        assert room_id == "room-281"
+        return self._Transaction()
 
 
 def _application(run: SimpleNamespace, engine: _Engine, orchestrator: _Orchestrator):
@@ -465,6 +537,7 @@ def test_planning_failure_returns_host_reply_without_execution() -> None:
 @pytest.mark.asyncio
 async def test_narration_falls_back_to_required_player_safe_evidence() -> None:
     application = object.__new__(ActionPlanTurnApplication)
+    application._store = _narration_store("room-281")
     narrate = AsyncMock(side_effect=NarrationValidationError("required_evidence_missing"))
     application._narrator = SimpleNamespace(narrate=narrate)
     evidence = NarrationEvidence(
@@ -493,10 +566,69 @@ async def test_narration_falls_back_to_required_player_safe_evidence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_blocked_travel_uses_structured_fallback_without_model_claims() -> None:
+    """受阻旅行直接复述 Engine 边界，模型不能把抵达入口扩写成已经进入。"""
+
+    application = object.__new__(ActionPlanTurnApplication)
+    application._store = _narration_store("room-281")
+    narrate = AsyncMock()
+    application._narrator = SimpleNamespace(narrate=narrate)
+    evidence = NarrationEvidence(
+        ref="evt-travel-blocked",
+        kind="travel_interrupted",
+        subject_id="sealed-hatch",
+        subject_name="密封舱门",
+        description="你抵达密封舱门，但通路仍被阻挡，尚未进入目标地点。",
+        required_in_narration=True,
+    )
+    context = cast(NarrationContext, _NarrationContextStub(evidence, "resolved"))
+
+    narration = await application._narrate(context)
+
+    narrate.assert_not_awaited()
+    assert narration.text == evidence.description
+    assert narration.claimed_evidence_refs == (evidence.ref,)
+
+
+def test_travel_result_fallback_uses_final_player_view_location() -> None:
+    """travel.resolved 的结构化地点结果应生成抵达事实，不退回空状态模板。"""
+
+    result = CommittedResult(
+        kind="location",
+        target_id="archive-room",
+        event_ref="evt-arrived",
+    )
+    context = SimpleNamespace(
+        termination_status="resolved",
+        player_input=SimpleNamespace(client_action_id="travel-fallback"),
+        completed_steps=(
+            SimpleNamespace(
+                outcome="success",
+                goal_outcome="achieved",
+                committed_results=(result,),
+            ),
+        ),
+        player_view=SimpleNamespace(
+            scene=SimpleNamespace(
+                id="archive-room",
+                name="档案室",
+                visible_entities=(),
+            ),
+        ),
+    )
+
+    output = ActionPlanTurnApplication._deterministic_narration_fallback(cast(Any, context))
+
+    assert output.text == "你已经抵达档案室。"
+    assert output.claimed_evidence_refs == ("evt-arrived",)
+
+
+@pytest.mark.asyncio
 async def test_not_achieved_goal_still_narrates_committed_rule_result() -> None:
     """完整目标未满足时仍应调用 Narrator 表达实际结果，不能直接返回地点模板。"""
 
     application = object.__new__(ActionPlanTurnApplication)
+    application._store = _narration_store("room-281")
     expected = NarrationOutput(text="沉重的石板被推到一旁，向下的通道显露出来。")
     narrate = AsyncMock(return_value=expected)
     application._narrator = SimpleNamespace(narrate=narrate)
@@ -536,7 +668,13 @@ def test_merge_agenda_results_restores_persisted_player_safe_evidence() -> None:
         plan_goal="进入地穴",
         termination_status="resolved",
         completed_steps=(step,),
-        player_view=SimpleNamespace(revision="7"),
+        player_view=SimpleNamespace(
+            revision="7",
+            scene=SimpleNamespace(
+                visible_entities=(SimpleNamespace(id="cemetery-figure"),),
+                visible_actors=(),
+            ),
+        ),
         memory_context=SimpleNamespace(),
         allowed_evidence_refs=(),
         narration_evidence=(),
@@ -571,7 +709,15 @@ def test_merge_agenda_results_restores_persisted_player_safe_evidence() -> None:
                     subject_name="地穴恶臭令你失去意识。",
                     description="地穴恶臭令你失去意识。",
                     required_in_narration=True,
-                ).to_json_dict()
+                ).to_json_dict(),
+                NarrationEvidence(
+                    ref="evt-agenda-npc",
+                    kind="npc_opportunity",
+                    subject_id="cemetery-figure",
+                    subject_name="墓地中的人影",
+                    description="墓地中的人影现在就在你眼前。",
+                    required_in_narration=True,
+                ).to_json_dict(),
             ],
         },
         committed_state_version=7,
@@ -584,6 +730,7 @@ def test_merge_agenda_results_restores_persisted_player_safe_evidence() -> None:
     assert merged.allowed_evidence_refs == (event_ref, presentation_ref)
     assert merged.completed_steps[0].committed_results[0].state_value == "unconscious"
     assert merged.narration_evidence[0].ref == presentation_ref
+    assert merged.focus_entity_ids == ("cemetery-figure",)
 
 
 @pytest.mark.asyncio
@@ -646,6 +793,7 @@ async def test_agenda_continuation_narrates_persisted_execution_evidence() -> No
         narrate=AsyncMock(return_value=NarrationOutput(text="你屏住呼吸进入地穴。"))
     )
     application = object.__new__(ActionPlanTurnApplication)
+    application._store = _narration_store(player_input.room_id)
     application._agenda_executor = agenda_executor
     application._projector = SimpleNamespace(project=AsyncMock(return_value=final_view))
     application._narrator = narrator
@@ -681,6 +829,7 @@ async def test_agenda_continuation_narrates_persisted_execution_evidence() -> No
 @pytest.mark.asyncio
 async def test_required_evidence_fallback_never_changes_clarification_scope() -> None:
     application = object.__new__(ActionPlanTurnApplication)
+    application._store = _narration_store("room-281")
     narrate = AsyncMock(side_effect=NarrationValidationError("required_evidence_missing"))
     application._narrator = SimpleNamespace(narrate=narrate)
     evidence = NarrationEvidence(
@@ -701,6 +850,75 @@ async def test_required_evidence_fallback_never_changes_clarification_scope() ->
     assert evidence.subject_name not in narration.text
     assert narration.claimed_evidence_refs == ()
     assert narrate.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_narration_reloads_final_plot_thread_state_before_model_call() -> None:
+    """Narrator 必须看到最终 Engine 状态，不能沿用提交前的剧情线程快照。"""
+
+    application = object.__new__(ActionPlanTurnApplication)
+    application._store = _narration_store("room-281", crypt_status="in_progress")
+    narrate = AsyncMock(return_value=NarrationOutput(text="地穴入口的调查仍在推进。"))
+    application._narrator = SimpleNamespace(narrate=narrate)
+    context = _NarrationContextStub(
+        NarrationEvidence(
+            ref="evt-thread",
+            kind="plot_thread_transition",
+            subject_id="crypt_entry_investigation",
+            subject_name="地穴入口调查",
+            description="地穴入口调查正在推进。",
+        ),
+        "resolved",
+    )
+    context.plot_threads = (
+        NarrationPlotThread(
+            thread_id="crypt_entry_investigation",
+            status="resolved",
+            player_safe_summary="这是提交前的过时摘要。",
+        ),
+    )
+
+    await application._narrate(cast(NarrationContext, context))
+
+    assert narrate.await_args is not None
+    final_context = narrate.await_args.args[0]
+    assert len(final_context.plot_threads) == 1
+    assert final_context.plot_threads[0].status == "in_progress"
+    assert "过时摘要" not in final_context.plot_threads[0].player_safe_summary
+
+
+@pytest.mark.asyncio
+async def test_plot_thread_read_failure_does_not_fail_committed_narration() -> None:
+    """提交后的附加只读失败必须降级，不能重新制造 TURN_INTERNAL_ERROR。"""
+
+    application = object.__new__(ActionPlanTurnApplication)
+    application._store = _FailingNarrationStore()
+    expected = NarrationOutput(text="已提交的结果仍然有效。")
+    narrate = AsyncMock(return_value=expected)
+    application._narrator = SimpleNamespace(narrate=narrate)
+    context = _NarrationContextStub(
+        NarrationEvidence(
+            ref="evt-committed",
+            kind="rule_presentation",
+            subject_id="committed-result",
+            subject_name="已提交的结果",
+            description="已提交的结果仍然有效。",
+        ),
+        "resolved",
+    )
+    context.plot_threads = (
+        NarrationPlotThread(
+            thread_id="stale-thread",
+            status="resolved",
+            player_safe_summary="不能继续使用的旧摘要。",
+        ),
+    )
+
+    result = await application._narrate(cast(NarrationContext, context))
+
+    assert result == expected
+    assert narrate.await_args is not None
+    assert narrate.await_args.args[0].plot_threads == ()
 
 
 @pytest.mark.asyncio

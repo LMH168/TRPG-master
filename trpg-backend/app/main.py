@@ -28,6 +28,7 @@ from app.dto.common import ApiResponse
 from app.service.character_background import build_character_background_service
 from app.service.host_speech import build_host_speech_service
 from app.service.memory_projection import memory_projection_supervisor
+from app.service.paper_chase_loader import load_paper_chase
 from app.service.portrait_generation import (
     PortraitGenerationService,
     build_portrait_generation_service,
@@ -52,6 +53,16 @@ _HTTP_STATUS_ERROR_CODE: dict[int, ErrorCode] = {
 }
 
 
+async def _load_builtin_content() -> None:
+    """幂等发布代码随附的最新内置模组，再允许运行时恢复已有房间。"""
+
+    async with async_session_factory() as db:
+        await ensure_seed_content(db)
+        # Seed 只维护目录基础数据；完整且不可变的 ModuleVersion 必须由校验
+        # 加载器发布。统一放在 startup 后，本地 uvicorn 与容器不会再出现差异。
+        await load_paper_chase(db)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """FastAPI 的应用生命周期钩子：`yield` 之前的代码在启动时跑一次，
@@ -62,12 +73,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     迁移场景，本期把 `room_players` 改名成 `players`、给 `rooms` 加了一批
     字段，继续用它会让开发者拿到一个"代码以为字段存在、数据库其实没有"的
     坏状态。建表这一步交给 `alembic upgrade head`（见 README 启动步骤），
-    这里只负责插入内置模组这类种子数据（`ensure_seed_content` 是幂等的，
-    如果表还不存在——也就是忘了跑 alembic——会直接报错而不是静默跳过，
-    这是有意的，逼着开发者按新的启动步骤来）。
+    这里只负责插入基础种子并幂等发布代码随附的最新内置模组。如果表还不
+    存在——也就是忘了跑 alembic——会直接报错而不是静默跳过，这是有意的，
+    避免服务在目录版本与 ModuleVersion 不一致时继续接受新房间。
     """
-    async with async_session_factory() as db:
-        await ensure_seed_content(db)
+    await _load_builtin_content()
     portrait_service: PortraitGenerationService = app.state.portrait_generation_service
     await portrait_service.recover_interrupted()
     # 可靠回合是唯一生产入口；启动时恢复租约过期的 Turn，并继续投递已持久化

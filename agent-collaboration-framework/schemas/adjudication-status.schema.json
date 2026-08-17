@@ -417,7 +417,18 @@
         "kind": {
           "enum": [
             "entity_discovered",
-            "rule_presentation"
+            "rule_presentation",
+            "plot_thread_transition",
+            "travel_interrupted",
+            "actor_condition",
+            "world_time",
+            "location_transition",
+            "npc_opportunity",
+            "passive_check",
+            "actor_resource_change",
+            "information_revealed",
+            "entity_state_change",
+            "entity_moved"
           ],
           "title": "Kind",
           "type": "string"

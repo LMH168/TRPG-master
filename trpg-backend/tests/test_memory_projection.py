@@ -126,6 +126,55 @@ def test_projection_uses_receipts_and_explicit_social_participant() -> None:
     assert presentation.scope == "player"
 
 
+def test_projection_only_records_public_plot_thread_summary() -> None:
+    """剧情 Memory 只保存 Engine 已发布的安全摘要，不收养隐藏线程。"""
+
+    source = _source()
+    source = source.model_copy(
+        update={
+            "events": (
+                *source.events,
+                MemoryProjectionEvent(
+                    event_id="event-public-thread",
+                    sequence=4,
+                    event_type="plot_thread.transitioned",
+                    actor_id="actor-1",
+                    visibility="public",
+                    payload={
+                        "thread_id": "public-thread",
+                        "to_status": "in_progress",
+                        "player_safe_summary": "公开调查方向；调查正在推进。",
+                    },
+                    created_at=NOW + timedelta(seconds=3),
+                ),
+                MemoryProjectionEvent(
+                    event_id="event-hidden-thread",
+                    sequence=5,
+                    event_type="plot_thread.transitioned",
+                    actor_id="keeper",
+                    visibility="hidden",
+                    payload={
+                        "thread_id": "keeper-thread",
+                        "to_status": "resolved",
+                    },
+                    created_at=NOW + timedelta(seconds=4),
+                ),
+            )
+        }
+    )
+
+    entries = project_memory_entries(source)
+    plot_entries = tuple(
+        entry
+        for entry in entries
+        if entry.kind == "world_event"
+        and entry.content.get("event_type") == "plot_thread.transitioned"
+    )
+    assert len(plot_entries) == 1
+    assert plot_entries[0].subject_id == "public-thread"
+    assert plot_entries[0].content["summary"] == "公开调查方向；调查正在推进。"
+
+
 def test_action_plan_conversation_does_not_store_verbatim_parent_utterance() -> None:
     source = _source().model_copy(
         update={

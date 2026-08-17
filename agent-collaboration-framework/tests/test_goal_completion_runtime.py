@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -24,9 +25,11 @@ from collaboration_framework.engine import (
     ActorState,
     AdjudicationEngineService,
     DiceRoller,
+    DomainEvent,
     InMemoryEngineStore,
     RuleEngineService,
     SequenceDiceSource,
+    committed_results_from_events,
 )
 from collaboration_framework.engine.adjudication import GoalCompletionEvaluationError
 from collaboration_framework.engine.initialization import create_initial_game_state
@@ -48,6 +51,28 @@ ACTOR = "goal-runtime-actor"
 HANDGUN = f"{ACTOR}:equipment:0"
 
 
+def test_travel_resolved_event_projects_location_result() -> None:
+    """v3 旅行事件必须进入结构化 Narrator 证据，不能退回自然语言推断。"""
+
+    event = DomainEvent(
+        event_id="event-travel-resolved",
+        sequence=1,
+        type="travel.resolved",
+        room_id=ROOM,
+        actor_id=ACTOR,
+        client_action_id="travel-action",
+        cause="enter_location",
+        payload={"destination_id": "archive-room", "path": ["hall", "archive-room"]},
+    )
+
+    results = committed_results_from_events((event,))
+
+    assert len(results) == 1
+    assert results[0].kind == "location"
+    assert results[0].target_id == "archive-room"
+    assert results[0].event_ref == "event-travel-resolved"
+
+
 def _runtime_store(*, handgun_location_id: str | None = None) -> InMemoryEngineStore:
     """加载真实模组，并给调查员准备射击技能与一把可追踪手枪。"""
 
@@ -58,8 +83,11 @@ def _runtime_store(*, handgun_location_id: str | None = None) -> InMemoryEngineS
         source_character_id="character-goal-runtime",
         source_character_version=1,
         state={
-            "skills": {"firearm-handgun": 80},
-            "skill_labels": {"firearm-handgun": "射击：手枪"},
+            "skills": {"firearm-handgun": 80, "intimidate": 80},
+            "skill_labels": {
+                "firearm-handgun": "射击：手枪",
+                "intimidate": "恐吓",
+            },
             "equipment": ["手枪"],
         },
     )
@@ -167,6 +195,7 @@ def _submission(
     revision: str,
     goal: str,
     payload: dict[str, object],
+    step_kind: Literal["travel", "wait", "rest", "action", "dialogue"] | None = None,
 ) -> SubmitProposalRequest:
     """用可信目标快照包装一份 v2 Proposal。"""
 
@@ -187,7 +216,85 @@ def _submission(
         source_revision=revision,
         proposal=proposal,
         requested_goal=goal,
+        requested_step_kind=step_kind,
     )
+
+
+@pytest.mark.asyncio
+async def test_rule_information_event_becomes_required_narration_evidence() -> None:
+    """普通裁决揭示的玩家信息必须在同一 execution 中交给 Narrator。"""
+
+    store = _runtime_store()
+    engine = AdjudicationEngineService(
+        store,
+        dice=DiceRoller(SequenceDiceSource([20])),
+    )
+    goal = "恐吓守墓人说出他看到的事情"
+    pending = await engine.submit_proposal(
+        _submission(
+            request_id="intimidate-for-information",
+            revision="0",
+            goal=goal,
+            payload={
+                "semantic_focus": {"kind": "entity", "id": "melodias"},
+                "target_interaction": "social",
+                "method_family": "intimidate",
+                "method_description": goal,
+                "check_proposal": {
+                    "mode": "required",
+                    "candidates": [
+                        {
+                            "candidate_id": "intimidate",
+                            "skill_id": "intimidate",
+                            "difficulty": "regular",
+                            "method_summary": goal,
+                            "player_safe_reason": "社交行动需要检定",
+                        }
+                    ],
+                },
+                "rule_ref": {
+                    "rule_id": "intimidate_caretaker",
+                    "option_id": "intimidate",
+                },
+                "success_effect_proposals": [],
+                "failure_effect_proposals": [],
+                "completion": {"kind": "process", "interaction": "social"},
+            },
+        )
+    )
+    assert pending.pending_decision is not None
+    rolled = await engine.decide(
+        CheckDecisionRequest(
+            request_id="intimidate-for-information:select",
+            room_id=ROOM,
+            player_id=PLAYER,
+            source_revision=pending.view_revision,
+            decision_id=pending.pending_decision.decision_id,
+            decision_version=pending.pending_decision.decision_version,
+            choice=SelectCheckChoice(candidate_id="intimidate"),
+        )
+    )
+    assert rolled.check_run is not None
+    resolved = await engine.decide_post_roll(
+        PostRollDecisionRequest(
+            request_id="intimidate-for-information:accept",
+            room_id=ROOM,
+            player_id=PLAYER,
+            source_revision=rolled.view_revision,
+            check_id=rolled.check_run.check_id,
+            check_version=rolled.check_run.version,
+            option_id="accept-current",
+        )
+    )
+
+    information = next(
+        item
+        for item in resolved.narration_evidence
+        if item.kind == "information_revealed"
+    )
+    assert information.subject_id == "melodias_night_sighting"
+    assert "深夜看到一个人影坐在那块墓碑上" in information.description
+    assert information.required_in_narration is True
 
 
 @pytest.mark.asyncio
@@ -518,6 +625,7 @@ async def test_advance_world_time_satisfies_effect_completion() -> None:
         request_id="advance-time",
         revision="0",
         goal="等待到晚上",
+        step_kind="wait",
         payload={
             "semantic_focus": {"kind": "location", "id": "cemetery"},
             "target_interaction": "observe",
@@ -542,6 +650,49 @@ async def test_advance_world_time_satisfies_effect_completion() -> None:
     assert result.outcome == "success"
     assert result.goal_outcome == "achieved"
     assert store.inspect_state(ROOM).world_time.current_point_id == "hour_18"
+
+
+@pytest.mark.asyncio
+async def test_rest_to_midnight_commits_each_authoritative_time_point() -> None:
+    """从中午休息到午夜必须逐点提交，不能只在 Narrator 文本中切换时间。"""
+
+    store = _runtime_store()
+    engine = AdjudicationEngineService(store)
+    advances = [
+        {"type": "advance_world_time", "to_point_id": "hour_18"},
+        {"type": "advance_world_time", "to_point_id": "hour_20"},
+        {"type": "advance_world_time", "to_point_id": "hour_00"},
+    ]
+    request = _submission(
+        request_id="rest-to-midnight",
+        revision="0",
+        goal="休息到深夜十二点",
+        step_kind="rest",
+        payload={
+            "semantic_focus": {"kind": "location", "id": "cemetery"},
+            "target_interaction": "other",
+            "method_family": "休息",
+            "method_description": "休息到深夜十二点",
+            "check_proposal": {"mode": "none"},
+            "success_effect_proposals": advances,
+            "failure_effect_proposals": [],
+            "completion": {"kind": "effects", "requirements": [advances[-1]]},
+        },
+    )
+
+    result = await engine.submit_proposal(request)
+    view = await RuleEngineService(store).read(
+        PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
+    )
+
+    assert result.goal_outcome == "achieved"
+    assert view.world.hour_of_day == 0
+    assert store.inspect_state(ROOM).world_time.current_point_id == "hour_00"
+    assert [
+        event.payload["point_id"]
+        for event in store.inspect_domain_events(ROOM)
+        if event.type == "time.point_entered"
+    ] == ["hour_18", "hour_20", "hour_00"]
 
 
 def test_narrative_only_cannot_silently_complete_persistent_goal() -> None:

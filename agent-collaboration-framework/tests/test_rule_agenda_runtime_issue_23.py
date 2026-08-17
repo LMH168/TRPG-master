@@ -35,7 +35,10 @@ from collaboration_framework.engine import (
     DiceRoller,
     DomainEvent,
     EngineRuntimeSnapshot,
+    EvidenceAssembler,
+    GameState,
     InMemoryEngineStore,
+    PlotThreadState,
     RuleAgendaExecutor,
     SequenceDiceSource,
     create_initial_game_state,
@@ -52,6 +55,26 @@ FIXTURE = (
     / "追书人"
     / "module-content-v3.json"
 )
+
+
+def _make_cemetery_encounter_available(state: GameState) -> GameState:
+    """把合成测试推进到墓地人影身份尚未公开的权威剧情边界。"""
+
+    current = state.plot_threads["cemetery_encounter"]
+    return state.model_copy(
+        update={
+            "plot_threads": {
+                **state.plot_threads,
+                "cemetery_encounter": PlotThreadState(
+                    thread_id=current.thread_id,
+                    status="available",
+                    version=current.version + 1,
+                    last_transition_event_id="evt-douglas-available",
+                ),
+            }
+        },
+        deep=True,
+    )
 
 
 @pytest.mark.asyncio
@@ -74,6 +97,7 @@ async def test_passive_check_commits_once_and_recovery_does_not_reroll() -> None
             )
         },
     )
+    state = _make_cemetery_encounter_available(state)
     store.register_room(module_content=module, initial_state=state)
     engine = AdjudicationEngineService(store)
 
@@ -129,16 +153,131 @@ async def test_passive_check_commits_once_and_recovery_does_not_reroll() -> None
     assert tuple(item.execution_id for item in by_turn) == (executions[0].execution_id,)
 
 
-def test_rule_presentation_becomes_required_player_safe_evidence() -> None:
-    """Agenda 只能从显式 Presentation 生成叙事证据，不能解释普通事件载荷。"""
+@pytest.mark.asyncio
+async def test_douglas_death_reaches_durable_player_choice_once() -> None:
+    """死亡事件依次确认外貌、尸体身份和后续选择，恢复时不重复 SAN。"""
 
-    evidence = RuleAgendaExecutor._narration_evidence(
-        (
+    module = ModuleContentV3.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    store = InMemoryEngineStore()
+    state = create_initial_game_state(
+        module,
+        room_id="room-death",
+        actors={
+            "actor-1": ActorState(
+                player_id="player-1",
+                name="调查员",
+                source_character_id="character-1",
+                source_character_version=1,
+                resources=ActorResources(san=60),
+            )
+        },
+    )
+    state = _make_cemetery_encounter_available(state).model_copy(
+        update={"scene_id": "cemetery"}, deep=True
+    )
+    store.register_room(module_content=module, initial_state=state)
+    engine = AdjudicationEngineService(store)
+
+    with engine_turn_context("turn-death"):
+        await engine._submit_internal_adjudication(
+            SubmitAdjudicationRequest(
+                room_id="room-death",
+                player_id="player-1",
+                adjudication=ActionAdjudication(
+                    request_id="kill-douglas",
+                    source_revision="0",
+                    actor_id="actor-1",
+                    summary="杀死墓地人影",
+                    target=ActionTarget(kind="entity", id="cemetery_figure"),
+                    method=ActionMethod(family="attack", description="完成致命攻击"),
+                    check=NoAdjudicationCheck(),
+                    success_effects=(
+                        ChangeEntityStateEffect(
+                            entity_id="cemetery_figure",
+                            key="consciousness",
+                            value="dead",
+                        ),
+                    ),
+                ),
+            )
+        )
+
+    executor = RuleAgendaExecutor(
+        store,
+        engine=engine,
+        dice=DiceRoller(SequenceDiceSource([40, 40])),
+    )
+    await executor.drain(room_id="room-death", turn_id="turn-death")
+
+    current = store.inspect_state("room-death")
+    agenda = next(iter(current.rule_agendas.values()))
+    assert agenda.status == "awaiting_player_input"
+    assert current.entities["cemetery_figure"]["corpse_identified"] is True
+    assert "douglas_corpse_identity" in current.discovered_facts
+    assert current.actors["actor-1"].resources.san == 59
+    candidates = await executor.continuation_candidates(
+        room_id="room-death",
+        player_id="player-1",
+        actor_id="actor-1",
+    )
+    assert {option.option_id for option in candidates[0].options} == {
+        "fight",
+        "leave",
+        "stay",
+    }
+
+    await executor.resume_continuation(
+        AgendaContinuationProposal(
+            agenda_id=agenda.agenda_id,
+            boundary_id="douglas_death_aftermath_choice",
+            option_id="leave",
+        ),
+        room_id="room-death",
+        player_id="player-1",
+        actor_id="actor-1",
+        turn_id="turn-leave",
+        source_revision=str(current.event_sequence),
+    )
+    await executor.drain(room_id="room-death", turn_id="turn-leave")
+
+    final = store.inspect_state("room-death")
+    assert final.entities["case_tracker"]["douglas_body_removed"] is True
+    assert final.rule_agendas[agenda.agenda_id].status == "stable"
+    assert final.actors["actor-1"].resources.san == 59
+
+
+def test_rule_presentation_becomes_required_player_safe_evidence() -> None:
+    """显式 Presentation 必须成为叙事证据，hidden 内容不得进入玩家上下文。"""
+
+    module = ModuleContentV3.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    state = create_initial_game_state(
+        module,
+        room_id="room-evidence",
+        actors={
+            "actor-1": ActorState(
+                player_id="player-1",
+                name="调查员",
+                source_character_id="character-1",
+                source_character_version=1,
+            )
+        },
+    )
+    runtime = EngineRuntimeSnapshot(
+        module_id=module.module_id,
+        module_version=module.version,
+        module_content=module,
+        game_state=state,
+        revision="0",
+    )
+    evidence = EvidenceAssembler.from_committed_events(
+        runtime,
+        final_state=state,
+        events=(
             DomainEvent(
                 event_id="evt-presentation",
                 sequence=1,
                 type="rule.presentation",
-                room_id="room-1",
+                room_id="room-evidence",
                 actor_id="actor-1",
                 client_action_id="agenda-execution",
                 cause="agenda:agenda-1",
@@ -152,7 +291,7 @@ def test_rule_presentation_becomes_required_player_safe_evidence() -> None:
                 event_id="evt-hidden",
                 sequence=2,
                 type="rule.presentation",
-                room_id="room-1",
+                room_id="room-evidence",
                 actor_id="actor-1",
                 client_action_id="agenda-execution",
                 cause="agenda:agenda-1",
@@ -162,7 +301,9 @@ def test_rule_presentation_becomes_required_player_safe_evidence() -> None:
                     "player_safe_summary": "这段内容不能公开。",
                 },
             ),
-        )
+        ),
+        player_id="player-1",
+        actor_id="actor-1",
     )
 
     assert len(evidence) == 1
@@ -424,6 +565,7 @@ async def test_transient_agenda_failure_uses_its_own_retry_budget() -> None:
             )
         },
     )
+    state = _make_cemetery_encounter_available(state)
     store.register_room(module_content=module, initial_state=state)
     engine = AdjudicationEngineService(store)
     with engine_turn_context("turn-1"):
@@ -471,20 +613,23 @@ async def test_effect_event_before_blocking_step_is_queued() -> None:
     payload = ModuleContentV3.model_validate_json(
         FIXTURE.read_text(encoding="utf-8")
     ).to_json_dict()
+    case_tracker = next(
+        item for item in payload["entities"] if item["id"] == "case_tracker"
+    )
+    case_tracker["state"]["synthetic_followed"] = False
     payload["rules"].append(
         {
             "id": "follow_first_sight_marker",
             "priority": 10,
             "trigger": {
                 "kind": "event",
-                "event_type": "entity.state_changed",
+                "event_type": "plot_thread.transitioned",
                 "when": {
                     "op": "predicate",
-                    "predicate": "entity_state_is",
+                    "predicate": "plot_thread_status_is",
                     "args": {
-                        "entity_id": "case_tracker",
-                        "key": "first_ghoul_sight_resolved",
-                        "value": True,
+                        "thread_id": "cemetery_encounter",
+                        "status": "in_progress",
                     },
                 },
                 "entry_branch_id": "default",
@@ -498,7 +643,7 @@ async def test_effect_event_before_blocking_step_is_queued() -> None:
                         "effect": {
                             "type": "change_entity_state",
                             "entity_id": "case_tracker",
-                            "key": "surveillance_available",
+                            "key": "synthetic_followed",
                             "value": True,
                         },
                         "next_step_id": "finish",
@@ -523,6 +668,7 @@ async def test_effect_event_before_blocking_step_is_queued() -> None:
             )
         },
     )
+    state = _make_cemetery_encounter_available(state)
     store.register_room(module_content=module, initial_state=state)
     engine = AdjudicationEngineService(store)
     with engine_turn_context("turn-1"):

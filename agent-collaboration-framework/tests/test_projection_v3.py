@@ -35,23 +35,28 @@ from collaboration_framework.contracts import (
     NoAdjudicationCheck,
     PersistenceIntent,
     PlayerViewScope,
+    PlotThreadStatus,
     PostRollDecisionRequest,
     PredicateCondition,
     RequiredAdjudicationCheck,
+    RevealInformationEffect,
     RuleDecisionRef,
     SelectCheckChoice,
     SkillCheckCandidate,
-    RevealInformationEffect,
     SubmitAdjudicationRequest,
 )
 from collaboration_framework.engine import (
+    ActorResources,
     ActorState,
     AdjudicationEngineService,
     DiceRoller,
     GameState,
     InMemoryEngineStore,
+    PlotThreadState,
+    RuleAgendaExecutor,
     RuleEngineService,
     SequenceDiceSource,
+    engine_turn_context,
 )
 from collaboration_framework.engine.initialization import create_initial_game_state
 from collaboration_framework.engine.navigation import resolve_location_target
@@ -76,6 +81,27 @@ def module() -> ModuleContentV3:
     return ModuleContentV3.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
 
 
+def plot_states(
+    content: ModuleContentV3,
+    *,
+    crypt: PlotThreadStatus = "locked",
+    douglas: PlotThreadStatus = "locked",
+) -> dict[str, PlotThreadState]:
+    """构造与手工场景快照一致的剧情线程状态。"""
+
+    statuses = {
+        "crypt_entry_investigation": crypt,
+        "cemetery_encounter": douglas,
+    }
+    return {
+        thread.id: PlotThreadState(
+            thread_id=thread.id,
+            status=statuses.get(thread.id, thread.initial_status),
+        )
+        for thread in content.plot_threads
+    }
+
+
 def game_state(content: ModuleContentV3, **overrides) -> GameState:
     base = {
         "room_id": ROOM,
@@ -86,6 +112,7 @@ def game_state(content: ModuleContentV3, **overrides) -> GameState:
                 name="陈探员",
                 source_character_id="character_v3",
                 source_character_version=1,
+                resources=ActorResources(san=60),
                 state={
                     "skills": {"spot-hidden": 60, "library-use": 70},
                     # 属性和技能分开存，和真实建卡一致：STR 检定要走 attributes。
@@ -95,6 +122,7 @@ def game_state(content: ModuleContentV3, **overrides) -> GameState:
             )
         },
         "entities": {},
+        "plot_threads": plot_states(content),
     }
     base.update(overrides)
     return GameState(**base)
@@ -245,11 +273,11 @@ class ProjectionV3Tests(unittest.IsolatedAsyncioTestCase):
             deep=True,
         )
         revealed = await self.project(found)
-        self.assertIn(
-            "douglas_diary", {item.id for item in revealed.scene.loose_items}
-        )
+        self.assertIn("douglas_diary", {item.id for item in revealed.scene.loose_items})
 
-    async def test_empty_runtime_inventory_does_not_restore_character_equipment(self) -> None:
+    async def test_empty_runtime_inventory_does_not_restore_character_equipment(
+        self,
+    ) -> None:
         """物品全部离开角色后，PlayerView 不得回退到建卡装备快照。"""
 
         dropped = ItemInstance(
@@ -317,9 +345,7 @@ class ProjectionV3Tests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        self.assertNotIn(
-            "missing_books", {item.id for item in study.scene.loose_items}
-        )
+        self.assertNotIn("missing_books", {item.id for item in study.scene.loose_items})
         self.assertNotIn(
             "missing_books", {item.id for item in study.scene.visible_entities}
         )
@@ -787,7 +813,10 @@ class AdjudicationAgainstV3Tests(unittest.IsolatedAsyncioTestCase):
 
         # 放弃这条规则之后，同一句话应当照常裁决完成。
         repaired = greeting.model_copy(
-            update={"request_id": "greet-neighbour-313-repaired", "rule_decision": None},
+            update={
+                "request_id": "greet-neighbour-313-repaired",
+                "rule_decision": None,
+            },
             deep=True,
         )
         await engine._submit_internal_adjudication(
@@ -803,7 +832,7 @@ class AdjudicationAgainstV3Tests(unittest.IsolatedAsyncioTestCase):
     async def test_keeper_capabilities_publish_the_v3_world_target(self) -> None:
         """v3 侧同样要发 world_id，否则「今天周几」这类输入没有合法目标（#313）。"""
 
-        store, engine, rules = self.build(scene_id="neighborhood")
+        _store, engine, rules = self.build(scene_id="neighborhood")
         scope = PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         capabilities = await rules.read_keeper_capabilities(scope)
         self.assertEqual(capabilities.world_id, self.content.world_ref)
@@ -826,7 +855,7 @@ class AdjudicationAgainstV3Tests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_revealing_a_v3_information_reaches_the_player_view(self) -> None:
-        store, engine, rules = self.build()
+        _store, engine, rules = self.build()
         snapshot = await rules.read(
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
@@ -884,7 +913,7 @@ class AdjudicationAgainstV3Tests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_advance_world_time_refuses_a_point_that_is_not_next(self) -> None:
-        store, engine, rules = self.build()
+        _store, engine, rules = self.build()
         snapshot = await rules.read(
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
@@ -902,7 +931,7 @@ class AdjudicationAgainstV3Tests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         """时间是共享状态：一个人不能替全队睡到天黑（#245 §四）。"""
 
-        store, engine, rules = self.build(
+        _store, engine, rules = self.build(
             actors={
                 ACTOR: ActorState(
                     player_id=PLAYER,
@@ -926,7 +955,7 @@ class AdjudicationAgainstV3Tests(unittest.IsolatedAsyncioTestCase):
             await self.submit(engine, snapshot.revision, AdvanceWorldTimeEffect())
 
     async def test_entering_a_v3_location_moves_the_actor(self) -> None:
-        store, engine, rules = self.build()
+        _store, engine, rules = self.build()
         snapshot = await rules.read(
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
@@ -1006,7 +1035,7 @@ class AdjudicationAgainstV3Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_v2_scene_id_is_no_longer_a_valid_location(self) -> None:
         # `client_briefing` was the v2 opening Scene; it must not resolve now.
-        store, engine, rules = self.build()
+        _store, engine, rules = self.build()
         snapshot = await rules.read(
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
@@ -1031,7 +1060,7 @@ class AdjudicationAgainstV3Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.inspect_state(ROOM).phase, "playing")
 
     async def test_keeper_capabilities_read_the_v3_collections(self) -> None:
-        store, engine, rules = self.build()
+        _store, _engine, rules = self.build()
         capabilities = await rules.read_keeper_capabilities(
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
@@ -1285,11 +1314,18 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
         )
         return store, resolved
 
-    async def test_discovering_crypt_entrance_produces_required_safe_evidence(self) -> None:
+    async def test_discovering_crypt_entrance_produces_required_safe_evidence(
+        self,
+    ) -> None:
         store, execution = await self.run_grave_tracking(25)
 
-        self.assertIs(store.inspect_state(ROOM).entities["crypt_entrance"]["discovered"], True)
-        self.assertEqual(len(execution.narration_evidence), 1)
+        self.assertIs(
+            store.inspect_state(ROOM).entities["crypt_entrance"]["discovered"], True
+        )
+        self.assertEqual(
+            {item.kind for item in execution.narration_evidence},
+            {"entity_discovered", "plot_thread_transition"},
+        )
         evidence = execution.narration_evidence[0]
         self.assertEqual(evidence.kind, "entity_discovered")
         self.assertEqual(evidence.subject_id, "crypt_entrance")
@@ -1302,12 +1338,16 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
         store, execution = await self.run_grave_tracking(95)
 
         self.assertIsNot(
-            store.inspect_state(ROOM).entities.get("crypt_entrance", {}).get("discovered"),
+            store.inspect_state(ROOM)
+            .entities.get("crypt_entrance", {})
+            .get("discovered"),
             True,
         )
         self.assertEqual(execution.narration_evidence, ())
 
-    async def test_non_discovery_action_skips_player_projection_for_narration_evidence(self) -> None:
+    async def test_non_discovery_action_skips_player_projection_for_narration_evidence(
+        self,
+    ) -> None:
         store = InMemoryEngineStore()
         store.register_room(
             module_content=self.content,
@@ -1319,7 +1359,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
         with patch(
-            "collaboration_framework.engine.adjudication.project_v3",
+            "collaboration_framework.engine.narration_evidence.project_v3",
             side_effect=AssertionError("projection should be skipped"),
         ):
             execution = await engine._submit_internal_adjudication(
@@ -1354,7 +1394,9 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             module_content=self.content,
             initial_state=game_state(self.content, scene_id=scene_id),
         )
-        engine = AdjudicationEngineService(store, dice=DiceRoller(SequenceDiceSource([5])))
+        engine = AdjudicationEngineService(
+            store, dice=DiceRoller(SequenceDiceSource([5]))
+        )
         rules = RuleEngineService(store)
         snapshot = await rules.read(
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
@@ -1381,7 +1423,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
     async def test_rule_without_a_check_still_commits_its_effects(self) -> None:
         """纯效果规则也必须真的生效（#226 §5）。
 
-        `enter_crypt/proceed` 不掷骰，整条分支就是它的后果。此前这里返回空元组、
+        `let_douglas_leave/proceed` 不掷骰，整条分支就是它的后果。此前这里返回空元组、
         注释声称「链在提交时已经跑过了」，但没有任何地方跑它——Agenda 只装 event
         规则。结果是《追书人》整条地穴终局（进入、对话、让他离开、跟随、呼喊、
         逃离）都不改变任何状态。
@@ -1390,9 +1432,15 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
         store = InMemoryEngineStore()
         store.register_room(
             module_content=self.content,
-            initial_state=game_state(self.content, scene_id="crypt"),
+            initial_state=game_state(
+                self.content,
+                scene_id="crypt",
+                plot_threads=plot_states(self.content, crypt="resolved"),
+            ),
         )
-        engine = AdjudicationEngineService(store, dice=DiceRoller(SequenceDiceSource([5])))
+        engine = AdjudicationEngineService(
+            store, dice=DiceRoller(SequenceDiceSource([5]))
+        )
         rules = RuleEngineService(store)
         snapshot = await rules.read(
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
@@ -1403,14 +1451,14 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
                 room_id=ROOM,
                 player_id=PLAYER,
                 adjudication=ActionAdjudication(
-                    request_id="enter-crypt-1",
+                    request_id="let-figure-leave-1",
                     source_revision=snapshot.revision,
                     actor_id=ACTOR,
-                    summary="进入地穴",
-                    target=ActionTarget(kind="entity", id="crypt_entrance"),
-                    method=ActionMethod(family="enter", description="进入地穴"),
+                    summary="让墓地中的人影离开",
+                    target=ActionTarget(kind="entity", id="cemetery_figure"),
+                    method=ActionMethod(family="let_leave", description="让人影离开"),
                     rule_decision=RuleDecisionRef(
-                        rule_id="enter_crypt", option_id="proceed"
+                        rule_id="let_douglas_leave", option_id="proceed"
                     ),
                     # 不掷骰的分支：Agent 不该为了凑格式编一个技能出来。
                     check=NoAdjudicationCheck(),
@@ -1422,11 +1470,8 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(execution.outcome, "success")
         state = store.inspect_state(ROOM)
-        self.assertIs(state.entities["crypt_entrance"]["entered"], True)
         figure = state.entities["cemetery_figure"]
-        self.assertIs(figure["sighted"], True)
-        self.assertIs(figure["true_form_seen"], True)
-        self.assertIs(figure["willing_to_talk"], True)
+        self.assertIs(figure["left_forever"], True)
 
     async def test_the_crypt_endgame_is_reachable_and_commits(self) -> None:
         """把地穴终局整段钉住：搬石板 → 进地穴 → 与身影对话 → 主线收束。
@@ -1449,10 +1494,12 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
                 scene_id="cemetery",
                 # 石板已被发现，剩下的就是搬开它。
                 entities={"crypt_entrance": {"discovered": True}},
+                plot_threads=plot_states(self.content, crypt="available"),
             ),
         )
         # STR 检定取 5，稳定成功。
-        engine = AdjudicationEngineService(store, dice=DiceRoller(SequenceDiceSource([5])))
+        dice = DiceRoller(SequenceDiceSource([5, 5, 2]))
+        engine = AdjudicationEngineService(store, dice=dice)
         rules = RuleEngineService(store)
 
         async def revision() -> str:
@@ -1519,10 +1566,13 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual(slab_result.goal_outcome, "legacy_unknown")
-        self.assertEqual(len(slab_result.narration_evidence), 1)
         self.assertEqual(
-            slab_result.narration_evidence[0].description,
+            {item.kind for item in slab_result.narration_evidence},
+            {"rule_presentation", "plot_thread_transition"},
+        )
+        self.assertIn(
             "沉重的入口石板已经被你推开，通往下方的通道显露出来。",
+            {item.description for item in slab_result.narration_evidence},
         )
         self.assertIs(
             store.inspect_state(ROOM).entities["crypt_entrance"]["slab_moved"], True
@@ -1541,44 +1591,63 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        await engine._submit_internal_adjudication(
-            SubmitAdjudicationRequest(
-                room_id=ROOM,
-                player_id=PLAYER,
-                adjudication=ActionAdjudication(
-                    request_id="crypt-enter",
-                    source_revision=await revision(),
-                    actor_id=ACTOR,
-                    summary="进入地穴",
-                    target=ActionTarget(kind="location", id="crypt"),
-                    method=ActionMethod(family="travel", description="进入地穴"),
-                    check=NoAdjudicationCheck(),
-                    success_effects=(EnterLocationEffect(location_id="crypt"),),
-                ),
+        with engine_turn_context("turn-crypt-enter"):
+            await engine._submit_internal_adjudication(
+                SubmitAdjudicationRequest(
+                    room_id=ROOM,
+                    player_id=PLAYER,
+                    adjudication=ActionAdjudication(
+                        request_id="crypt-enter",
+                        source_revision=await revision(),
+                        actor_id=ACTOR,
+                        summary="屏住呼吸进入地穴",
+                        target=ActionTarget(kind="entity", id="crypt_entrance"),
+                        method=ActionMethod(family="enter", description="屏住呼吸进入"),
+                        rule_decision=RuleDecisionRef(
+                            rule_id="crypt_stench_on_entry",
+                            option_id="hold_breath",
+                        ),
+                        check=NoAdjudicationCheck(),
+                        success_effects=(),
+                        failure_effects=(),
+                    ),
+                )
             )
+        await RuleAgendaExecutor(store, engine=engine, dice=dice).drain(
+            room_id=ROOM,
+            turn_id="turn-crypt-enter",
         )
         self.assertEqual(store.inspect_state(ROOM).scene_id, "crypt")
+        self.assertEqual(
+            store.inspect_state(ROOM).plot_threads["cemetery_encounter"].status,
+            "in_progress",
+        )
 
         # 3. 与身影对话：纯效果规则，必须真的收束主线。
-        await engine._submit_internal_adjudication(
-            SubmitAdjudicationRequest(
-                room_id=ROOM,
-                player_id=PLAYER,
-                adjudication=ActionAdjudication(
-                    request_id="crypt-talk",
-                    source_revision=await revision(),
-                    actor_id=ACTOR,
-                    summary="与身影交谈",
-                    target=ActionTarget(kind="entity", id="cemetery_figure"),
-                    method=ActionMethod(family="talk", description="与身影交谈"),
-                    rule_decision=RuleDecisionRef(
-                        rule_id="talk_to_figure", option_id="proceed"
+        with engine_turn_context("turn-crypt-talk"):
+            await engine._submit_internal_adjudication(
+                SubmitAdjudicationRequest(
+                    room_id=ROOM,
+                    player_id=PLAYER,
+                    adjudication=ActionAdjudication(
+                        request_id="crypt-talk",
+                        source_revision=await revision(),
+                        actor_id=ACTOR,
+                        summary="与身影交谈",
+                        target=ActionTarget(kind="entity", id="cemetery_figure"),
+                        method=ActionMethod(family="talk", description="与身影交谈"),
+                        rule_decision=RuleDecisionRef(
+                            rule_id="talk_to_figure", option_id="proceed"
+                        ),
+                        check=NoAdjudicationCheck(),
+                        success_effects=(),
+                        failure_effects=(),
                     ),
-                    check=NoAdjudicationCheck(),
-                    success_effects=(),
-                    failure_effects=(),
-                ),
+                )
             )
+        await RuleAgendaExecutor(store, engine=engine, dice=dice).drain(
+            room_id=ROOM,
+            turn_id="turn-crypt-talk",
         )
 
         state = store.inspect_state(ROOM)
@@ -1601,7 +1670,9 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             module_content=self.content,
             initial_state=game_state(self.content, scene_id="cemetery"),
         )
-        engine = AdjudicationEngineService(store, dice=DiceRoller(SequenceDiceSource([5])))
+        engine = AdjudicationEngineService(
+            store, dice=DiceRoller(SequenceDiceSource([5]))
+        )
         rules = RuleEngineService(store)
         snapshot = await rules.read(
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
@@ -1636,25 +1707,39 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
     async def test_rule_option_publishes_whether_it_rolls_dice(self) -> None:
         """Agent 必须能分辨哪条分支要掷骰，否则只能编一个技能 id 出来。"""
 
-        async def candidates(scene_id: str):
+        async def candidates(state: GameState):
             store = InMemoryEngineStore()
             store.register_room(
                 module_content=self.content,
-                initial_state=game_state(self.content, scene_id=scene_id),
+                initial_state=state,
             )
             view = await RuleEngineService(store).read_keeper_capabilities(
                 PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
             )
             return {item.rule_id: item for item in view.rule_candidates}
 
-        # 地穴内的 proceed 类选项不掷骰。
-        in_crypt = await candidates("crypt")
-        self.assertFalse(in_crypt["enter_crypt"].options[0].requires_check)
+        # 带默认后果的整条规则不投影给 Agent，避免它主动提示玩家规避后果。
+        at_open_crypt = await candidates(
+            game_state(
+                self.content,
+                scene_id="cemetery",
+                entities={"crypt_entrance": {"slab_moved": True}},
+                plot_threads=plot_states(self.content, crypt="in_progress"),
+            )
+        )
+        self.assertNotIn("crypt_stench_on_entry", at_open_crypt)
 
         # 搬石板要掷 STR，而它属于墓地——石板在墓地，不在地穴里。
-        at_cemetery = await candidates("cemetery")
+        at_cemetery = await candidates(
+            game_state(
+                self.content,
+                scene_id="cemetery",
+                entities={"crypt_entrance": {"discovered": True}},
+                plot_threads=plot_states(self.content, crypt="available"),
+            )
+        )
         self.assertTrue(at_cemetery["move_crypt_slab"].options[0].requires_check)
-        self.assertNotIn("move_crypt_slab", in_crypt)
+        self.assertNotIn("move_crypt_slab", at_open_crypt)
 
     async def test_rule_decision_from_another_location_is_refused(self) -> None:
         """候选按场景发布，提交也必须按场景复查。
@@ -1699,7 +1784,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
     async def test_success_commits_the_rules_effects_not_the_agents(self) -> None:
         # The Agent sent empty effect lists; the release of the newspaper report
         # can only come from the rule's success route.
-        store, engine, rules, resolved = await self.run_rule_check([5])
+        store, engine, _rules, resolved = await self.run_rule_check([5])
         self.assertEqual(resolved.status, "awaiting_post_roll_decision")
         check_run = resolved.check_run
         assert check_run is not None
@@ -1719,7 +1804,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("cemetery_dance_report", state.discovered_facts)
 
     async def test_failure_routes_somewhere_else_entirely(self) -> None:
-        store, engine, rules, resolved = await self.run_rule_check([100])
+        store, engine, _rules, resolved = await self.run_rule_check([100])
         # A fumble offers post-roll options; accept to settle it as a failure.
         self.assertEqual(resolved.status, "awaiting_post_roll_decision")
         check_run = resolved.check_run
@@ -1740,7 +1825,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("cemetery_dance_report", state.discovered_facts)
 
     async def test_an_invented_rule_id_is_refused(self) -> None:
-        store, engine, rules = self.build([5])
+        _store, engine, rules = self.build([5])
         snapshot = await rules.read(
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
@@ -1766,7 +1851,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_an_option_the_rule_never_declared_is_refused(self) -> None:
-        store, engine, rules = self.build([5])
+        _store, engine, rules = self.build([5])
         snapshot = await rules.read(
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
