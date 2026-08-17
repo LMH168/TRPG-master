@@ -1,7 +1,7 @@
 {
   "content_schema_version": 3,
   "module_id": "paper-chase-zh-coc7",
-  "version": "3.0.8",
+  "version": "3.0.9",
   "world_ref": "coc-7e",
   "background": "时代与地点为美国禁酒令时期的密歇根州阿诺兹堡。调查员受托马斯·金博尔委托，从五本失窃的旧书和叔叔道格拉斯一年前的失踪案入手，走访旧宅、图书馆与公共墓地。叙事应保持安静、克制而带哥特气息，以夜色、旧书、墓园和孤独感作为反复意象；面对异常时不要急于渲染纯粹敌意，应为同情、选择与淡淡哀伤保留空间。任何尚未由线索确认的真相都不得提前告知玩家。",
   "information": [
@@ -570,14 +570,9 @@
       "description": "用于记录失踪与盗书调查的进展。",
       "located_in": null,
       "state": {
-        "surveillance_available": false,
-        "first_ghoul_sight_resolved": false,
-        "douglas_identity_shock_resolved": false,
-        "crowd_sight_resolved": false,
         "investigator_disappeared": false,
         "sent_to_asylum": false,
-        "douglas_body_removed": false,
-        "investigation_resolved": false
+        "douglas_body_removed": false
       },
       "visibility": "keeper",
       "plot_relevance": false
@@ -2380,6 +2375,13 @@
             "surveillance_area"
           ]
         },
+        "when": {
+          "op": "predicate",
+          "predicate": "time_of_day_is",
+          "args": {
+            "value": "night"
+          }
+        },
         "question": {
           "kind": "method",
           "semantic_hints": [
@@ -2472,6 +2474,14 @@
           "target_ids": [
             "cemetery_figure"
           ]
+        },
+        "when": {
+          "op": "predicate",
+          "predicate": "plot_thread_status_is",
+          "args": {
+            "thread_id": "douglas_case",
+            "status": "available"
+          }
         },
         "question": {
           "kind": "method",
@@ -2594,6 +2604,16 @@
               "key": "discovered",
               "value": true
             },
+            "next_step_id": "open_crypt_thread"
+          },
+          {
+            "id": "open_crypt_thread",
+            "kind": "effect",
+            "effect": {
+              "type": "transition_plot_thread",
+              "thread_id": "crypt_entry_investigation",
+              "to_status": "available"
+            },
             "next_step_id": "finish"
           },
           {
@@ -2638,6 +2658,14 @@
             "crypt_entrance"
           ]
         },
+        "when": {
+          "op": "predicate",
+          "predicate": "plot_thread_status_is",
+          "args": {
+            "thread_id": "crypt_entry_investigation",
+            "status": "available"
+          }
+        },
         "question": {
           "kind": "method",
           "semantic_hints": [
@@ -2676,6 +2704,16 @@
               "key": "slab_moved",
               "value": true
             },
+            "next_step_id": "start_crypt_thread"
+          },
+          {
+            "id": "start_crypt_thread",
+            "kind": "effect",
+            "effect": {
+              "type": "transition_plot_thread",
+              "thread_id": "crypt_entry_investigation",
+              "to_status": "in_progress"
+            },
             "next_step_id": "finish"
           },
           {
@@ -2707,100 +2745,6 @@
       }
     },
     {
-      "id": "enter_crypt",
-      "trigger": {
-        "kind": "agent_match",
-        "scope": {
-          "action_families": [
-            "enter"
-          ],
-          "location_ids": [
-            "crypt"
-          ],
-          "target_kinds": [
-            "entity"
-          ],
-          "target_ids": [
-            "crypt_entrance"
-          ]
-        },
-        "question": {
-          "kind": "method",
-          "semantic_hints": [
-            "enter",
-            "石板下的地穴入口"
-          ]
-        },
-        "options": [
-          {
-            "id": "proceed",
-            "semantic_hints": [
-              "enter",
-              "石板下的地穴入口"
-            ]
-          }
-        ]
-      },
-      "execution": {
-        "branches": [
-          {
-            "id": "proceed",
-            "entry_step_id": "succeed_0"
-          }
-        ],
-        "steps": [
-          {
-            "id": "finish",
-            "kind": "finish"
-          },
-          {
-            "id": "succeed_0",
-            "kind": "effect",
-            "effect": {
-              "type": "change_entity_state",
-              "entity_id": "crypt_entrance",
-              "key": "entered",
-              "value": true
-            },
-            "next_step_id": "succeed_1"
-          },
-          {
-            "id": "succeed_1",
-            "kind": "effect",
-            "effect": {
-              "type": "change_entity_state",
-              "entity_id": "cemetery_figure",
-              "key": "sighted",
-              "value": true
-            },
-            "next_step_id": "succeed_2"
-          },
-          {
-            "id": "succeed_2",
-            "kind": "effect",
-            "effect": {
-              "type": "change_entity_state",
-              "entity_id": "cemetery_figure",
-              "key": "true_form_seen",
-              "value": true
-            },
-            "next_step_id": "succeed_3"
-          },
-          {
-            "id": "succeed_3",
-            "kind": "effect",
-            "effect": {
-              "type": "change_entity_state",
-              "entity_id": "cemetery_figure",
-              "key": "willing_to_talk",
-              "value": true
-            },
-            "next_step_id": "finish"
-          }
-        ]
-      }
-    },
-    {
       "id": "talk_to_figure",
       "trigger": {
         "kind": "agent_match",
@@ -2817,6 +2761,14 @@
           "target_ids": [
             "cemetery_figure"
           ]
+        },
+        "when": {
+          "op": "predicate",
+          "predicate": "plot_thread_status_is",
+          "args": {
+            "thread_id": "douglas_case",
+            "status": "in_progress"
+          }
         },
         "question": {
           "kind": "method",
@@ -2892,6 +2844,16 @@
             "effect": {
               "type": "set_ending_availability",
               "available": true
+            },
+            "next_step_id": "resolve_douglas_case"
+          },
+          {
+            "id": "resolve_douglas_case",
+            "kind": "effect",
+            "effect": {
+              "type": "transition_plot_thread",
+              "thread_id": "douglas_case",
+              "to_status": "resolved"
             },
             "next_step_id": "finish"
           }
@@ -2977,6 +2939,14 @@
             "cemetery_figure"
           ]
         },
+        "when": {
+          "op": "predicate",
+          "predicate": "plot_thread_status_is",
+          "args": {
+            "thread_id": "douglas_case",
+            "status": "in_progress"
+          }
+        },
         "question": {
           "kind": "method",
           "semantic_hints": [
@@ -3015,6 +2985,16 @@
               "key": "investigator_disappeared",
               "value": true
             },
+            "next_step_id": "fail_douglas_case"
+          },
+          {
+            "id": "fail_douglas_case",
+            "kind": "effect",
+            "effect": {
+              "type": "transition_plot_thread",
+              "thread_id": "douglas_case",
+              "to_status": "failed"
+            },
             "next_step_id": "finish"
           }
         ]
@@ -3037,6 +3017,14 @@
           "target_ids": [
             "ghoul_crowd"
           ]
+        },
+        "when": {
+          "op": "predicate",
+          "predicate": "plot_thread_status_is",
+          "args": {
+            "thread_id": "douglas_case",
+            "status": "in_progress"
+          }
         },
         "question": {
           "kind": "method",
@@ -3092,6 +3080,16 @@
             "effect": {
               "type": "set_ending_availability",
               "available": true
+            },
+            "next_step_id": "resolve_douglas_case"
+          },
+          {
+            "id": "resolve_douglas_case",
+            "kind": "effect",
+            "effect": {
+              "type": "transition_plot_thread",
+              "thread_id": "douglas_case",
+              "to_status": "resolved"
             },
             "next_step_id": "finish"
           }
@@ -3184,11 +3182,10 @@
             },
             {
               "op": "predicate",
-              "predicate": "entity_state_is",
+              "predicate": "plot_thread_status_is",
               "args": {
-                "entity_id": "case_tracker",
-                "key": "first_ghoul_sight_resolved",
-                "value": false
+                "thread_id": "douglas_case",
+                "status": "available"
               }
             }
           ]
@@ -3199,18 +3196,17 @@
         "branches": [
           {
             "id": "default",
-            "entry_step_id": "mark_seen"
+            "entry_step_id": "start_douglas_case"
           }
         ],
         "steps": [
           {
-            "id": "mark_seen",
+            "id": "start_douglas_case",
             "kind": "effect",
             "effect": {
-              "type": "change_entity_state",
-              "entity_id": "case_tracker",
-              "key": "first_ghoul_sight_resolved",
-              "value": true
+              "type": "transition_plot_thread",
+              "thread_id": "douglas_case",
+              "to_status": "in_progress"
             },
             "next_step_id": "san_check"
           },
@@ -3249,27 +3245,13 @@
         "kind": "event",
         "event_type": "entity.state_changed",
         "when": {
-          "op": "all",
-          "items": [
-            {
-              "op": "predicate",
-              "predicate": "entity_state_is",
-              "args": {
-                "entity_id": "ghoul_crowd",
-                "key": "revealed",
-                "value": true
-              }
-            },
-            {
-              "op": "predicate",
-              "predicate": "entity_state_is",
-              "args": {
-                "entity_id": "case_tracker",
-                "key": "crowd_sight_resolved",
-                "value": false
-              }
-            }
-          ]
+          "op": "predicate",
+          "predicate": "entity_state_is",
+          "args": {
+            "entity_id": "ghoul_crowd",
+            "key": "revealed",
+            "value": true
+          }
         },
         "entry_branch_id": "default"
       },
@@ -3277,21 +3259,10 @@
         "branches": [
           {
             "id": "default",
-            "entry_step_id": "mark_crowd"
+            "entry_step_id": "crowd_san"
           }
         ],
         "steps": [
-          {
-            "id": "mark_crowd",
-            "kind": "effect",
-            "effect": {
-              "type": "change_entity_state",
-              "entity_id": "case_tracker",
-              "key": "crowd_sight_resolved",
-              "value": true
-            },
-            "next_step_id": "crowd_san"
-          },
           {
             "id": "crowd_san",
             "kind": "check",
@@ -3347,6 +3318,14 @@
                 "key": "sent_to_asylum",
                 "value": false
               }
+            },
+            {
+              "op": "predicate",
+              "predicate": "plot_thread_status_is",
+              "args": {
+                "thread_id": "douglas_case",
+                "status": "in_progress"
+              }
             }
           ]
         },
@@ -3369,6 +3348,16 @@
               "key": "sent_to_asylum",
               "value": true
             },
+            "next_step_id": "fail_douglas_case"
+          },
+          {
+            "id": "fail_douglas_case",
+            "kind": "effect",
+            "effect": {
+              "type": "transition_plot_thread",
+              "thread_id": "douglas_case",
+              "to_status": "failed"
+            },
             "next_step_id": "apply_unconscious"
           },
           {
@@ -3378,61 +3367,6 @@
             "actor_binding": "actor",
             "parameters": {
               "condition": "unconscious"
-            },
-            "next_step_id": "finish"
-          },
-          {
-            "id": "finish",
-            "kind": "finish"
-          }
-        ]
-      }
-    },
-    {
-      "id": "enable_night_surveillance",
-      "priority": 30,
-      "trigger": {
-        "kind": "event",
-        "event_type": "time.point_entered",
-        "when": {
-          "op": "all",
-          "items": [
-            {
-              "op": "predicate",
-              "predicate": "time_of_day_is",
-              "args": {
-                "value": "night"
-              }
-            },
-            {
-              "op": "predicate",
-              "predicate": "entity_state_is",
-              "args": {
-                "entity_id": "case_tracker",
-                "key": "surveillance_available",
-                "value": false
-              }
-            }
-          ]
-        },
-        "entry_branch_id": "default"
-      },
-      "execution": {
-        "branches": [
-          {
-            "id": "default",
-            "entry_step_id": "open_surveillance"
-          }
-        ],
-        "steps": [
-          {
-            "id": "open_surveillance",
-            "kind": "effect",
-            "effect": {
-              "type": "change_entity_state",
-              "entity_id": "case_tracker",
-              "key": "surveillance_available",
-              "value": true
             },
             "next_step_id": "finish"
           },
@@ -3463,13 +3397,26 @@
           ]
         },
         "when": {
-          "op": "predicate",
-          "predicate": "entity_state_is",
-          "args": {
-            "entity_id": "crypt_entrance",
-            "key": "slab_moved",
-            "value": true
-          }
+          "op": "all",
+          "items": [
+            {
+              "op": "predicate",
+              "predicate": "entity_state_is",
+              "args": {
+                "entity_id": "crypt_entrance",
+                "key": "slab_moved",
+                "value": true
+              }
+            },
+            {
+              "op": "predicate",
+              "predicate": "plot_thread_status_is",
+              "args": {
+                "thread_id": "crypt_entry_investigation",
+                "status": "in_progress"
+              }
+            }
+          ]
         },
         "question": {
           "kind": "method",
@@ -3525,7 +3472,7 @@
               "key": "entered",
               "value": true
             },
-            "next_step_id": "crypt_finish"
+            "next_step_id": "resolve_crypt_thread"
           },
           {
             "id": "enter_before_faint",
@@ -3589,6 +3536,48 @@
             "id": "present_faint",
             "kind": "presentation",
             "presentation_id": "crypt_faint_result",
+            "next_step_id": "resolve_crypt_thread"
+          },
+          {
+            "id": "resolve_crypt_thread",
+            "kind": "effect",
+            "effect": {
+              "type": "transition_plot_thread",
+              "thread_id": "crypt_entry_investigation",
+              "to_status": "resolved"
+            },
+            "next_step_id": "unlock_douglas_case"
+          },
+          {
+            "id": "unlock_douglas_case",
+            "kind": "effect",
+            "effect": {
+              "type": "transition_plot_thread",
+              "thread_id": "douglas_case",
+              "to_status": "available"
+            },
+            "next_step_id": "reveal_crypt_figure"
+          },
+          {
+            "id": "reveal_crypt_figure",
+            "kind": "effect",
+            "effect": {
+              "type": "change_entity_state",
+              "entity_id": "cemetery_figure",
+              "key": "sighted",
+              "value": true
+            },
+            "next_step_id": "reveal_crypt_figure_form"
+          },
+          {
+            "id": "reveal_crypt_figure_form",
+            "kind": "effect",
+            "effect": {
+              "type": "change_entity_state",
+              "entity_id": "cemetery_figure",
+              "key": "true_form_seen",
+              "value": true
+            },
             "next_step_id": "crypt_finish"
           },
           {
@@ -3601,6 +3590,23 @@
         "id": "crypt_faint_result",
         "player_safe_summary": "你进入地穴后被恶臭熏得失去意识。时间已经过去；你在地穴中醒来，临时昏迷已经解除，并看见一个愿意交谈的人影。"
       }
+    }
+  ],
+  "plot_threads": [
+    {
+      "id": "crypt_entry_investigation",
+      "initial_status": "locked",
+      "visibility": "player",
+      "player_safe_summary": "墓地中隐藏的地穴入口已经成为调查重点"
+    },
+    {
+      "id": "douglas_case",
+      "initial_status": "locked",
+      "visibility": "player",
+      "player_safe_summary": "道格拉斯与墓地异象之间的联系正在逐步显现",
+      "dependency_thread_ids": [
+        "crypt_entry_investigation"
+      ]
     }
   ],
   "core_resolution": {

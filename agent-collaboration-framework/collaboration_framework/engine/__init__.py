@@ -47,7 +47,11 @@ from .persistent_results import (
     committed_results_from_events,
     validate_persistent_effects,
 )
-from .plot_threads import transition_plot_thread
+from .plot_threads import (
+    player_safe_plot_thread_summary,
+    project_narration_plot_threads,
+    transition_plot_thread,
+)
 from .ports import EngineStore, EngineTransaction, RevisionConflictError
 from .proposal_compiler import (
     ProposalCompiler,
@@ -105,6 +109,8 @@ __all__ = [
     "derive_runtime_object_id",
     "effective_location_knowledge",
     "engine_turn_context",
+    "player_safe_plot_thread_summary",
+    "project_narration_plot_threads",
     "require_runtime_capabilities",
     "resolve_location_target",
     "transition_plot_thread",

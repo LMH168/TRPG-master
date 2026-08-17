@@ -207,6 +207,7 @@ from .module_v3 import (
     MatchQuestionSpec,
     ModuleContentV3,
     ModuleTimePolicySpec,
+    NarrationPlotThread,
     NotCondition,
     PlotThreadSpec,
     PlotThreadStatus,

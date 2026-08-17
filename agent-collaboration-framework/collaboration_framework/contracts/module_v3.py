@@ -792,6 +792,15 @@ class PlotThreadSpec(ContractModel):
         return self
 
 
+class NarrationPlotThread(ContractModel):
+    """交给 Narrator 的玩家安全剧情线程摘要，不包含隐藏条件或规则游标。"""
+
+    thread_id: Identifier
+    status: Literal["available", "in_progress", "resolved", "failed"]
+    player_safe_summary: str = Field(min_length=1, max_length=500)
+    last_transition_event_ref: str | None = Field(default=None, min_length=1)
+
+
 # --------------------------------------------------------------------------- #
 # root
 # --------------------------------------------------------------------------- #
@@ -883,6 +892,7 @@ __all__ = [
     "MatchQuestionSpec",
     "ModuleContentV3",
     "ModuleTimePolicySpec",
+    "NarrationPlotThread",
     "NotCondition",
     "PlotThreadSpec",
     "PlotThreadStatus",
