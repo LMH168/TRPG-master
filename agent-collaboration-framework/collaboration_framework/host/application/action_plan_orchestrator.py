@@ -385,7 +385,7 @@ class ActionPlanOrchestrator:
                             )
                         )
                     break
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - 必须先按持久状态对账未知提交结果
                     rejection = exc
                     status = await self._executor.get_status(
                         GetAdjudicationStatusRequest(
@@ -1100,7 +1100,7 @@ class ActionPlanOrchestrator:
             )
             history.validate_for(player_input=player_input, player_view=view)
             return history
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - 可选历史失败不能阻断权威步骤
             # History is optional soft context.  A read/projection failure must
             # not prevent an otherwise authoritative step from being judged.
             logger.warning(
@@ -1238,7 +1238,7 @@ class ActionPlanOrchestrator:
                 step_status="pending" if retryable else "stopped",
                 code=exc.code,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - 未分类失败必须持久化为可恢复步骤状态
             await self._observe_step_failure(
                 run,
                 current,
@@ -1649,6 +1649,8 @@ class ActionPlanOrchestrator:
                 raise ContractError("PlanRun 游标之前存在未完成步骤")
             if execution.outcome == "pending":
                 raise ContractError("已完成 PlanRun 步骤不得保留 pending outcome")
+            if execution.goal_outcome == "pending":
+                raise ContractError("已完成 PlanRun 步骤不得保留 pending goal_outcome")
             summaries.append(
                 CompletedPlanStepSummary(
                     step_index=index,
@@ -1675,6 +1677,10 @@ class ActionPlanOrchestrator:
             if step.status == "stopped" and execution is not None:
                 if execution.outcome == "pending":
                     raise ContractError("已停止 PlanRun 步骤不得保留 pending outcome")
+                if execution.goal_outcome == "pending":
+                    raise ContractError(
+                        "已停止 PlanRun 步骤不得保留 pending goal_outcome"
+                    )
                 summaries.append(
                     CompletedPlanStepSummary(
                         step_index=run.current_step_index,
@@ -1748,7 +1754,7 @@ class ActionPlanOrchestrator:
         if observer is not None:
             try:
                 await observer(event)
-            except Exception:
+            except Exception:  # noqa: BLE001 - 可选进度投递不能改变权威执行
                 # Progress is an optional, player-safe projection. Delivery
                 # failure must never change or duplicate authoritative steps.
                 return
@@ -1838,7 +1844,7 @@ class HostTurnDecisionExecutor:
                         source_revision=view.revision,
                         proposal=candidate,
                         requested_goal=player_input.utterance,
-                        requested_step_kind=self._proposal_step_kind(candidate),
+                        requested_step_kind=self._proposal_step_kind(candidate, view),
                     )
                 )
                 break
@@ -1885,7 +1891,7 @@ class HostTurnDecisionExecutor:
                     step_index=0,
                     step_request_id=player_input.client_action_id,
                     step=ActionPlanStep(
-                        kind=self._proposal_step_kind(proposal),
+                        kind=self._proposal_step_kind(proposal, view),
                         semantic_goal=proposal.semantic_goal,
                     ),
                     player_view=view,
@@ -1969,10 +1975,35 @@ class HostTurnDecisionExecutor:
     @staticmethod
     def _proposal_step_kind(
         proposal: SingleActionProposal,
+        player_view: PlayerView,
     ) -> Literal["travel", "wait", "rest", "action", "dialogue"]:
-        return HostTurnDecisionExecutor._semantic_step_kind(
+        """结合结构化焦点区分跨地点旅行与同场景接近动作。"""
+
+        semantic_kind = HostTurnDecisionExecutor._semantic_step_kind(
             f"{proposal.method_family} {proposal.semantic_goal}"
         )
+        if proposal.target_interaction == "social":
+            return "dialogue"
+        completion_effects = getattr(proposal.completion, "requirements", ())
+        if any(
+            effect.type == "enter_location"
+            for effect in (*proposal.success_effect_proposals, *completion_effects)
+        ):
+            return "travel"
+        if semantic_kind != "travel":
+            return semantic_kind
+        visible_target_ids = {
+            entity.id for entity in player_view.scene.visible_entities
+        } | {actor.id for actor in player_view.scene.visible_actors}
+        if (
+            proposal.semantic_focus.kind in {"entity", "actor"}
+            and proposal.semantic_focus.id in visible_target_ids
+        ):
+            # “走到桌旁/来到某人面前”不会改变地点；把它当 travel 会错误要求
+            # EnterLocationEffect。远端或不可见目标仍保留 travel，让 Engine 拒绝
+            # 缺少权威地点结果的提议，不能借此绕过移动和可见性边界。
+            return "action"
+        return semantic_kind
 
     async def _single_keeper_capabilities(
         self,
