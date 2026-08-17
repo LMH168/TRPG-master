@@ -1498,7 +1498,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         # STR 检定取 5，稳定成功。
-        dice = DiceRoller(SequenceDiceSource([5, 5]))
+        dice = DiceRoller(SequenceDiceSource([5, 5, 2]))
         engine = AdjudicationEngineService(store, dice=dice)
         rules = RuleEngineService(store)
 
@@ -1624,25 +1624,30 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
         )
 
         # 3. 与身影对话：纯效果规则，必须真的收束主线。
-        await engine._submit_internal_adjudication(
-            SubmitAdjudicationRequest(
-                room_id=ROOM,
-                player_id=PLAYER,
-                adjudication=ActionAdjudication(
-                    request_id="crypt-talk",
-                    source_revision=await revision(),
-                    actor_id=ACTOR,
-                    summary="与身影交谈",
-                    target=ActionTarget(kind="entity", id="cemetery_figure"),
-                    method=ActionMethod(family="talk", description="与身影交谈"),
-                    rule_decision=RuleDecisionRef(
-                        rule_id="talk_to_figure", option_id="proceed"
+        with engine_turn_context("turn-crypt-talk"):
+            await engine._submit_internal_adjudication(
+                SubmitAdjudicationRequest(
+                    room_id=ROOM,
+                    player_id=PLAYER,
+                    adjudication=ActionAdjudication(
+                        request_id="crypt-talk",
+                        source_revision=await revision(),
+                        actor_id=ACTOR,
+                        summary="与身影交谈",
+                        target=ActionTarget(kind="entity", id="cemetery_figure"),
+                        method=ActionMethod(family="talk", description="与身影交谈"),
+                        rule_decision=RuleDecisionRef(
+                            rule_id="talk_to_figure", option_id="proceed"
+                        ),
+                        check=NoAdjudicationCheck(),
+                        success_effects=(),
+                        failure_effects=(),
                     ),
-                    check=NoAdjudicationCheck(),
-                    success_effects=(),
-                    failure_effects=(),
-                ),
+                )
             )
+        await RuleAgendaExecutor(store, engine=engine, dice=dice).drain(
+            room_id=ROOM,
+            turn_id="turn-crypt-talk",
         )
 
         state = store.inspect_state(ROOM)
@@ -1713,7 +1718,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             )
             return {item.rule_id: item for item in view.rule_candidates}
 
-        # 石板已搬开后，唯一地穴入口规则发布两个不掷骰的语义分支。
+        # 带默认后果的隐藏例外不投影给 Agent，避免它主动提示玩家规避后果。
         at_open_crypt = await candidates(
             game_state(
                 self.content,
@@ -1722,16 +1727,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
                 plot_threads=plot_states(self.content, crypt="in_progress"),
             )
         )
-        self.assertEqual(
-            {item.id for item in at_open_crypt["crypt_stench_on_entry"].options},
-            {"hold_breath", "just_enter"},
-        )
-        self.assertFalse(
-            any(
-                item.requires_check
-                for item in at_open_crypt["crypt_stench_on_entry"].options
-            )
-        )
+        self.assertEqual(at_open_crypt["crypt_stench_on_entry"].options, ())
 
         # 搬石板要掷 STR，而它属于墓地——石板在墓地，不在地穴里。
         at_cemetery = await candidates(

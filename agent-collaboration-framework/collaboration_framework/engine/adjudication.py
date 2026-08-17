@@ -45,6 +45,7 @@ from collaboration_framework.contracts import (
     LocationKnowledge,
     MarkCoreResolvedEffect,
     MoveEntityEffect,
+    MoveEntityToBoundActorEffect,
     NarrationEvidence,
     NarrativeOnlyEffect,
     PendingCheckOption,
@@ -2817,6 +2818,13 @@ class AdjudicationEngineService:
         actor_id: str,
         offset: int,
     ) -> tuple[GameState, tuple[DomainEvent, ...]]:
+        # Rule 只能通过绑定占位符指向当前可信角色；落地前转换为现有 custody
+        # Effect，后续版本、事件和 PlayerView 继续共用同一条写入路径。
+        if isinstance(effect, MoveEntityToBoundActorEffect):
+            effect = MoveEntityEffect(
+                entity_id=effect.entity_id,
+                holder_actor_id=actor_id,
+            )
         event_type: str | None = None
         effect_event_id: str | None = None
         event_visibility: Literal["public", "hidden"] = "public"

@@ -42,6 +42,7 @@ from .rules_v3 import (
     ordered_agenda_items,
     walk_rule_from,
 )
+from .timeline import advanced_to_next
 
 AgendaExecutionKind = Literal[
     "passive_check",
@@ -85,17 +86,32 @@ class RulesetActionRegistry:
 
     def __init__(
         self,
-        actions: dict[str, Literal["apply_condition", "advance_to_condition_expiry"]]
+        actions: dict[
+            str,
+            Literal[
+                "advance_time_hours",
+                "apply_condition",
+                "apply_mythos_exposure",
+                "advance_to_condition_expiry",
+            ],
+        ]
         | None = None,
     ) -> None:
         self._actions = actions or {
+            "coc7.advance_time_hours": "advance_time_hours",
             "coc7.apply_condition": "apply_condition",
+            "coc7.apply_mythos_exposure": "apply_mythos_exposure",
             "coc7.advance_to_condition_expiry": "advance_to_condition_expiry",
         }
 
     def require(
         self, action_id: str
-    ) -> Literal["apply_condition", "advance_to_condition_expiry"]:
+    ) -> Literal[
+        "advance_time_hours",
+        "apply_condition",
+        "apply_mythos_exposure",
+        "advance_to_condition_expiry",
+    ]:
         try:
             return self._actions[action_id]
         except KeyError as exc:
@@ -934,6 +950,21 @@ class RuleAgendaExecutor:
         action_kind = self._ruleset_actions.require(step.action_id)
         if step.actor_binding != "actor":
             raise ContractError("Ruleset Action actor binding 不受支持")
+        if action_kind == "advance_time_hours":
+            return self._advance_time_hours(
+                runtime,
+                state,
+                agenda=agenda,
+                step=step,
+                execution_id=execution_id,
+            )
+        if action_kind == "apply_mythos_exposure":
+            return self._apply_mythos_exposure(
+                state,
+                agenda=agenda,
+                step=step,
+                execution_id=execution_id,
+            )
         condition = step.parameters.get("condition")
         if not isinstance(condition, str) or not condition.strip():
             raise ContractError(f"{step.action_id} 缺少 condition")
@@ -945,7 +976,12 @@ class RuleAgendaExecutor:
                 condition=condition,
                 execution_id=execution_id,
             )
-        allowed = {"unconscious", "unconscious_until_night", "temporary_insanity"}
+        allowed = {
+            "detained",
+            "temporary_insanity",
+            "unconscious",
+            "unconscious_until_night",
+        }
         if condition not in allowed:
             raise ContractError("coc7.apply_condition condition 未注册")
         actor_id = agenda.actor_id or ""
@@ -953,7 +989,23 @@ class RuleAgendaExecutor:
         conditions = set(actor.conditions)
         conditions.add(condition)
         actor_state = deepcopy(actor.state)
-        if condition == "unconscious_until_night":
+        expires_at_next_time_point = step.parameters.get(
+            "expires_at_next_time_point", False
+        )
+        if not isinstance(expires_at_next_time_point, bool):
+            raise ContractError("expires_at_next_time_point 必须是布尔值")
+        if expires_at_next_time_point:
+            # 模组只声明“持续到下一个时间点”，具体绝对时刻由固定时间线计算，
+            # 避免在已经入夜时把临时状态错误延长整整一天。
+            target_hour = advanced_to_next(
+                runtime.v3, state.world_time
+            ).current.absolute_hour
+            expirations = deepcopy(actor_state.get("condition_expirations", {}))
+            if not isinstance(expirations, dict):
+                expirations = {}
+            expirations[condition] = target_hour
+            actor_state["condition_expirations"] = expirations
+        elif condition == "unconscious_until_night":
             current = state.world_time.current
             target_day = (
                 current.day_index if current.hour_of_day < 18 else current.day_index + 1
@@ -978,6 +1030,124 @@ class RuleAgendaExecutor:
             payload={"condition": condition},
         )
         return state, (event,), {"condition": condition}
+
+    def _advance_time_hours(
+        self,
+        runtime,
+        state: GameState,
+        *,
+        agenda: RuleAgenda,
+        step: InvokeRulesetActionStep,
+        execution_id: str,
+    ) -> tuple[GameState, tuple[DomainEvent, ...], dict[str, JsonValue]]:
+        """沿固定时间线逐点推进指定小时，确保中间事件不会被跳过。"""
+
+        hours = step.parameters.get("hours")
+        if (
+            not isinstance(hours, int)
+            or isinstance(hours, bool)
+            or not 1 <= hours <= 168
+        ):
+            raise ContractError("coc7.advance_time_hours hours 必须在 1..168")
+        target_hour = state.world_time.current.absolute_hour + hours
+        events: list[DomainEvent] = []
+        while state.world_time.current.absolute_hour < target_hour:
+            next_time = advanced_to_next(runtime.v3, state.world_time)
+            if next_time.current.absolute_hour > target_hour:
+                raise ContractError("时间长度无法落在模组声明的时间点")
+            state, emitted = self._engine._apply_effect(
+                runtime,
+                state,
+                AdvanceWorldTimeEffect(to_point_id=next_time.current_point_id),
+                room_id=agenda.room_id,
+                request_id=execution_id,
+                actor_id=agenda.actor_id or "",
+                offset=len(events) + 1,
+            )
+            events.extend(emitted)
+        return (
+            state,
+            tuple(events),
+            {"hours": hours, "absolute_hour": target_hour},
+        )
+
+    def _apply_mythos_exposure(
+        self,
+        state: GameState,
+        *,
+        agenda: RuleAgenda,
+        step: InvokeRulesetActionStep,
+        execution_id: str,
+    ) -> tuple[GameState, tuple[DomainEvent, ...], dict[str, JsonValue]]:
+        """原子提交固定神话增益和骰式 SAN 损失，恢复时不重复掷骰。"""
+
+        mythos_gain = step.parameters.get("mythos_gain")
+        san_loss_expression = step.parameters.get("san_loss")
+        if (
+            not isinstance(mythos_gain, int)
+            or isinstance(mythos_gain, bool)
+            or not 0 <= mythos_gain <= 100
+            or not isinstance(san_loss_expression, str)
+        ):
+            raise ContractError("coc7.apply_mythos_exposure 参数无效")
+        actor_id = agenda.actor_id or ""
+        actor = state.actors[actor_id]
+        if actor.resources.san is None:
+            raise ContractError("当前 Actor 缺少 SAN")
+        loss = max(0, self._dice.roll(san_loss_expression))
+        san_after = max(0, actor.resources.san - loss)
+        mythos_after = actor.resources.mythos + mythos_gain
+        resources = actor.resources.model_copy(
+            update={"san": san_after, "mythos": mythos_after}, deep=True
+        )
+        conditions = set(actor.conditions)
+        if loss >= 5:
+            conditions.add("temporary_insanity")
+        actors = dict(state.actors)
+        actors[actor_id] = actor.model_copy(
+            update={
+                "resources": resources,
+                "conditions": tuple(sorted(conditions)),
+            },
+            deep=True,
+        )
+        state = state.model_copy(update={"actors": actors}, deep=True)
+        events = [
+            self._event(
+                state,
+                agenda=agenda,
+                execution_id=execution_id,
+                offset=1,
+                event_type="actor.sanity_changed",
+                payload={
+                    "from": actor.resources.san,
+                    "to": san_after,
+                    "loss": loss,
+                },
+            ),
+            self._event(
+                state,
+                agenda=agenda,
+                execution_id=execution_id,
+                offset=2,
+                event_type="actor.mythos_changed",
+                payload={
+                    "from": actor.resources.mythos,
+                    "to": mythos_after,
+                    "gain": mythos_gain,
+                },
+            ),
+        ]
+        return (
+            state,
+            tuple(events),
+            {
+                "san_loss": loss,
+                "san_after": san_after,
+                "mythos_gain": mythos_gain,
+                "mythos_after": mythos_after,
+            },
+        )
 
     def _advance_to_condition_expiry(
         self,

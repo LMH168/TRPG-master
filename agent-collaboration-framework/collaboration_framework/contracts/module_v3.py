@@ -344,6 +344,29 @@ class MatchOptionAuthorSpec(ContractModel):
     semantic_hints: tuple[str, ...] = Field(min_length=1)
 
 
+class ExplicitChoiceSelectionPolicy(ContractModel):
+    """玩家必须明确选择的公开分支，缺少选择时 Engine 请求澄清。"""
+
+    kind: Literal["explicit_choice"] = "explicit_choice"
+
+
+class DefaultWithOverridesSelectionPolicy(ContractModel):
+    """默认执行固定分支，仅以玩家原话中明确出现的提示选择例外。
+
+    该策略用于表达守秘人掌握的默认后果。例外提示只供 Engine 匹配，不能投影
+    成 Host 可以主动建议的候选，避免把模组中的隐藏处理方式泄露给玩家。
+    """
+
+    kind: Literal["default_with_overrides"] = "default_with_overrides"
+    default_option_id: Identifier
+
+
+AgentMatchSelectionPolicy: TypeAlias = Annotated[
+    ExplicitChoiceSelectionPolicy | DefaultWithOverridesSelectionPolicy,
+    Field(discriminator="kind"),
+]
+
+
 class BindingSlotSpec(ContractModel):
     name: str = Field(min_length=1, max_length=100, pattern=IDENTIFIER_PATTERN)
     source: Literal["actor", "target", "scene", "location"]
@@ -359,11 +382,20 @@ class AgentMatchTriggerSpec(ContractModel):
     when: ConditionExpr | None = None
     question: MatchQuestionSpec
     options: tuple[MatchOptionAuthorSpec, ...] = Field(min_length=1)
+    selection_policy: AgentMatchSelectionPolicy = Field(
+        default_factory=ExplicitChoiceSelectionPolicy
+    )
     bindings: tuple[BindingSlotSpec, ...] = ()
 
     @model_validator(mode="after")
     def validate_options(self) -> AgentMatchTriggerSpec:
         _require_unique_ids(self.options, "Rule match option")
+        if isinstance(
+            self.selection_policy, DefaultWithOverridesSelectionPolicy
+        ) and self.selection_policy.default_option_id not in {
+            option.id for option in self.options
+        }:
+            raise ValueError("Rule 默认 option 必须存在于 options")
         names = [binding.name for binding in self.bindings]
         if len(names) != len(set(names)):
             raise ValueError("Rule binding name 必须唯一")
@@ -414,7 +446,17 @@ class TransitionPlotThreadEffect(ContractModel):
     to_status: Literal["available", "in_progress", "resolved", "failed"]
 
 
-RuleEffect: TypeAlias = ActionEffect | TransitionPlotThreadEffect
+class MoveEntityToBoundActorEffect(ContractModel):
+    """把模组物品交给当前可信角色，不允许作者填写外部 actor ID。"""
+
+    type: Literal["move_entity_to_bound_actor"] = "move_entity_to_bound_actor"
+    entity_id: Identifier
+    actor_binding: Literal["actor"] = "actor"
+
+
+RuleEffect: TypeAlias = (
+    ActionEffect | TransitionPlotThreadEffect | MoveEntityToBoundActorEffect
+)
 
 
 class EffectStep(ContractModel):
@@ -856,6 +898,7 @@ __all__ = [
     "IDENTIFIER_PATTERN",
     "ActorPlacementSpec",
     "AdjudicatedCheckStep",
+    "AgentMatchSelectionPolicy",
     "AgentMatchTriggerSpec",
     "AllCondition",
     "AnyCondition",
@@ -868,6 +911,7 @@ __all__ = [
     "CoreResolutionSpec",
     "CreateNpcActionOpportunityStep",
     "CreateTimeTaskStep",
+    "DefaultWithOverridesSelectionPolicy",
     "EffectStep",
     "EndingAnchorSpec",
     "EndingPolicySpec",
@@ -876,6 +920,7 @@ __all__ = [
     "EntitySpecV3",
     "EventTriggerSpec",
     "ExecutionBranchSpec",
+    "ExplicitChoiceSelectionPolicy",
     "FinishStep",
     "Identifier",
     "InformationAudienceSpec",
@@ -892,6 +937,7 @@ __all__ = [
     "MatchQuestionSpec",
     "ModuleContentV3",
     "ModuleTimePolicySpec",
+    "MoveEntityToBoundActorEffect",
     "NarrationPlotThread",
     "NotCondition",
     "PlotThreadSpec",

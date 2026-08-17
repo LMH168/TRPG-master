@@ -575,10 +575,10 @@ def test_blocking_agent_rule_rejects_presentation_on_unrelated_branch() -> None:
     module = _module()
     rule = next(item for item in module.rules if item.id == "crypt_stench_on_entry")
     steps = tuple(
-        step.model_copy(update={"next_step_id": "present_faint"}, deep=True)
-        if step.id == "enter_safely"
+        step.model_copy(update={"next_step_id": "present_entry"}, deep=True)
+        if step.id == "position_figure_in_crypt"
         else step.model_copy(update={"next_step_id": "crypt_finish"}, deep=True)
-        if step.id == "faint_willing"
+        if step.id == "offer_entry_conversation"
         else step
         for step in rule.execution.steps
     )

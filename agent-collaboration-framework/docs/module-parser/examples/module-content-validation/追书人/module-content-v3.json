@@ -1,7 +1,7 @@
 {
   "content_schema_version": 3,
   "module_id": "paper-chase-zh-coc7",
-  "version": "3.0.9",
+  "version": "3.0.10",
   "world_ref": "coc-7e",
   "background": "时代与地点为美国禁酒令时期的密歇根州阿诺兹堡。调查员受托马斯·金博尔委托，从五本失窃的旧书和叔叔道格拉斯一年前的失踪案入手，走访旧宅、图书馆与公共墓地。叙事应保持安静、克制而带哥特气息，以夜色、旧书、墓园和孤独感作为反复意象；面对异常时不要急于渲染纯粹敌意，应为同情、选择与淡淡哀伤保留空间。任何尚未由线索确认的真相都不得提前告知玩家。",
   "information": [
@@ -678,9 +678,9 @@
     {
       "id": "crypt",
       "kind": "room",
-      "name": "地穴入口",
-      "player_visible_name": "地穴入口",
-      "player_visible_description": "一块沉重石板盖着向下的通道，周围空气阴冷而浑浊。",
+      "name": "地下地穴",
+      "player_visible_name": "地下地穴",
+      "player_visible_description": "石板下方是腐臭、阴冷的地下通道，幽暗深处连接着食尸鬼活动的洞穴。",
       "parent_location_id": "cemetery",
       "region_id": "arnoldsburg"
     },
@@ -1261,16 +1261,6 @@
               "information_id": "melodias_pocket_bottle",
               "scope": "party"
             },
-            "next_step_id": "succeed_2"
-          },
-          {
-            "id": "succeed_2",
-            "kind": "effect",
-            "effect": {
-              "type": "reveal_information",
-              "information_id": "town_speakeasy_rumor",
-              "scope": "party"
-            },
             "next_step_id": "finish"
           },
           {
@@ -1293,6 +1283,73 @@
               "failure": "finish",
               "fumble": "finish"
             }
+          }
+        ]
+      }
+    },
+    {
+      "id": "infer_speakeasy_from_bottle",
+      "trigger": {
+        "kind": "agent_match",
+        "scope": {
+          "action_families": [
+            "infer",
+            "search",
+            "interview"
+          ],
+          "location_ids": [],
+          "target_kinds": [
+            "information",
+            "world"
+          ],
+          "target_ids": [
+            "melodias_pocket_bottle"
+          ]
+        },
+        "when": {
+          "op": "predicate",
+          "predicate": "information_is",
+          "args": {
+            "id": "melodias_pocket_bottle"
+          }
+        },
+        "question": {
+          "kind": "intent_relation",
+          "semantic_hints": [
+            "判断酒瓶来源",
+            "寻找酒的来路"
+          ]
+        },
+        "options": [
+          {
+            "id": "connect_bottle_to_speakeasy",
+            "semantic_hints": [
+              "推断镇上存在地下酒吧"
+            ]
+          }
+        ]
+      },
+      "execution": {
+        "branches": [
+          {
+            "id": "connect_bottle_to_speakeasy",
+            "entry_step_id": "reveal_rumor"
+          }
+        ],
+        "steps": [
+          {
+            "id": "reveal_rumor",
+            "kind": "effect",
+            "effect": {
+              "type": "reveal_information",
+              "information_id": "town_speakeasy_rumor",
+              "scope": "party"
+            },
+            "next_step_id": "finish"
+          },
+          {
+            "id": "finish",
+            "kind": "finish"
           }
         ]
       }
@@ -1418,6 +1475,15 @@
             "melodias"
           ]
         },
+        "when": {
+          "op": "predicate",
+          "predicate": "item_custody_is",
+          "args": {
+            "entity_id": "liquor",
+            "kind": "actor_inventory",
+            "ref": "actor"
+          }
+        },
         "question": {
           "kind": "method",
           "semantic_hints": [
@@ -1485,10 +1551,8 @@
             "id": "succeed_1",
             "kind": "effect",
             "effect": {
-              "type": "change_entity_state",
-              "entity_id": "liquor",
-              "key": "given_to_caretaker",
-              "value": true
+              "type": "consume_entity",
+              "entity_id": "liquor"
             },
             "next_step_id": "succeed_2"
           },
@@ -1692,6 +1756,26 @@
             "newspaper_archive"
           ]
         },
+        "when": {
+          "op": "not",
+          "item": {
+            "op": "predicate",
+            "predicate": "actor_profile_matches_any",
+            "args": {
+              "occupations": [
+                "记者",
+                "作家",
+                "新闻记者",
+                "撰稿人"
+              ],
+              "background_terms": [
+                "记者",
+                "作家",
+                "报社"
+              ]
+            }
+          }
+        },
         "question": {
           "kind": "method",
           "semantic_hints": [
@@ -1874,6 +1958,104 @@
       }
     },
     {
+      "id": "direct_newspaper_archive_access",
+      "trigger": {
+        "kind": "agent_match",
+        "scope": {
+          "action_families": [
+            "request_access"
+          ],
+          "location_ids": [
+            "newspaper_office"
+          ],
+          "target_kinds": [
+            "entity"
+          ],
+          "target_ids": [
+            "newspaper_archive"
+          ]
+        },
+        "when": {
+          "op": "predicate",
+          "predicate": "actor_profile_matches_any",
+          "args": {
+            "occupations": [
+              "记者",
+              "作家",
+              "新闻记者",
+              "撰稿人"
+            ],
+            "background_terms": [
+              "记者",
+              "作家",
+              "报社"
+            ]
+          }
+        },
+        "question": {
+          "kind": "method",
+          "semantic_hints": [
+            "查阅报社档案",
+            "利用职业身份进入档案室"
+          ]
+        },
+        "options": [
+          {
+            "id": "professional_access",
+            "semantic_hints": [
+              "使用记者或作家身份"
+            ]
+          }
+        ]
+      },
+      "execution": {
+        "branches": [
+          {
+            "id": "professional_access",
+            "entry_step_id": "reveal_statement"
+          }
+        ],
+        "steps": [
+          {
+            "id": "reveal_statement",
+            "kind": "effect",
+            "effect": {
+              "type": "reveal_information",
+              "information_id": "hilda_ghoul_statement",
+              "scope": "party"
+            },
+            "next_step_id": "mark_access"
+          },
+          {
+            "id": "mark_access",
+            "kind": "effect",
+            "effect": {
+              "type": "change_entity_state",
+              "entity_id": "newspaper_archive",
+              "key": "newspaper_accessed",
+              "value": true
+            },
+            "next_step_id": "mark_statement"
+          },
+          {
+            "id": "mark_statement",
+            "kind": "effect",
+            "effect": {
+              "type": "change_entity_state",
+              "entity_id": "newspaper_archive",
+              "key": "hilda_statement_found",
+              "value": true
+            },
+            "next_step_id": "finish"
+          },
+          {
+            "id": "finish",
+            "kind": "finish"
+          }
+        ]
+      }
+    },
+    {
       "id": "luck_find_newspaper_report",
       "trigger": {
         "kind": "agent_match",
@@ -1889,6 +2071,30 @@
           ],
           "target_ids": [
             "newspaper_archive"
+          ]
+        },
+        "when": {
+          "op": "all",
+          "items": [
+            {
+              "op": "predicate",
+              "predicate": "entity_state_is",
+              "args": {
+                "entity_id": "newspaper_archive",
+                "key": "newspaper_accessed",
+                "value": true
+              }
+            },
+            {
+              "op": "not",
+              "item": {
+                "op": "predicate",
+                "predicate": "information_is",
+                "args": {
+                  "id": "cemetery_dance_report"
+                }
+              }
+            }
           ]
         },
         "question": {
@@ -1987,7 +2193,7 @@
       }
     },
     {
-      "id": "ask_around_speakeasy",
+      "id": "find_speakeasy_by_luck",
       "trigger": {
         "kind": "agent_match",
         "scope": {
@@ -2005,6 +2211,26 @@
             "arnoldsburg_streets"
           ]
         },
+        "when": {
+          "op": "not",
+          "item": {
+            "op": "predicate",
+            "predicate": "actor_profile_matches_any",
+            "args": {
+              "occupations": [
+                "侦探",
+                "警察",
+                "黑帮成员",
+                "私家侦探"
+              ],
+              "background_terms": [
+                "酗酒",
+                "地下酒吧",
+                "私酒"
+              ]
+            }
+          }
+        },
         "question": {
           "kind": "method",
           "semantic_hints": [
@@ -2014,124 +2240,10 @@
         },
         "options": [
           {
-            "id": "fast-talk",
-            "semantic_hints": [
-              "话术",
-              "用话术打听"
-            ]
-          },
-          {
-            "id": "spot-hidden",
-            "semantic_hints": [
-              "侦查",
-              "留意街上的暗门"
-            ]
-          }
-        ]
-      },
-      "execution": {
-        "branches": [
-          {
-            "id": "fast-talk",
-            "entry_step_id": "check_fast-talk"
-          },
-          {
-            "id": "spot-hidden",
-            "entry_step_id": "check_spot-hidden"
-          }
-        ],
-        "steps": [
-          {
-            "id": "finish",
-            "kind": "finish"
-          },
-          {
-            "id": "succeed_0",
-            "kind": "effect",
-            "effect": {
-              "type": "change_entity_state",
-              "entity_id": "liquor",
-              "key": "speakeasy_found",
-              "value": true
-            },
-            "next_step_id": "finish"
-          },
-          {
-            "id": "check_fast-talk",
-            "kind": "check",
-            "check": {
-              "profile_id": "coc7.skill",
-              "actor_binding": "actor",
-              "initiation_kind": "active_action",
-              "parameters": {
-                "skill_id": "fast-talk"
-              },
-              "difficulty": "regular"
-            },
-            "result_routes": {
-              "critical_success": "succeed_0",
-              "extreme_success": "succeed_0",
-              "hard_success": "succeed_0",
-              "regular_success": "succeed_0",
-              "failure": "finish",
-              "fumble": "finish"
-            }
-          },
-          {
-            "id": "check_spot-hidden",
-            "kind": "check",
-            "check": {
-              "profile_id": "coc7.skill",
-              "actor_binding": "actor",
-              "initiation_kind": "active_action",
-              "parameters": {
-                "skill_id": "spot-hidden"
-              },
-              "difficulty": "regular"
-            },
-            "result_routes": {
-              "critical_success": "succeed_0",
-              "extreme_success": "succeed_0",
-              "hard_success": "succeed_0",
-              "regular_success": "succeed_0",
-              "failure": "finish",
-              "fumble": "finish"
-            }
-          }
-        ]
-      }
-    },
-    {
-      "id": "find_speakeasy",
-      "trigger": {
-        "kind": "agent_match",
-        "scope": {
-          "action_families": [
-            "search"
-          ],
-          "location_ids": [
-            "speakeasy"
-          ],
-          "target_kinds": [
-            "entity"
-          ],
-          "target_ids": [
-            "liquor"
-          ]
-        },
-        "question": {
-          "kind": "method",
-          "semantic_hints": [
-            "search",
-            "一品脱酒"
-          ]
-        },
-        "options": [
-          {
             "id": "luck",
             "semantic_hints": [
-              "幸运",
-              "用幸运"
+              "寻找地下酒吧",
+              "打听地下酒吧"
             ]
           }
         ]
@@ -2154,9 +2266,25 @@
             "effect": {
               "type": "change_entity_state",
               "entity_id": "liquor",
-              "key": "obtained",
+              "key": "speakeasy_found",
               "value": true
             },
+            "next_step_id": "finish"
+          },
+          {
+            "id": "detained",
+            "kind": "invoke_ruleset_action",
+            "action_id": "coc7.apply_condition",
+            "actor_binding": "actor",
+            "parameters": {
+              "condition": "detained"
+            },
+            "next_step_id": "present_detained"
+          },
+          {
+            "id": "present_detained",
+            "kind": "presentation",
+            "presentation_id": "speakeasy_search_fumble",
             "next_step_id": "finish"
           },
           {
@@ -2177,8 +2305,159 @@
               "hard_success": "succeed_0",
               "regular_success": "succeed_0",
               "failure": "finish",
-              "fumble": "finish"
+              "fumble": "detained"
             }
+          }
+        ]
+      },
+      "presentation": {
+        "id": "speakeasy_search_fumble",
+        "player_safe_summary": "寻找禁酒令时期的地下酒吧引来了警方注意；这次寻找以被拘留告终。"
+      }
+    },
+    {
+      "id": "know_speakeasy_from_profile",
+      "trigger": {
+        "kind": "agent_match",
+        "scope": {
+          "action_families": [
+            "search",
+            "interview"
+          ],
+          "location_ids": [
+            "arnoldsburg_streets"
+          ],
+          "target_kinds": [
+            "location"
+          ],
+          "target_ids": [
+            "arnoldsburg_streets"
+          ]
+        },
+        "when": {
+          "op": "predicate",
+          "predicate": "actor_profile_matches_any",
+          "args": {
+            "occupations": [
+              "侦探",
+              "警察",
+              "黑帮成员",
+              "私家侦探"
+            ],
+            "background_terms": [
+              "酗酒",
+              "地下酒吧",
+              "私酒"
+            ]
+          }
+        },
+        "question": {
+          "kind": "method",
+          "semantic_hints": [
+            "寻找地下酒吧",
+            "前往角色熟悉的地下酒吧"
+          ]
+        },
+        "options": [
+          {
+            "id": "known_from_profile",
+            "semantic_hints": [
+              "利用职业或背景知识"
+            ]
+          }
+        ]
+      },
+      "execution": {
+        "branches": [
+          {
+            "id": "known_from_profile",
+            "entry_step_id": "reveal_speakeasy"
+          }
+        ],
+        "steps": [
+          {
+            "id": "reveal_speakeasy",
+            "kind": "effect",
+            "effect": {
+              "type": "change_entity_state",
+              "entity_id": "liquor",
+              "key": "speakeasy_found",
+              "value": true
+            },
+            "next_step_id": "finish"
+          },
+          {
+            "id": "finish",
+            "kind": "finish"
+          }
+        ]
+      }
+    },
+    {
+      "id": "find_speakeasy",
+      "trigger": {
+        "kind": "agent_match",
+        "scope": {
+          "action_families": [
+            "search"
+          ],
+          "location_ids": [
+            "speakeasy"
+          ],
+          "target_kinds": [
+            "entity"
+          ],
+          "target_ids": [
+            "liquor"
+          ]
+        },
+        "when": {
+          "op": "predicate",
+          "predicate": "item_custody_is",
+          "args": {
+            "entity_id": "liquor",
+            "kind": "location",
+            "ref_id": "speakeasy"
+          }
+        },
+        "question": {
+          "kind": "method",
+          "semantic_hints": [
+            "search",
+            "一品脱酒"
+          ]
+        },
+        "options": [
+          {
+            "id": "purchase",
+            "semantic_hints": [
+              "购买一品脱酒",
+              "买酒"
+            ]
+          }
+        ]
+      },
+      "execution": {
+        "branches": [
+          {
+            "id": "purchase",
+            "entry_step_id": "purchase_liquor"
+          }
+        ],
+        "steps": [
+          {
+            "id": "finish",
+            "kind": "finish"
+          },
+          {
+            "id": "purchase_liquor",
+            "kind": "effect",
+            "effect": {
+              "type": "move_entity_to_bound_actor",
+              "entity_id": "liquor",
+              "actor_binding": "actor"
+            },
+            "next_step_id": "finish"
           }
         ]
       }
@@ -2239,6 +2518,32 @@
               "key": "found",
               "value": true
             },
+            "next_step_id": "take_diary"
+          },
+          {
+            "id": "take_diary",
+            "kind": "effect",
+            "effect": {
+              "type": "move_entity_to_bound_actor",
+              "entity_id": "douglas_diary",
+              "actor_binding": "actor"
+            },
+            "next_step_id": "advance_search_day"
+          },
+          {
+            "id": "advance_search_day",
+            "kind": "invoke_ruleset_action",
+            "action_id": "coc7.advance_time_hours",
+            "actor_binding": "actor",
+            "parameters": {
+              "hours": 24
+            },
+            "next_step_id": "present_search_elapsed"
+          },
+          {
+            "id": "present_search_elapsed",
+            "kind": "presentation",
+            "presentation_id": "study_search_elapsed",
             "next_step_id": "finish"
           },
           {
@@ -2258,11 +2563,15 @@
               "extreme_success": "succeed_0",
               "hard_success": "succeed_0",
               "regular_success": "succeed_0",
-              "failure": "finish",
-              "fumble": "finish"
+              "failure": "advance_search_day",
+              "fumble": "advance_search_day"
             }
           }
         ]
+      },
+      "presentation": {
+        "id": "study_search_elapsed",
+        "player_safe_summary": "对整间书房的彻底搜索已经耗费一天；只描述检定实际证明的发现，并使用推进后的当前时间。"
       }
     },
     {
@@ -2273,15 +2582,22 @@
           "action_families": [
             "read"
           ],
-          "location_ids": [
-            "kimball_house"
-          ],
+          "location_ids": [],
           "target_kinds": [
             "entity"
           ],
           "target_ids": [
             "douglas_diary"
           ]
+        },
+        "when": {
+          "op": "predicate",
+          "predicate": "item_custody_is",
+          "args": {
+            "entity_id": "douglas_diary",
+            "kind": "actor_inventory",
+            "ref": "actor"
+          }
         },
         "question": {
           "kind": "method",
@@ -2292,10 +2608,10 @@
         },
         "options": [
           {
-            "id": "language-foreign-1",
+            "id": "language-native",
             "semantic_hints": [
-              "外语",
-              "用外语"
+              "语言（母语）",
+              "阅读英语日记"
             ]
           }
         ]
@@ -2303,8 +2619,8 @@
       "execution": {
         "branches": [
           {
-            "id": "language-foreign-1",
-            "entry_step_id": "check_language-foreign-1"
+            "id": "language-native",
+            "entry_step_id": "check_language-native"
           }
         ],
         "steps": [
@@ -2334,14 +2650,14 @@
             "next_step_id": "finish"
           },
           {
-            "id": "check_language-foreign-1",
+            "id": "check_language-native",
             "kind": "check",
             "check": {
               "profile_id": "coc7.skill",
               "actor_binding": "actor",
               "initiation_kind": "active_action",
               "parameters": {
-                "skill_id": "language-foreign-1"
+                "skill_id": "language-native"
               },
               "difficulty": "regular"
             },
@@ -2412,6 +2728,16 @@
             "kind": "finish"
           },
           {
+            "id": "position_figure",
+            "kind": "effect",
+            "effect": {
+              "type": "move_entity",
+              "entity_id": "cemetery_figure",
+              "location_id": "surveillance_point"
+            },
+            "next_step_id": "succeed_0"
+          },
+          {
             "id": "succeed_0",
             "kind": "effect",
             "effect": {
@@ -2446,10 +2772,10 @@
               "difficulty": "regular"
             },
             "result_routes": {
-              "critical_success": "succeed_0",
-              "extreme_success": "succeed_0",
-              "hard_success": "succeed_0",
-              "regular_success": "succeed_0",
+              "critical_success": "position_figure",
+              "extreme_success": "position_figure",
+              "hard_success": "position_figure",
+              "regular_success": "position_figure",
               "failure": "finish",
               "fumble": "finish"
             }
@@ -2753,7 +3079,8 @@
             "talk"
           ],
           "location_ids": [
-            "crypt"
+            "crypt",
+            "cemetery"
           ],
           "target_kinds": [
             "entity"
@@ -2817,6 +3144,23 @@
               "information_id": "douglas_confession",
               "scope": "party"
             },
+            "next_step_id": "apply_mythos_exposure"
+          },
+          {
+            "id": "apply_mythos_exposure",
+            "kind": "invoke_ruleset_action",
+            "action_id": "coc7.apply_mythos_exposure",
+            "actor_binding": "actor",
+            "parameters": {
+              "mythos_gain": 3,
+              "san_loss": "1d4"
+            },
+            "next_step_id": "present_conversation"
+          },
+          {
+            "id": "present_conversation",
+            "kind": "presentation",
+            "presentation_id": "douglas_conversation_result",
             "next_step_id": "succeed_2"
           },
           {
@@ -2858,6 +3202,10 @@
             "next_step_id": "finish"
           }
         ]
+      },
+      "presentation": {
+        "id": "douglas_conversation_result",
+        "player_safe_summary": "道格拉斯已经说明自己的选择与地下世界的情况；本次交流造成的克苏鲁神话增益和 SAN 损失已经权威提交。"
       }
     },
     {
@@ -3440,7 +3788,11 @@
               "没有防护"
             ]
           }
-        ]
+        ],
+        "selection_policy": {
+          "kind": "default_with_overrides",
+          "default_option_id": "just_enter"
+        }
       },
       "execution": {
         "branches": [
@@ -3472,7 +3824,17 @@
               "key": "entered",
               "value": true
             },
-            "next_step_id": "resolve_crypt_thread"
+            "next_step_id": "position_figure_in_crypt"
+          },
+          {
+            "id": "position_figure_in_crypt",
+            "kind": "effect",
+            "effect": {
+              "type": "move_entity",
+              "entity_id": "cemetery_figure",
+              "location_id": "crypt"
+            },
+            "next_step_id": "entry_sighted"
           },
           {
             "id": "enter_before_faint",
@@ -3489,7 +3851,8 @@
             "action_id": "coc7.apply_condition",
             "actor_binding": "actor",
             "parameters": {
-              "condition": "unconscious_until_night"
+              "condition": "unconscious",
+              "expires_at_next_time_point": true
             },
             "next_step_id": "wake_at_expiry"
           },
@@ -3499,12 +3862,31 @@
             "action_id": "coc7.advance_to_condition_expiry",
             "actor_binding": "actor",
             "parameters": {
-              "condition": "unconscious_until_night"
+              "condition": "unconscious"
             },
-            "next_step_id": "faint_sighted"
+            "next_step_id": "wake_at_cemetery"
           },
           {
-            "id": "faint_sighted",
+            "id": "wake_at_cemetery",
+            "kind": "effect",
+            "effect": {
+              "type": "enter_location",
+              "location_id": "cemetery"
+            },
+            "next_step_id": "position_figure_at_grave"
+          },
+          {
+            "id": "position_figure_at_grave",
+            "kind": "effect",
+            "effect": {
+              "type": "move_entity",
+              "entity_id": "cemetery_figure",
+              "location_id": "cemetery"
+            },
+            "next_step_id": "entry_sighted"
+          },
+          {
+            "id": "entry_sighted",
             "kind": "effect",
             "effect": {
               "type": "change_entity_state",
@@ -3512,10 +3894,10 @@
               "key": "sighted",
               "value": true
             },
-            "next_step_id": "faint_willing"
+            "next_step_id": "entry_willing"
           },
           {
-            "id": "faint_willing",
+            "id": "entry_willing",
             "kind": "effect",
             "effect": {
               "type": "change_entity_state",
@@ -3523,19 +3905,19 @@
               "key": "willing_to_talk",
               "value": true
             },
-            "next_step_id": "offer_faint_conversation"
+            "next_step_id": "offer_entry_conversation"
           },
           {
-            "id": "offer_faint_conversation",
+            "id": "offer_entry_conversation",
             "kind": "create_npc_action_opportunity",
             "entity_id": "cemetery_figure",
             "action_id": "speak_after_crypt_faint",
-            "next_step_id": "present_faint"
+            "next_step_id": "present_entry"
           },
           {
-            "id": "present_faint",
+            "id": "present_entry",
             "kind": "presentation",
-            "presentation_id": "crypt_faint_result",
+            "presentation_id": "crypt_entry_result",
             "next_step_id": "resolve_crypt_thread"
           },
           {
@@ -3555,17 +3937,6 @@
               "type": "transition_plot_thread",
               "thread_id": "cemetery_encounter",
               "to_status": "available"
-            },
-            "next_step_id": "reveal_crypt_figure"
-          },
-          {
-            "id": "reveal_crypt_figure",
-            "kind": "effect",
-            "effect": {
-              "type": "change_entity_state",
-              "entity_id": "cemetery_figure",
-              "key": "sighted",
-              "value": true
             },
             "next_step_id": "reveal_crypt_figure_form"
           },
@@ -3587,8 +3958,8 @@
         ]
       },
       "presentation": {
-        "id": "crypt_faint_result",
-        "player_safe_summary": "你进入地穴后被恶臭熏得失去意识。时间已经过去；你在地穴中醒来，临时昏迷已经解除，并看见一个愿意交谈的人影。"
+        "id": "crypt_entry_result",
+        "player_safe_summary": "地穴入口行动已经推进到稳定状态；以权威地点、时间、角色状态和已出现人物为准描述结果，并明确现在可以与眼前人物交谈。"
       }
     }
   ],

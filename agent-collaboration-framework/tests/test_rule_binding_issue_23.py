@@ -163,6 +163,35 @@ def _synthetic_runtime() -> EngineRuntimeSnapshot:
     )
 
 
+def _runtime_at(
+    scene_id: str,
+    *,
+    occupation: str | None = None,
+    background: str = "",
+) -> EngineRuntimeSnapshot:
+    """切换可信地点和角色档案，用于验证通用条件而非模组文本分支。"""
+
+    runtime = _runtime()
+    actor = runtime.game_state.actors["actor-1"]
+    actors = {
+        **runtime.game_state.actors,
+        "actor-1": actor.model_copy(
+            update={
+                "state": {
+                    **actor.state,
+                    "occupation": occupation,
+                    "background": background,
+                }
+            },
+            deep=True,
+        ),
+    }
+    state = runtime.game_state.model_copy(
+        update={"scene_id": scene_id, "actors": actors}, deep=True
+    )
+    return runtime.model_copy(update={"game_state": state}, deep=True)
+
+
 def _request(
     *,
     goal: str,
@@ -386,21 +415,23 @@ def test_synthetic_module_uses_same_required_rule_binding() -> None:
     assert command.adjudication.check.candidates[0].skill_id == "mechanical-repair"
 
 
-def test_multi_option_rule_requires_explicit_semantic_evidence() -> None:
-    """多个规则分支不能被投影成技能，也不能由 Engine 猜选。"""
+def test_multi_option_rule_uses_declared_default_without_clarification() -> None:
+    """玩家未声明例外时，Engine 采用模组默认后果且不泄露隐藏选项。"""
 
-    with pytest.raises(AdjudicationValidationError) as raised:
-        ProposalCompiler().compile(
-            _runtime(),
-            _request(
-                goal="我想进入地穴",
-                focus_id="crypt_entrance",
-                family="enter",
-                interaction="physical",
-            ),
-        )
+    command = ProposalCompiler().compile(
+        _runtime(),
+        _request(
+            goal="我想进入地穴",
+            focus_id="crypt_entrance",
+            family="enter",
+            interaction="physical",
+        ),
+    )
 
-    assert raised.value.result.code == "RULE_OPTION_REQUIRED"
+    assert command.adjudication.rule_decision == RuleDecisionRef(
+        rule_id="crypt_stench_on_entry",
+        option_id="just_enter",
+    )
 
 
 @pytest.mark.parametrize(
@@ -428,6 +459,105 @@ def test_multi_option_rule_uses_author_hints_without_inventing_check(
         option_id=option_id,
     )
     assert isinstance(command.adjudication.check, NoAdjudicationCheck)
+
+
+def test_hidden_override_options_are_not_projected_to_host() -> None:
+    """默认后果的主动例外只供 Engine 匹配，Host 不能据此提示玩家。"""
+
+    capabilities = keeper_capabilities_v3(_runtime(), actor_id="actor-1")
+    candidate = next(
+        item
+        for item in capabilities.rule_candidates
+        if item.rule_id == "crypt_stench_on_entry"
+    )
+
+    assert candidate.options == ()
+
+
+def test_actor_profile_selects_speakeasy_route_without_check() -> None:
+    """职业条件满足时使用免检 Rule，业务代码不枚举具体职业或地点。"""
+
+    command = ProposalCompiler().compile(
+        _runtime_at("arnoldsburg_streets", occupation="侦探"),
+        _request(
+            goal="寻找一家地下酒吧",
+            focus_id="arnoldsburg_streets",
+            focus_kind="location",
+            family="search",
+            interaction="observe",
+        ),
+    )
+
+    assert command.adjudication.rule_decision == RuleDecisionRef(
+        rule_id="know_speakeasy_from_profile",
+        option_id="known_from_profile",
+    )
+    assert isinstance(command.adjudication.check, NoAdjudicationCheck)
+
+
+def test_speakeasy_search_uses_rule_owned_luck_for_other_profiles() -> None:
+    """普通角色寻找地下酒吧时，检定由固定 Rule 决定为幸运。"""
+
+    command = ProposalCompiler().compile(
+        _runtime_at("arnoldsburg_streets", occupation="图书管理员"),
+        _request(
+            goal="寻找一家地下酒吧",
+            focus_id="arnoldsburg_streets",
+            focus_kind="location",
+            family="search",
+            interaction="observe",
+        ),
+    )
+
+    assert command.adjudication.rule_decision == RuleDecisionRef(
+        rule_id="find_speakeasy_by_luck",
+        option_id="luck",
+    )
+    assert isinstance(command.adjudication.check, RequiredAdjudicationCheck)
+    assert command.adjudication.check.candidates[0].skill_id == "luck"
+
+
+@pytest.mark.asyncio
+async def test_purchasing_liquor_moves_authoritative_custody_to_actor() -> None:
+    """购买模组物品必须更新 ItemInstance custody，不能只写获得标记。"""
+
+    runtime = _runtime_at("speakeasy")
+    store = InMemoryEngineStore()
+    store.register_room(
+        module_content=runtime.module_content,
+        initial_state=runtime.game_state,
+    )
+    engine = AdjudicationEngineService(store)
+    with engine_turn_context("turn-buy-liquor"):
+        await engine.submit_proposal(
+            _request(
+                goal="购买一品脱酒",
+                focus_id="liquor",
+                family="search",
+                interaction="physical",
+            )
+        )
+
+    item = store.inspect_state("room-rule-binding").item_instances["liquor"]
+    assert item.custody.kind == "actor_inventory"
+    assert item.custody.ref_id == "actor-1"
+
+
+def test_bribe_requires_liquor_in_current_actor_inventory() -> None:
+    """物品仍在酒吧时不能在墓地凭空用于贿赂。"""
+
+    with pytest.raises(AdjudicationValidationError) as raised:
+        ProposalCompiler().compile(
+            _runtime_at("cemetery"),
+            _request(
+                goal="用酒贿赂守墓人",
+                focus_id="melodias",
+                family="bribe",
+                interaction="social",
+            ),
+        )
+
+    assert raised.value.result.code == "RULE_PRECONDITION_UNMET"
 
 
 def test_rule_when_blocks_projection_equivalent_manual_submission() -> None:
@@ -527,7 +657,7 @@ async def test_hold_breath_entry_commits_once_then_runs_first_sight_agenda() -> 
     assert final.scene_id == "crypt"
     assert final.entities["crypt_entrance"]["entered"] is True
     agenda = next(iter(final.rule_agendas.values()))
-    assert agenda.status == "awaiting_passive_check"
+    assert agenda.status == "running"
     executions = await RuleAgendaExecutor(store, engine=engine).drain(
         room_id="room-rule-binding",
         turn_id="turn-safe-entry",
@@ -574,8 +704,8 @@ async def test_direct_entry_reaches_awake_stable_boundary_once() -> None:
     )
 
     final = store.inspect_state("room-rule-binding")
-    assert final.scene_id == "crypt"
-    assert "unconscious_until_night" not in final.actors["actor-1"].conditions
+    assert final.scene_id == "cemetery"
+    assert "unconscious" not in final.actors["actor-1"].conditions
     assert final.world_time.current.hour_of_day == 18
     assert final.entities["cemetery_figure"]["sighted"] is True
     assert final.entities["cemetery_figure"]["willing_to_talk"] is True

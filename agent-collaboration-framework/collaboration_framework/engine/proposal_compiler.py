@@ -43,6 +43,7 @@ from collaboration_framework.contracts.module_v3 import (
     AdjudicatedCheckStep,
     AgentMatchTriggerSpec,
     CheckStep,
+    DefaultWithOverridesSelectionPolicy,
     RuleSpecV3,
 )
 from collaboration_framework.contracts.proposal import (
@@ -355,25 +356,17 @@ class ProposalCompiler:
             rule = matching[0]
             trigger = rule.trigger
             assert isinstance(trigger, AgentMatchTriggerSpec)
-            options = trigger.options
-            if len(options) == 1:
-                decision = RuleDecisionRef(
-                    rule_id=rule.id,
-                    option_id=options[0].id,
+            decision = self._decision_from_player_words(requested_goal, rule)
+            if decision is None:
+                self._reject(
+                    "RULE_OPTION_REQUIRED",
+                    "请明确选择一种处理方式："
+                    + " / ".join(
+                        option.semantic_hints[0] for option in trigger.options
+                    ),
+                    repairability="requires_player_choice",
+                    fault="player",
                 )
-            else:
-                decision = self._decision_from_player_words(
-                    requested_goal,
-                    rule,
-                )
-                if decision is None:
-                    self._reject(
-                        "RULE_OPTION_REQUIRED",
-                        "请明确选择一种处理方式："
-                        + " / ".join(option.semantic_hints[0] for option in options),
-                        repairability="requires_player_choice",
-                        fault="player",
-                    )
         if decision is None:
             return None, proposal.check_proposal
         rule, option_id = resolve_rule_option(
@@ -399,14 +392,7 @@ class ProposalCompiler:
                 repairability="auto_repairable",
                 fault="agent",
             )
-        if (
-            len(trigger.options) > 1
-            and self._decision_from_player_words(
-                requested_goal,
-                rule,
-            )
-            != decision
-        ):
+        if self._decision_from_player_words(requested_goal, rule) != decision:
             self._reject(
                 "RULE_OPTION_UNCONFIRMED",
                 "请明确选择一种处理方式："
@@ -490,11 +476,17 @@ class ProposalCompiler:
     def _decision_from_player_words(
         goal: str, rule: RuleSpecV3
     ) -> RuleDecisionRef | None:
-        """只用模组作者发布的提示确认多分支选择，不解释任意动作词表。"""
+        """按模组声明的选择策略解析分支，不解释任意动作词表。
+
+        单分支和带默认后果的规则都由 Engine 确定；只有真正的公开选择在玩家
+        没有明确表达时返回 ``None``，由调用方生成玩家安全澄清。
+        """
 
         trigger = rule.trigger
         if not isinstance(trigger, AgentMatchTriggerSpec):
             return None
+        if len(trigger.options) == 1:
+            return RuleDecisionRef(rule_id=rule.id, option_id=trigger.options[0].id)
         normalized = "".join(goal.casefold().split())
         matched = [
             option
@@ -504,9 +496,14 @@ class ProposalCompiler:
                 for hint in option.semantic_hints
             )
         ]
-        if len(matched) != 1:
-            return None
-        return RuleDecisionRef(rule_id=rule.id, option_id=matched[0].id)
+        if len(matched) == 1:
+            return RuleDecisionRef(rule_id=rule.id, option_id=matched[0].id)
+        if isinstance(trigger.selection_policy, DefaultWithOverridesSelectionPolicy):
+            return RuleDecisionRef(
+                rule_id=rule.id,
+                option_id=trigger.selection_policy.default_option_id,
+            )
+        return None
 
     @staticmethod
     def _check_shape_matches(proposed, canonical) -> bool:

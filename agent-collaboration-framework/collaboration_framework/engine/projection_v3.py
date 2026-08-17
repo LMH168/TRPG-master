@@ -22,6 +22,7 @@ from __future__ import annotations
 from collaboration_framework.contracts import (
     AgentMatchTriggerSpec,
     ContractError,
+    DefaultWithOverridesSelectionPolicy,
     EntitySpecV3,
     InventoryItemView,
     ItemInstance,
@@ -721,15 +722,24 @@ def _rule_candidates(
                 action_families=scope.action_families,
                 target_kinds=scope.target_kinds,
                 target_ids=scope.target_ids,
-                options=tuple(
-                    KeeperRuleOption(
-                        id=option.id,
-                        semantic_hints=option.semantic_hints,
-                        # 分支里有没有检定步，是 Agent 必须知道的；后果仍然不出服务端。
-                        requires_check=pending_check_for(rule, option.id)[0]
-                        is not None,
+                # 默认后果的例外只能由 Engine 在玩家原话中识别，不能交给
+                # Host 主动建议；真正的公开选择仍保留原有候选投影。
+                options=(
+                    ()
+                    if isinstance(
+                        trigger.selection_policy,
+                        DefaultWithOverridesSelectionPolicy,
                     )
-                    for option in trigger.options
+                    else tuple(
+                        KeeperRuleOption(
+                            id=option.id,
+                            semantic_hints=option.semantic_hints,
+                            # 分支里有没有检定步，是 Agent 必须知道的；后果仍然不出服务端。
+                            requires_check=pending_check_for(rule, option.id)[0]
+                            is not None,
+                        )
+                        for option in trigger.options
+                    )
                 ),
             )
         )
