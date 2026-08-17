@@ -429,6 +429,15 @@ class DeterministicHostTurnDecisionModel:
                 )
             )
 
+        published_proposal = _proposal_from_published_rule_scope(
+            capabilities=context.keeper_capabilities,
+            semantic_goal=utterance,
+        )
+        if published_proposal is not None:
+            # 单动作 Fake Host 与计划步骤遵守同一边界：这里只表达玩家安全的
+            # 动作范围，具体 Rule、技能和 Effect 由 Engine 权威绑定。
+            return published_proposal
+
         # A single action uses the same player-safe Rule Match View as a plan
         # step.  Without this bridge, the Fake planner returned narrative_only
         # for every non-travel utterance, so CI could exercise v3 rules only by
@@ -2321,6 +2330,13 @@ class _DeterministicStepAdjudicator:
     # fully implied by the safe view, then falls back to narrative-only.
 
     async def adjudicate(self, context: ActionPlanStepContext) -> SingleActionProposal:
+        published_proposal = _proposal_from_published_rule_scope(
+            capabilities=context.keeper_capabilities,
+            semantic_goal=context.step.semantic_goal,
+        )
+        if published_proposal is not None:
+            return published_proposal
+
         adjudication = _deterministic_step_adjudication(context)
         if adjudication is not None:
             return _proposal_from_adjudication(adjudication)
@@ -2359,6 +2375,15 @@ class _RuleFirstStepAdjudicator:
         self._fallback = fallback
 
     async def adjudicate(self, context: ActionPlanStepContext) -> SingleActionProposal:
+        published_proposal = _proposal_from_published_rule_scope(
+            capabilities=context.keeper_capabilities,
+            semantic_goal=context.step.semantic_goal,
+        )
+        if published_proposal is not None:
+            # 已发布 Rule 必须先于普通对话/观察快路径处理，否则同一句玩家输入会
+            # 被降级成 narrative-only，从而跳过模组规定的检定与结果。
+            return published_proposal
+
         # 确定性路径只处理当前 PlayerView 已完整证明的动作；无法确定时才调用
         # Host。整个异常收束由 ActionPlanOrchestrator 的步骤冻结边界统一负责。
         adjudication = _deterministic_step_adjudication(context)
@@ -2546,6 +2571,87 @@ def _requested_companions(
         if any(label and label in combined for label in labels):
             requested.append(entity)
     return tuple(requested)
+
+
+def _match_published_rule_scope(capabilities, text: str):
+    """Fake Host 仅按模组公开提示确定唯一动作范围，不解释技能或结果。"""
+
+    if capabilities is None:
+        return None
+    normalized = "".join(text.casefold().split())
+    matches = []
+    for candidate in capabilities.rule_candidates:
+        if (
+            len(candidate.action_families) != 1
+            or len(candidate.target_kinds) != 1
+            or len(candidate.target_ids) != 1
+        ):
+            continue
+        hints = (
+            *candidate.semantic_hints,
+            *(hint for option in candidate.options for hint in option.semantic_hints),
+        )
+        matched_hints = {
+            "".join(hint.casefold().split())
+            for hint in hints
+            if "".join(hint.casefold().split()) in normalized
+        }
+        if matched_hints:
+            # 多条作者提示共同命中时证据强于单条方法提示；完全同分仍视为歧义，
+            # Fake Host 不替模型猜测玩家意图。
+            score = (
+                sum(len(hint) for hint in matched_hints),
+                max(len(hint) for hint in matched_hints),
+                len(matched_hints),
+            )
+            matches.append((score, candidate.rule_id, candidate))
+    if not matches:
+        return None
+    matches.sort(
+        key=lambda item: (
+            -item[0][0],
+            -item[0][1],
+            -item[0][2],
+            item[1],
+        )
+    )
+    if len(matches) > 1 and matches[0][0] == matches[1][0]:
+        return None
+    candidate = matches[0][2]
+    return (
+        candidate.action_families[0],
+        candidate.target_kinds[0],
+        candidate.target_ids[0],
+    )
+
+
+def _proposal_from_published_rule_scope(
+    *,
+    capabilities: KeeperCapabilityView | None,
+    semantic_goal: str,
+) -> SingleActionProposal | None:
+    """把唯一公开 Rule 语义范围转换为无授权 Proposal。"""
+
+    published_scope = _match_published_rule_scope(capabilities, semantic_goal)
+    if published_scope is None:
+        return None
+    family, target_kind, target_id = published_scope
+    return SingleActionProposal.model_validate(
+        {
+            "kind": "single_action",
+            "schema_version": 2,
+            "semantic_goal": semantic_goal,
+            "semantic_focus": {"kind": target_kind, "id": target_id},
+            "target_interaction": "other",
+            "method_family": family,
+            "method_description": semantic_goal,
+            "execution_means": {"kind": "intrinsic"},
+            "check_proposal": {"mode": "none", "candidates": []},
+            "success_effect_proposals": [],
+            "failure_effect_proposals": [],
+            "completion": {"kind": "process", "interaction": "other"},
+        }
+    )
 
 
 __all__ = [

@@ -1127,7 +1127,9 @@
           "kind": "method",
           "semantic_hints": [
             "social",
-            "梅洛迪亚斯·杰弗逊"
+            "梅洛迪亚斯·杰弗逊",
+            "留下好印象",
+            "建立信任"
           ]
         },
         "options": [
@@ -1425,7 +1427,9 @@
           "kind": "method",
           "semantic_hints": [
             "bribe",
-            "梅洛迪亚斯·杰弗逊"
+            "梅洛迪亚斯·杰弗逊",
+            "贿赂",
+            "买通"
           ]
         },
         "options": [
@@ -1603,7 +1607,9 @@
           "kind": "method",
           "semantic_hints": [
             "research",
-            "当地旧报档案"
+            "当地旧报档案",
+            "查旧报纸",
+            "查旧报"
           ]
         },
         "options": [

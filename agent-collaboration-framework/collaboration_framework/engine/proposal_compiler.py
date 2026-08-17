@@ -322,6 +322,7 @@ class ProposalCompiler:
             )
         )
         decision = proposal.rule_ref
+        auto_bound = decision is None
         if decision is None:
             if not matching and scoped_required:
                 # required Rule 的 when 是动作前置条件，不是可绕过的 Prompt 过滤器。
@@ -429,7 +430,13 @@ class ProposalCompiler:
             canonical_check = proposal.check_proposal
         else:
             canonical_check = NoAdjudicationCheck()
-        if not self._check_shape_matches(proposal.check_proposal, canonical_check):
+        if not (
+            auto_bound
+            and proposal.check_proposal.mode == "none"
+            and canonical_check.mode == "required"
+        ) and not self._check_shape_matches(proposal.check_proposal, canonical_check):
+            # 自动绑定时允许 Host 省略未知的 Rule-owned check；一旦 Host 主动
+            # 提供技能，仍必须与固定 ModuleVersion 完全一致。
             self._reject(
                 "RULE_CHECK_MISMATCH",
                 "当前检定方式与模组规则不一致",

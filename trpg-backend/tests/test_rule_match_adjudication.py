@@ -38,6 +38,7 @@ from collaboration_framework.contracts import (
     PlayerView,
     RequiredAdjudicationCheck,
     SingleActionDecision,
+    SingleActionProposal,
 )
 from collaboration_framework.engine import InMemoryEngineStore, RuleEngineService
 from collaboration_framework.engine.initialization import create_initial_game_state
@@ -160,6 +161,22 @@ async def test_engine_publishes_rule_candidates_where_the_actor_stands() -> None
     assert "observe_caretaker" in rule_ids
 
 
+async def test_fake_host_only_expresses_published_rule_scope() -> None:
+    """Fake 不再伪造 option/技能，只把公开提示映射成 Compiler 可绑定的范围。"""
+
+    proposal = await _DeterministicStepAdjudicator().adjudicate(
+        await _cemetery_context("用侦查观察守墓人")
+    )
+
+    assert isinstance(proposal, SingleActionProposal)
+    assert proposal.semantic_focus.kind == "entity"
+    assert proposal.semantic_focus.id == "melodias"
+    assert proposal.method_family == "observe"
+    assert proposal.rule_ref is None
+    assert isinstance(proposal.check_proposal, NoAdjudicationCheck)
+    assert proposal.success_effect_proposals == ()
+
+
 async def test_rule_candidates_reach_the_model_payload() -> None:
     """候选必须真的进到发给模型的 JSON 里。
 
@@ -240,11 +257,10 @@ async def test_natural_chinese_action_family_reaches_the_unique_rule() -> None:
     assert isinstance(adjudication.check, RequiredAdjudicationCheck)
 
 
-@pytest.mark.skip(reason="旧 ActionAdjudication 字段断言已由 Proposal 契约测试替代")
 async def test_fake_single_action_uses_the_same_rule_match_view() -> None:
     """单动作不能绕过 v3 Rule Match 而静默退化成纯叙事。"""
 
-    step_context = await _cemetery_context("仔细观察守墓人")
+    step_context = await _cemetery_context("用侦查观察守墓人")
     decision = await DeterministicHostTurnDecisionModel().generate(
         HostAgentContext(
             player_input=step_context.player_input,
@@ -261,13 +277,13 @@ async def test_fake_single_action_uses_the_same_rule_match_view() -> None:
         )
     )
 
-    assert isinstance(decision, SingleActionDecision)
-    assert decision.adjudication.rule_decision is not None
-    assert decision.adjudication.rule_decision.rule_id == "observe_caretaker"
-    assert isinstance(decision.adjudication.check, RequiredAdjudicationCheck)
+    assert isinstance(decision, SingleActionProposal)
+    assert decision.semantic_focus.id == "melodias"
+    assert decision.method_family == "observe"
+    assert decision.rule_ref is None
+    assert isinstance(decision.check_proposal, NoAdjudicationCheck)
 
 
-@pytest.mark.skip(reason="旧 ActionAdjudication 字段断言已由 Proposal 契约测试替代")
 async def test_rule_first_adjudicator_does_not_call_model_for_unique_match() -> None:
     """线上裁决对唯一 Match View 候选也走确定性路径。"""
 
@@ -276,12 +292,17 @@ async def test_rule_first_adjudicator_does_not_call_model_for_unique_match() -> 
             del context
             raise AssertionError("唯一规则候选不应调用模型")
 
-    adjudication: Any = await _RuleFirstStepAdjudicator(FailingFallback()).adjudicate(
-        await _cemetery_context("仔细观察守墓人")
+    proposal = await _RuleFirstStepAdjudicator(FailingFallback()).adjudicate(
+        await _cemetery_context(
+            "用信用评级给守墓人留下好印象并询问线索",
+            step_kind="dialogue",
+        )
     )
 
-    assert adjudication.rule_decision is not None
-    assert adjudication.rule_decision.rule_id == "observe_caretaker"
+    assert proposal.semantic_focus.id == "melodias"
+    assert proposal.method_family == "social"
+    assert proposal.rule_ref is None
+    assert isinstance(proposal.check_proposal, NoAdjudicationCheck)
 
 
 @pytest.mark.skip(reason="旧 ActionAdjudication 字段断言已由 Proposal 契约测试替代")

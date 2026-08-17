@@ -228,6 +228,27 @@ def test_unique_required_rule_is_bound_and_owns_active_check() -> None:
     assert command.adjudication.check.candidates[0].skill_id == "spot-hidden"
 
 
+def test_auto_bound_rule_may_supply_omitted_active_check() -> None:
+    """Host 不知道 Rule 内部技能时可以省略，Engine 仍从 CheckStep 生成检定。"""
+
+    command = ProposalCompiler().compile(
+        _runtime(),
+        _request(
+            goal="侦察守墓人",
+            focus_id="melodias",
+            family="observe",
+            interaction="observe",
+        ),
+    )
+
+    assert command.adjudication.rule_decision == RuleDecisionRef(
+        rule_id="observe_caretaker",
+        option_id="spot-hidden",
+    )
+    assert isinstance(command.adjudication.check, RequiredAdjudicationCheck)
+    assert command.adjudication.check.candidates[0].skill_id == "spot-hidden"
+
+
 def test_host_cannot_replace_rule_owned_skill() -> None:
     """冲突技能只能触发可修复反馈，不能改变固定 ModuleVersion。"""
 
