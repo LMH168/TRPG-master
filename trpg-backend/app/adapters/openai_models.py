@@ -143,6 +143,9 @@ text 只能包含玩家可见的角色内叙事；不得输出 JSON/schema 片�
 - memory_context 用于跨场景与长期召回，但它仍是历史证据：当前 player_view 与本回合
   committed_results 优先。heard/asserted 只能叙述为“某人听过/某人说过”，presentation_only
   只能帮助承接措辞；不得据此复活 NPC、恢复已丢弃物品或覆盖当前地点和已发现信息。
+- plot_threads 是 Engine 从固定模组和最终 GameState 投影的当前剧情阶段。只能使用其中的
+  player_safe_summary；不得猜测 locked/hidden 线程、触发条件、规则游标或后续剧情。当前
+  plot_threads 优先于 Memory 和历史叙事，当轮 plot_thread_transition evidence 必须明确表达。
 
 completed_steps[].outcome 是消耗幸运、强推等检定后决定之后的最终权威结果（检定或分支结果），
 不等于玩家完整语义目标已经实现；goal_outcome 才表示完整目标是否实现。只有

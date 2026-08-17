@@ -351,6 +351,35 @@ def project_memory_entries(source: MemoryProjectionSource) -> tuple[MemoryEntry,
                 created_at=event.created_at,
                 topic_key=f"relationship:{source.actor_id}",
             )
+        elif event.event_type == "plot_thread.transitioned":
+            thread_id = _string(payload, "thread_id")
+            summary = _string(payload, "player_safe_summary")
+            to_status = _string(payload, "to_status")
+            if thread_id is None or summary is None or to_status is None:
+                continue
+            # 只有 Engine 已标记为 public 的安全摘要会到达这里；Memory 不保存
+            # 隐藏条件、Rule ID 或 Agenda 游标，也不能反向推进 PlotThread。
+            append(
+                source_kind="game_event",
+                source_id=event.event_id,
+                source_event_id=event.event_id,
+                source_sequence=event.sequence,
+                kind="world_event",
+                subject_id=thread_id,
+                scope="campaign",
+                scope_owner_id=None,
+                visibility="public",
+                epistemic_status="confirmed",
+                content={
+                    "event_type": event.event_type,
+                    "thread_id": thread_id,
+                    "status": to_status,
+                    "summary": summary,
+                },
+                search_text=summary,
+                created_at=event.created_at,
+                topic_key=f"plot_thread:{thread_id}",
+            )
         elif event.event_type.startswith(("world.", "time.")):
             append(
                 source_kind="game_event",

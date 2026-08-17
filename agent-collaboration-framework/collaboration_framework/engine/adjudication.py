@@ -92,7 +92,7 @@ from .persistent_results import (
     is_public_standard_state,
     validate_persistent_effects,
 )
-from .plot_threads import transition_plot_thread
+from .plot_threads import player_safe_plot_thread_summary, transition_plot_thread
 from .ports import EngineStore
 from .projection_v3 import project_v3
 from .proposal_compiler import ProposalCompiler
@@ -1436,6 +1436,24 @@ class AdjudicationEngineService:
             return ()
         presentation_evidence: list[NarrationEvidence] = []
         for event in events:
+            if (
+                event.visibility == "public"
+                and event.type == "plot_thread.transitioned"
+            ):
+                thread_id = event.payload.get("thread_id")
+                summary = event.payload.get("player_safe_summary")
+                if isinstance(thread_id, str) and isinstance(summary, str):
+                    presentation_evidence.append(
+                        NarrationEvidence(
+                            ref=event.event_id,
+                            kind="plot_thread_transition",
+                            subject_id=thread_id,
+                            subject_name=summary,
+                            description=summary,
+                            required_in_narration=True,
+                        )
+                    )
+                continue
             presentation_id = event.payload.get("presentation_id")
             summary = event.payload.get("player_safe_summary")
             if (
@@ -2801,6 +2819,7 @@ class AdjudicationEngineService:
     ) -> tuple[GameState, tuple[DomainEvent, ...]]:
         event_type: str | None = None
         effect_event_id: str | None = None
+        event_visibility: Literal["public", "hidden"] = "public"
         payload: dict[str, JsonValue] = {}
         if isinstance(effect, NarrativeOnlyEffect):
             return state, ()
@@ -3128,6 +3147,21 @@ class AdjudicationEngineService:
             }
         elif isinstance(effect, ChangeEntityStateEffect):
             item = state.item_instances.get(effect.entity_id)
+            existing_value: object
+            if item is not None:
+                existing_value = item.state.values.get(effect.key, object())
+            else:
+                existing_state = state.runtime_entities.get(effect.entity_id)
+                if existing_state is None:
+                    existing_state = state.entities.get(effect.entity_id, {})
+                existing_value = existing_state.get(effect.key, object())
+            public_state_already_registered = not is_public_standard_state(
+                effect
+            ) or effect.key in state.public_entity_state_keys.get(effect.entity_id, ())
+            if existing_value == effect.value and public_state_already_registered:
+                # 同值写入不是新的世界变化。统一在 Engine 层去重后，模组无需为
+                # 每个一次性事件额外维护 `*_resolved` 流程布尔字段。
+                return state, ()
             if item is not None:
                 effect_event_id = self._new_id("evt")
                 revision = str(state.event_sequence + offset)
@@ -3290,7 +3324,15 @@ class AdjudicationEngineService:
             payload = {"available": effect.available}
         elif isinstance(effect, TransitionPlotThreadEffect):
             current_thread = state.plot_threads.get(effect.thread_id)
-            if current_thread is None:
+            thread_spec = next(
+                (
+                    item
+                    for item in runtime.v3.plot_threads
+                    if item.id == effect.thread_id
+                ),
+                None,
+            )
+            if current_thread is None or thread_spec is None:
                 self._reject_validation(
                     "PLOT_THREAD_NOT_FOUND",
                     repairability="hard_reject",
@@ -3316,6 +3358,16 @@ class AdjudicationEngineService:
                 "to_status": transitioned.status,
                 "thread_version": transitioned.version,
             }
+            # 隐藏线程的身份和状态都不能进入公开 Event/Memory；玩家线程只携带
+            # 模组预先声明的安全摘要，不暴露触发条件、Rule 或 Agenda 游标。
+            event_visibility = (
+                "public" if thread_spec.visibility == "player" else "hidden"
+            )
+            if event_visibility == "public":
+                payload["player_safe_summary"] = player_safe_plot_thread_summary(
+                    thread_spec,
+                    transitioned.status,
+                )
         elif isinstance(effect, CommitTerminalEndingEffect):
             self._reject_validation(
                 "ENDING_REQUIRES_DRAFT",
@@ -3340,6 +3392,7 @@ class AdjudicationEngineService:
                 actor_id=actor_id,
                 event_type=event_type,
                 payload=payload,
+                visibility=event_visibility,
                 event_id=effect_event_id,
             ),
         )

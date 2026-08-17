@@ -770,10 +770,28 @@ class RuleAgendaExecutor:
     def _narration_evidence(
         events: tuple[DomainEvent, ...],
     ) -> tuple[NarrationEvidence, ...]:
-        """只把模组显式发布的安全 Presentation 交给 Narrator。"""
+        """只把模组显式发布的 Presentation 与剧情摘要交给 Narrator。"""
 
         evidence: list[NarrationEvidence] = []
         for event in events:
+            if (
+                event.visibility == "public"
+                and event.type == "plot_thread.transitioned"
+            ):
+                thread_id = event.payload.get("thread_id")
+                summary = event.payload.get("player_safe_summary")
+                if isinstance(thread_id, str) and isinstance(summary, str):
+                    evidence.append(
+                        NarrationEvidence(
+                            ref=event.event_id,
+                            kind="plot_thread_transition",
+                            subject_id=thread_id,
+                            subject_name=summary,
+                            description=summary,
+                            required_in_narration=True,
+                        )
+                    )
+                continue
             if event.visibility != "public" or event.type != "rule.presentation":
                 continue
             presentation_id = event.payload.get("presentation_id")

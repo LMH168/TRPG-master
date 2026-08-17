@@ -57,6 +57,7 @@ from collaboration_framework.engine import (
     EngineStore,
     RuleAgendaExecutor,
     RuleEngineService,
+    project_narration_plot_threads,
 )
 from collaboration_framework.host.adapters import InMemoryActionPlanRunStore
 from collaboration_framework.host.application import (
@@ -2045,6 +2046,19 @@ class ActionPlanTurnApplication:
         self,
         context: NarrationContext,
     ) -> NarrationOutput:
+        # PlotThread 不进入公开 PlayerView；每次叙事都从最终 Engine snapshot
+        # 重新投影，避免历史 Context 覆盖刚由 Agenda 提交的剧情阶段。
+        async with self._store.transaction(context.player_input.room_id) as transaction:
+            runtime = await transaction.load_runtime()
+        if runtime.is_v3:
+            context = context.model_copy(
+                update={
+                    "plot_threads": project_narration_plot_threads(
+                        runtime.v3,
+                        runtime.game_state,
+                    )
+                }
+            )
         # goal_outcome 未完成不等于“没有可叙述结果”。Narrator 仍可表达本轮
         # committed_results，但后续持久声明校验会阻止它把检定成功外推为目标完成。
         for attempt in range(2):
@@ -2147,7 +2161,7 @@ class ActionPlanTurnApplication:
             )
         sentences: list[str] = []
         for item in required:
-            if item.kind == "rule_presentation":
+            if item.kind in {"rule_presentation", "plot_thread_transition"}:
                 sentences.append(item.description.rstrip("。！？!?；;，,") + "。")
                 continue
             sentences.append(f"随着调查深入，你很快辨认出{item.subject_name}。")

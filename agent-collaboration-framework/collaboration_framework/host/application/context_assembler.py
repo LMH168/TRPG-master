@@ -2,7 +2,12 @@
 
 from typing import Literal
 
-from collaboration_framework.contracts import PlayerInput, PlayerView, WorldClockView
+from collaboration_framework.contracts import (
+    NarrationPlotThread,
+    PlayerInput,
+    PlayerView,
+    WorldClockView,
+)
 from collaboration_framework.host.schemas import (
     CompletedPlanStepSummary,
     IntentContext,
@@ -92,6 +97,7 @@ class ContextAssembler:
         remaining_step_goals: tuple[str, ...] = (),
         player_safe_failure_reason: str | None = None,
         narration_retry_hint: str | None = None,
+        plot_threads: tuple[NarrationPlotThread, ...] = (),
     ) -> NarrationContext:
         """从最终安全视图和已提交步骤构造统一 NarrationContext。"""
 
@@ -151,4 +157,5 @@ class ContextAssembler:
             remaining_step_goals=remaining_step_goals,
             player_safe_failure_reason=player_safe_failure_reason,
             narration_retry_hint=narration_retry_hint,
+            plot_threads=plot_threads,
         )

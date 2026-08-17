@@ -417,7 +417,8 @@
         "kind": {
           "enum": [
             "entity_discovered",
-            "rule_presentation"
+            "rule_presentation",
+            "plot_thread_transition"
           ],
           "title": "Kind",
           "type": "string"
