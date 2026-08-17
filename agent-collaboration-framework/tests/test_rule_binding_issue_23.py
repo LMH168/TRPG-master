@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -157,6 +158,7 @@ def _request(
     focus_kind: str = "entity",
     check: dict[str, object] | None = None,
     rule_ref: RuleDecisionRef | None = None,
+    step_kind: Literal["travel", "wait", "rest", "action", "dialogue"] | None = None,
 ) -> SubmitProposalRequest:
     """构造只携带语义的 Host Proposal；可信身份始终由请求信封绑定。"""
 
@@ -185,6 +187,7 @@ def _request(
         source_revision="0",
         proposal=proposal,
         requested_goal=goal,
+        requested_step_kind=step_kind,
     )
 
 
@@ -226,6 +229,86 @@ def test_unique_required_rule_is_bound_and_owns_active_check() -> None:
     assert isinstance(command.adjudication.check, RequiredAdjudicationCheck)
     assert command.adjudication.check.candidates[0].candidate_id == "spot-hidden"
     assert command.adjudication.check.candidates[0].skill_id == "spot-hidden"
+
+
+def test_explicit_rule_ref_cannot_bypass_required_rule_ambiguity() -> None:
+    """Host 主动选择其中一条 Rule，也不能替 Engine 消解多个必选规则。"""
+
+    runtime = _runtime()
+    source = next(rule for rule in runtime.v3.rules if rule.id == "observe_caretaker")
+    assert isinstance(source.trigger, AgentMatchTriggerSpec)
+    duplicate = source.model_copy(
+        update={"id": "observe_caretaker_duplicate"}, deep=True
+    )
+    module = runtime.v3.model_copy(
+        update={"rules": (*runtime.v3.rules, duplicate)}, deep=True
+    )
+    runtime = runtime.model_copy(update={"module_content": module}, deep=True)
+
+    with pytest.raises(AdjudicationValidationError) as raised:
+        ProposalCompiler().compile(
+            runtime,
+            _request(
+                goal="侦察守墓人",
+                focus_id="melodias",
+                family="observe",
+                interaction="observe",
+                rule_ref=RuleDecisionRef(
+                    rule_id=source.id,
+                    option_id=source.trigger.options[0].id,
+                ),
+            ),
+        )
+
+    assert raised.value.result.code == "RULE_SELECTION_AMBIGUOUS"
+
+
+def test_wait_step_requires_authoritative_time_completion() -> None:
+    """可信 wait 步骤不能用纯过程或 narrative_only 冒充时间已经流逝。"""
+
+    with pytest.raises(AdjudicationValidationError) as raised:
+        ProposalCompiler().compile(
+            _runtime(),
+            _request(
+                goal="等待到下一个时间点",
+                focus_id="cemetery",
+                focus_kind="location",
+                family="任意开放动作族",
+                interaction="other",
+                step_kind="wait",
+            ),
+        )
+
+    assert raised.value.result.code == "WAIT_REQUIRES_TIME_EFFECT"
+
+
+def test_wait_step_accepts_matching_time_effect_and_completion() -> None:
+    """等待门禁只要求结构化时间结果，不识别具体自然语言或模组地点。"""
+
+    request = _request(
+        goal="执行模组作者定义的时间等待目标",
+        focus_id="cemetery",
+        focus_kind="location",
+        family="任意开放动作族",
+        interaction="other",
+        step_kind="wait",
+    )
+    advance = {"type": "advance_world_time", "to_point_id": "hour_18"}
+    request = request.model_copy(
+        update={
+            "proposal": SingleActionProposal.model_validate(
+                {
+                    **request.proposal.to_json_dict(),
+                    "success_effect_proposals": [advance],
+                    "completion": {"kind": "effects", "requirements": [advance]},
+                }
+            )
+        }
+    )
+
+    command = ProposalCompiler().compile(_runtime(), request)
+
+    assert command.adjudication.success_effects[0].type == "advance_world_time"
 
 
 def test_auto_bound_rule_may_supply_omitted_active_check() -> None:
@@ -351,7 +434,7 @@ def test_rule_when_blocks_projection_equivalent_manual_submission() -> None:
             ),
         )
 
-    assert raised.value.result.code == "RULE_OUT_OF_SCOPE"
+    assert raised.value.result.code == "RULE_PRECONDITION_UNMET"
 
 
 def test_unmet_required_rule_cannot_fall_back_to_process_success() -> None:

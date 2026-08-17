@@ -251,9 +251,14 @@ class RuleAgendaExecutor:
                     "pending_boundary_id": None,
                     "pending_rule_input_id": proposal.option_id,
                     "revision": runtime.revision,
+                    # option 指向的下一步骤从未计入旧 walk；先占用一个预算，
+                    # 后续段再累计该步骤之后实际遍历的 Effect/阻塞点。
+                    "step_count": agenda.step_count + 1,
                 },
                 deep=True,
             )
+            if resumed.step_count > resumed.max_steps:
+                raise ContractError("RuleAgenda 玩家输入恢复超出步骤预算")
         return await self._store.resume_rule_agenda_input(
             agenda=resumed,
             expected_lease_version=agenda.lease_version,
@@ -371,6 +376,36 @@ class RuleAgendaExecutor:
         if "awaiting_player_input" in statuses:
             return "awaiting_player_input"
         return None
+
+    async def continuation_status(
+        self,
+        *,
+        room_id: str,
+        agenda_id: str,
+        player_id: str,
+        actor_id: str,
+    ) -> Literal[
+        "running",
+        "awaiting_active_check",
+        "awaiting_passive_check",
+        "awaiting_presentation",
+        "awaiting_player_input",
+        "stable",
+        "failed",
+    ]:
+        """按可信 owner 读取续接后的 Agenda 状态，不依赖旧 origin Turn。"""
+
+        async with self._store.transaction(room_id) as tx:
+            runtime = await tx.load_runtime()
+            agenda = runtime.game_state.rule_agendas.get(agenda_id)
+            if (
+                agenda is None
+                or agenda.schema_version != 2
+                or agenda.player_id != player_id
+                or agenda.actor_id != actor_id
+            ):
+                raise ContractError("Agenda continuation 不属于当前玩家")
+            return agenda.status
 
     async def _find_committed_execution(
         self,
@@ -604,7 +639,7 @@ class RuleAgendaExecutor:
             else:
                 raise ContractError(f"当前 Agenda 步骤不能自动执行: {step.kind}")
 
-            state, events, agenda, reached = self._advance_effects(
+            state, events, agenda, reached, traversed_steps = self._advance_effects(
                 runtime,
                 state=state,
                 events=events,
@@ -613,6 +648,15 @@ class RuleAgendaExecutor:
                 start_step_id=next_step_id,
                 execution_id=execution_id,
             )
+            # 当前阻塞步骤在上一次 walk 中已经计数；这里只累计它之后新遍历的
+            # Effect 与下一个阻塞点。Effect/Finish 作为当前游标时同样已计数。
+            additional_steps = traversed_steps - (
+                1 if isinstance(step, EffectStep | FinishStep) else 0
+            )
+            next_step_count = agenda.step_count + additional_steps
+            if next_step_count > agenda.max_steps:
+                raise ContractError("RuleAgenda 执行超出步骤预算")
+            agenda = agenda.model_copy(update={"step_count": next_step_count})
             agenda = self._enqueue_new_event_rules(
                 runtime.v3,
                 state=state,
@@ -1010,12 +1054,13 @@ class RuleAgendaExecutor:
         rule,
         start_step_id: str,
         execution_id: str,
-    ) -> tuple[GameState, list[DomainEvent], RuleAgenda, object]:
+    ) -> tuple[GameState, list[DomainEvent], RuleAgenda, object, int]:
         """提交当前步骤后的连续 Effect，停在下一个阻塞点或 finish。"""
 
         steps = {item.id: item for item in rule.execution.steps}
         cursor = start_step_id
         visited: set[str] = set()
+        traversed_steps = 0
         while True:
             if cursor in visited:
                 raise ContractError("RuleAgenda 步骤图出现循环")
@@ -1023,6 +1068,7 @@ class RuleAgendaExecutor:
             step = steps.get(cursor)
             if step is None:
                 raise ContractError("RuleAgenda 后续步骤不存在")
+            traversed_steps += 1
             if isinstance(step, EffectStep):
                 state, emitted = self._engine._apply_effect(
                     runtime,
@@ -1036,7 +1082,7 @@ class RuleAgendaExecutor:
                 events.extend(emitted)
                 cursor = step.next_step_id
                 continue
-            return state, events, agenda, step
+            return state, events, agenda, step, traversed_steps
 
     def _enqueue_new_event_rules(
         self,
@@ -1122,6 +1168,25 @@ class RuleAgendaExecutor:
             next_rule = next(
                 item for item in module.rules if item.id == pending.rule_id
             )
+            next_depth = agenda.chain_depth + 1
+            max_chain_depth = min(
+                agenda.max_chain_depth, next_rule.limits.max_chain_depth
+            )
+            max_steps = min(agenda.max_steps, next_rule.limits.max_steps)
+            if next_depth > max_chain_depth or agenda.step_count + 1 > max_steps:
+                queue[pending_index] = pending.model_copy(update={"status": "failed"})
+                return agenda.model_copy(
+                    update={
+                        "queue": tuple(queue),
+                        "status": "failed",
+                        "failure_code": "agenda_budget_exceeded",
+                        "active_turn_id": None,
+                        "chain_depth": next_depth,
+                        "max_chain_depth": max_chain_depth,
+                        "max_steps": max_steps,
+                    },
+                    deep=True,
+                )
             branch = next(
                 item
                 for item in next_rule.execution.branches
@@ -1135,6 +1200,10 @@ class RuleAgendaExecutor:
                     "current_rule_id": pending.rule_id,
                     "current_branch_id": pending.branch_id,
                     "current_step_id": branch.entry_step_id,
+                    "chain_depth": next_depth,
+                    "max_chain_depth": max_chain_depth,
+                    "max_steps": max_steps,
+                    "step_count": agenda.step_count + 1,
                 },
                 deep=True,
             )

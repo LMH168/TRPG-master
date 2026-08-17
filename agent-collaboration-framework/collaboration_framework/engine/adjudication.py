@@ -23,6 +23,7 @@ from collaboration_framework.contracts import (
     AdjudicationRecovery,
     AdjudicationStatusView,
     AdvanceWorldTimeEffect,
+    AwaitPlayerInputStep,
     ChangeEntityStateEffect,
     ChangeItemConditionEffect,
     CheckDecisionRequest,
@@ -2334,6 +2335,15 @@ class AdjudicationEngineService:
                 fault="engine",
                 player_safe_reason="规则处理暂时无法完成",
             )
+        if walk.step_count > rule.limits.max_steps:
+            # Rule 自身的预算必须在初始 Engine 事务内生效，不能先提交前置
+            # Effect，再把一个已经越界的 Agenda 留给后台 Executor 收拾。
+            self._reject_validation(
+                "RULE_BUDGET_EXCEEDED",
+                repairability="hard_reject",
+                fault="engine",
+                player_safe_reason="规则处理暂时无法完成",
+            )
         turn_id = current_turn_id()
         actor = state.actors.get(adjudication.actor_id)
         if turn_id is None or actor is None:
@@ -2357,9 +2367,20 @@ class AdjudicationEngineService:
             player_id=actor.player_id,
             actor_id=adjudication.actor_id,
             current_source_event_id=source_event.event_id,
-        ).model_copy(
+        )
+        status = agenda_status_for_walk(rule, walk)
+        boundary_step = next(
+            (
+                step
+                for step in rule.execution.steps
+                if step.id == walk.suspended_at
+                and isinstance(step, AwaitPlayerInputStep)
+            ),
+            None,
+        )
+        agenda = agenda.model_copy(
             update={
-                "status": agenda_status_for_walk(rule, walk),
+                "status": status,
                 "source_event_ids": (source_event.event_id,),
                 "queue": (
                     AgendaItem(
@@ -2375,6 +2396,21 @@ class AdjudicationEngineService:
                 "current_branch_id": branch_id,
                 "current_step_id": walk.suspended_at,
                 "step_count": walk.step_count,
+                "chain_depth": 1,
+                "max_chain_depth": min(
+                    agenda.max_chain_depth, rule.limits.max_chain_depth
+                ),
+                "max_steps": min(agenda.max_steps, rule.limits.max_steps),
+                # 首次提交即可直接停在玩家输入边界；不能依赖 Executor 再 claim
+                # 一次，因为 awaiting_player_input 按定义不可自动 claim。
+                "active_turn_id": None
+                if status == "awaiting_player_input"
+                else turn_id,
+                "pending_boundary_id": (
+                    boundary_step.boundary_id or boundary_step.id
+                    if boundary_step is not None
+                    else None
+                ),
             },
             deep=True,
         )
@@ -2638,6 +2674,22 @@ class AdjudicationEngineService:
                             check_run.check_id
                             if walk.suspended_kind == "adjudicated_check"
                             and check_run is not None
+                            else None
+                        ),
+                        "active_turn_id": None
+                        if status == "awaiting_player_input"
+                        else agenda.active_turn_id,
+                        "pending_boundary_id": (
+                            (
+                                next(
+                                    step
+                                    for step in rule.execution.steps
+                                    if step.id == walk.suspended_at
+                                    and isinstance(step, AwaitPlayerInputStep)
+                                ).boundary_id
+                                or walk.suspended_at
+                            )
+                            if status == "awaiting_player_input"
                             else None
                         ),
                     }

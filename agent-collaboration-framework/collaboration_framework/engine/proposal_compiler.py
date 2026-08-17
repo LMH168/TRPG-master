@@ -293,6 +293,7 @@ class ProposalCompiler:
 
         proposal = request.proposal
         requested_goal = request.requested_goal or proposal.semantic_goal
+        self._validate_trusted_step_completion(request)
         if not runtime.is_v3:
             return proposal.rule_ref, proposal.check_proposal
         scoped_required = tuple(
@@ -323,48 +324,56 @@ class ProposalCompiler:
         )
         decision = proposal.rule_ref
         auto_bound = decision is None
-        if decision is None:
-            if not matching and scoped_required:
-                # required Rule 的 when 是动作前置条件，不是可绕过的 Prompt 过滤器。
-                # 即使 Host 没看到或省略 rule_ref，也不能退化成普通过程成功。
-                self._reject(
-                    "RULE_PRECONDITION_UNMET",
-                    "当前条件尚不允许执行这项行动",
-                    repairability="requires_player_choice",
-                    fault="player",
+        # 必选 Rule 的数量和前置条件由 Engine 决定，不能因为 Host 主动填写
+        # rule_ref 就跳过歧义检查或改选同 scope 下的可选 Rule。
+        if not matching and scoped_required:
+            self._reject(
+                "RULE_PRECONDITION_UNMET",
+                "当前条件尚不允许执行这项行动",
+                repairability="requires_player_choice",
+                fault="player",
+            )
+        if len(matching) > 1:
+            self._reject(
+                "RULE_SELECTION_AMBIGUOUS",
+                "当前行动同时匹配多个规则，请进一步说明行动方式",
+                repairability="requires_player_choice",
+                fault="player",
+            )
+        if (
+            decision is not None
+            and len(matching) == 1
+            and decision.rule_id != matching[0].id
+        ):
+            self._reject(
+                "RULE_OUT_OF_SCOPE",
+                "当前行动必须使用模组规定的规则",
+                repairability="auto_repairable",
+                fault="agent",
+            )
+        if decision is None and len(matching) == 1:
+            rule = matching[0]
+            trigger = rule.trigger
+            assert isinstance(trigger, AgentMatchTriggerSpec)
+            options = trigger.options
+            if len(options) == 1:
+                decision = RuleDecisionRef(
+                    rule_id=rule.id,
+                    option_id=options[0].id,
                 )
-            if len(matching) > 1:
-                self._reject(
-                    "RULE_SELECTION_AMBIGUOUS",
-                    "当前行动同时匹配多个规则，请进一步说明行动方式",
-                    repairability="requires_player_choice",
-                    fault="player",
+            else:
+                decision = self._decision_from_player_words(
+                    requested_goal,
+                    rule,
                 )
-            if len(matching) == 1:
-                rule = matching[0]
-                trigger = rule.trigger
-                assert isinstance(trigger, AgentMatchTriggerSpec)
-                options = trigger.options
-                if len(options) == 1:
-                    decision = RuleDecisionRef(
-                        rule_id=rule.id,
-                        option_id=options[0].id,
+                if decision is None:
+                    self._reject(
+                        "RULE_OPTION_REQUIRED",
+                        "请明确选择一种处理方式："
+                        + " / ".join(option.semantic_hints[0] for option in options),
+                        repairability="requires_player_choice",
+                        fault="player",
                     )
-                else:
-                    decision = self._decision_from_player_words(
-                        requested_goal,
-                        rule,
-                    )
-                    if decision is None:
-                        self._reject(
-                            "RULE_OPTION_REQUIRED",
-                            "请明确选择一种处理方式："
-                            + " / ".join(
-                                option.semantic_hints[0] for option in options
-                            ),
-                            repairability="requires_player_choice",
-                            fault="player",
-                        )
         if decision is None:
             return None, proposal.check_proposal
         rule, option_id = resolve_rule_option(
@@ -444,6 +453,38 @@ class ProposalCompiler:
                 fault="agent",
             )
         return decision, canonical_check
+
+    def _validate_trusted_step_completion(
+        self,
+        request: SubmitProposalRequest,
+    ) -> None:
+        """按 Coordinator 冻结的步骤类型校验最低完成条件。
+
+        ``method_family`` 是 Host 可自由表达的字符串，不能承担授权。等待步骤只有
+        实际推进世界时间才算完成，避免模型用 narrative_only 冒充“等到晚上”。
+        """
+
+        if request.requested_step_kind != "wait":
+            return
+        proposal = request.proposal
+        completion = proposal.completion
+        success_advances_time = any(
+            isinstance(effect, AdvanceWorldTimeEffectProposal)
+            for effect in proposal.success_effect_proposals
+        )
+        completion_advances_time = isinstance(
+            completion, EffectsGoalCompletionProposal
+        ) and any(
+            isinstance(requirement, AdvanceWorldTimeEffectProposal)
+            for requirement in completion.requirements
+        )
+        if not success_advances_time or not completion_advances_time:
+            self._reject(
+                "WAIT_REQUIRES_TIME_EFFECT",
+                "等待目标必须由实际时间推进结果完成",
+                repairability="auto_repairable",
+                fault="agent",
+            )
 
     @staticmethod
     def _decision_from_player_words(

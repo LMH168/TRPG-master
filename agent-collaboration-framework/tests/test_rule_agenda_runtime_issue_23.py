@@ -12,9 +12,11 @@ from collaboration_framework.contracts import (
     ActionTarget,
     AdvanceWorldTimeEffect,
     AgendaContinuationProposal,
+    AgentMatchTriggerSpec,
     AwaitPlayerInputStep,
     ChangeEntityStateEffect,
     ContractError,
+    EffectStep,
     ExecutionBranchSpec,
     FinishStep,
     ModuleContentV3,
@@ -32,6 +34,7 @@ from collaboration_framework.engine import (
     AgendaSource,
     DiceRoller,
     DomainEvent,
+    EngineRuntimeSnapshot,
     InMemoryEngineStore,
     RuleAgendaExecutor,
     SequenceDiceSource,
@@ -173,10 +176,12 @@ async def test_player_input_boundary_only_accepts_published_option() -> None:
 
     original = ModuleContentV3.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
     base_rule = original.rules[0]
+    assert isinstance(base_rule.trigger, AgentMatchTriggerSpec)
+    branch_id = base_rule.trigger.options[0].id
     rule = base_rule.model_copy(
         update={
             "execution": RuleExecutionSpec(
-                branches=(ExecutionBranchSpec(id="default", entry_step_id="wait"),),
+                branches=(ExecutionBranchSpec(id=branch_id, entry_step_id="wait"),),
                 steps=(
                     AwaitPlayerInputStep(
                         id="wait",
@@ -198,39 +203,6 @@ async def test_player_input_boundary_only_accepts_published_option() -> None:
         deep=True,
     )
     module = original.model_copy(update={"rules": (rule,)}, deep=True)
-    agenda = create_rule_agenda(
-        agenda_id="agenda-wait",
-        room_id="room-1",
-        module=module,
-        correlation_id="action-1",
-        root_source=AgendaSource(kind="event", id="event-1"),
-        revision="0",
-        origin_turn_id="turn-1",
-        active_turn_id="turn-1",
-        player_id="player-1",
-        actor_id="actor-1",
-        current_source_event_id="event-1",
-    ).model_copy(
-        update={
-            "active_turn_id": None,
-            "status": "awaiting_player_input",
-            "current_rule_id": rule.id,
-            "current_branch_id": "default",
-            "current_step_id": "wait",
-            "pending_boundary_id": "door-choice",
-            "queue": (
-                AgendaItem(
-                    source_event_id="event-1",
-                    event_sequence=1,
-                    rule_id=rule.id,
-                    rule_priority=rule.priority,
-                    branch_id="default",
-                    status="running",
-                ),
-            ),
-        },
-        deep=True,
-    )
     state = create_initial_game_state(
         module,
         room_id="room-1",
@@ -242,10 +214,50 @@ async def test_player_input_boundary_only_accepts_published_option() -> None:
                 source_character_version=1,
             )
         },
-    ).model_copy(update={"rule_agendas": {agenda.agenda_id: agenda}}, deep=True)
+    )
     store = InMemoryEngineStore()
-    store.register_room(module_content=module, initial_state=state)
     engine = AdjudicationEngineService(store)
+    runtime = EngineRuntimeSnapshot(
+        module_id=module.module_id,
+        module_version=module.version,
+        module_content=module,
+        game_state=state,
+        revision="0",
+    )
+    adjudication = ActionAdjudication(
+        request_id="action-1",
+        source_revision="0",
+        actor_id="actor-1",
+        summary="选择进入方式",
+        target=ActionTarget(kind="location", id=state.scene_id),
+        method=ActionMethod(family="enter", description="选择进入方式"),
+        check=NoAdjudicationCheck(),
+        rule_decision={"rule_id": rule.id, "option_id": branch_id},
+    )
+    source_event = DomainEvent(
+        event_id="event-1",
+        sequence=1,
+        type="action.succeeded",
+        room_id="room-1",
+        actor_id="actor-1",
+        client_action_id="action-1",
+        cause="action:action-1",
+        visibility="public",
+        payload={},
+    )
+    with engine_turn_context("turn-1"):
+        state = engine._materialize_agent_rule_agenda(
+            runtime,
+            state=state,
+            source_event=source_event,
+            adjudication=adjudication,
+            check_run=None,
+        )
+    agenda = next(iter(state.rule_agendas.values()))
+    assert agenda.status == "awaiting_player_input"
+    assert agenda.active_turn_id is None
+    assert agenda.pending_boundary_id == "door-choice"
+    store.register_room(module_content=module, initial_state=state)
     executor = RuleAgendaExecutor(store, engine=engine)
 
     candidates = await executor.continuation_candidates(
@@ -259,7 +271,7 @@ async def test_player_input_boundary_only_accepts_published_option() -> None:
     with pytest.raises(ContractError, match="option"):
         await executor.resume_continuation(
             AgendaContinuationProposal(
-                agenda_id="agenda-wait",
+                agenda_id=agenda.agenda_id,
                 boundary_id="door-choice",
                 option_id="invented",
             ),
@@ -272,7 +284,7 @@ async def test_player_input_boundary_only_accepts_published_option() -> None:
 
     await executor.resume_continuation(
         AgendaContinuationProposal(
-            agenda_id="agenda-wait",
+            agenda_id=agenda.agenda_id,
             boundary_id="door-choice",
             option_id="hold_breath",
         ),
@@ -284,7 +296,104 @@ async def test_player_input_boundary_only_accepts_published_option() -> None:
     )
     executions = await executor.drain(room_id="room-1", turn_id="turn-2")
     assert len(executions) == 1
-    assert store.inspect_state("room-1").rule_agendas["agenda-wait"].status == "stable"
+    assert (
+        store.inspect_state("room-1").rule_agendas[agenda.agenda_id].status == "stable"
+    )
+
+
+@pytest.mark.asyncio
+async def test_agenda_step_budget_rejects_segment_without_gameplay_commit() -> None:
+    """跨段累计预算越界必须失败，且当前段的 Effect、事件和 execution 全部不落库。"""
+
+    original = ModuleContentV3.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    base_rule = original.rules[0]
+    assert isinstance(base_rule.trigger, AgentMatchTriggerSpec)
+    branch_id = base_rule.trigger.options[0].id
+    rule = base_rule.model_copy(
+        update={
+            "execution": RuleExecutionSpec(
+                branches=(ExecutionBranchSpec(id=branch_id, entry_step_id="mutate"),),
+                steps=(
+                    EffectStep(
+                        id="mutate",
+                        effect=ChangeEntityStateEffect(
+                            entity_id="crypt_entrance",
+                            key="budget_test",
+                            value=True,
+                        ),
+                        next_step_id="finish",
+                    ),
+                    FinishStep(id="finish"),
+                ),
+            )
+        },
+        deep=True,
+    )
+    module = original.model_copy(update={"rules": (rule,)}, deep=True)
+    state = create_initial_game_state(
+        module,
+        room_id="room-budget",
+        actors={
+            "actor-1": ActorState(
+                player_id="player-1",
+                name="调查员",
+                source_character_id="character-1",
+                source_character_version=1,
+            )
+        },
+    )
+    agenda = create_rule_agenda(
+        agenda_id="agenda-budget",
+        room_id=state.room_id,
+        module=module,
+        correlation_id="action-budget",
+        root_source=AgendaSource(kind="event", id="event-budget"),
+        revision="0",
+        origin_turn_id="turn-budget",
+        active_turn_id="turn-budget",
+        player_id="player-1",
+        actor_id="actor-1",
+        current_source_event_id="event-budget",
+    ).model_copy(
+        update={
+            "status": "running",
+            "current_rule_id": rule.id,
+            "current_branch_id": branch_id,
+            "current_step_id": "mutate",
+            "step_count": 1,
+            "max_steps": 1,
+            "chain_depth": 1,
+            "queue": (
+                AgendaItem(
+                    source_event_id="event-budget",
+                    event_sequence=1,
+                    rule_id=rule.id,
+                    rule_priority=rule.priority,
+                    branch_id=branch_id,
+                    status="running",
+                ),
+            ),
+        },
+        deep=True,
+    )
+    state = state.model_copy(
+        update={"rule_agendas": {agenda.agenda_id: agenda}}, deep=True
+    )
+    store = InMemoryEngineStore()
+    store.register_room(module_content=module, initial_state=state)
+    executor = RuleAgendaExecutor(store, engine=AdjudicationEngineService(store))
+
+    assert await executor.drain(room_id=state.room_id, turn_id="turn-budget") == ()
+    final = store.inspect_state(state.room_id)
+    assert "budget_test" not in final.entities["crypt_entrance"]
+    assert final.rule_agendas[agenda.agenda_id].status == "failed"
+    assert (
+        await executor.executions_for_turn(
+            room_id=state.room_id,
+            turn_id="turn-budget",
+        )
+        == ()
+    )
 
 
 @pytest.mark.asyncio

@@ -381,6 +381,7 @@ class ActionPlanOrchestrator:
                                 source_revision=step_run.source_revision or "",
                                 proposal=step_run.proposal,
                                 requested_goal=step_run.step.semantic_goal,
+                                requested_step_kind=step_run.step.kind,
                             )
                         )
                     break
@@ -1833,6 +1834,7 @@ class HostTurnDecisionExecutor:
                         source_revision=view.revision,
                         proposal=candidate,
                         requested_goal=player_input.utterance,
+                        requested_step_kind=self._proposal_step_kind(candidate),
                     )
                 )
                 break
