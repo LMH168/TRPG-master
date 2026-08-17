@@ -429,6 +429,11 @@ class NarrationContext(ContractModel):
     memory_context: MemoryContext
     # 从本回合已持久化 Proposal 投影；Narrator 不能自行切换到其他可见实体。
     focus_entity_ids: tuple[str, ...] = ()
+    # 连续交互是近期上下文约束，不进入 GameState；只有当前仍可见的 NPC
+    # 可以成为 active interaction，Narrator 不得无事件把其移动到别处。
+    active_interaction_entity_ids: tuple[str, ...] = ()
+    interaction_source_turn_id: str | None = Field(default=None, min_length=1)
+    interaction_continuity: Literal["none", "current", "continued"] = "none"
     # `player_view` is the post-turn state, so it is the *only* clock the
     # Narrator would otherwise see. This is where the turn started; each step
     # then carries the clock it ended on.
@@ -468,6 +473,25 @@ class NarrationContext(ContractModel):
         } | {actor.id for actor in self.player_view.scene.visible_actors}
         if not set(self.focus_entity_ids).issubset(visible_entity_ids):
             raise ValueError("叙事焦点必须属于最终 PlayerView 的可见实体")
+        visible_npc_ids = {
+            actor.id for actor in self.player_view.scene.visible_actors
+        } | {
+            entity.id
+            for entity in self.player_view.scene.visible_entities
+            if entity.kind == "npc"
+        }
+        if not set(self.active_interaction_entity_ids).issubset(visible_npc_ids):
+            raise ValueError("连续交互对象必须是最终 PlayerView 中的可见 NPC")
+        if self.interaction_continuity == "none":
+            if self.active_interaction_entity_ids or self.interaction_source_turn_id:
+                raise ValueError("无连续交互时不得保留交互对象或来源")
+        elif not self.active_interaction_entity_ids:
+            raise ValueError("连续交互必须包含当前 NPC")
+        if (
+            self.interaction_continuity == "continued"
+            and self.interaction_source_turn_id is None
+        ):
+            raise ValueError("跨回合连续交互必须记录来源回合")
         evidence = tuple(
             ref for step in self.completed_steps for ref in step.event_refs
         )

@@ -125,6 +125,9 @@ needs_clarification，才用自然的角色内措辞提出一次最小澄清。c
 Agenda 证据按权威事件顺序给出。角色状态、时间、地点、NPC 机会、被动检定和资源变化必须
 按该顺序自然连成一段，不得省略中间状态，也不得增加证据中不存在的门、石板、人物或状态变化。
 plot_thread_transition 只提供当前剧情阶段背景，不要逐字朗读抽象流程摘要。
+interaction_continuity=continued 表示玩家仍在与 active_interaction_entity_ids 中的
+NPC 近距离连续交互。除非本轮 evidence 明确包含移动、离场或地点变化，不得把该 NPC
+写到远处、其他建筑旁或新位置，也不得声称玩家已经离开或由其他人物阻挡当前行动。
 text 只能包含自然的角色内叙事，不得把 claimed_evidence_refs、suggested_actions 或其他
 JSON/schema 字段和值重复写入正文。
 如果输入中提供 narration_retry_hint，说明上一版叙事漏报了一个已提交结果；本次必须

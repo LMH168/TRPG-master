@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.models.engine import (
     ActionExecution,
     ActionPlanRunRecord,
+    AdjudicationCommandExecution,
     AgendaStepExecutionRecord,
 )
 from app.models.event import Event
@@ -257,6 +258,33 @@ class SqlAlchemyRecentHistorySource:
                 if correlations
                 else []
             )
+            own_correlations = [
+                event.correlation_id
+                for event in action_events
+                if event.player_id == player_input.player_id and event.correlation_id is not None
+            ]
+            adjudication_records = (
+                list(
+                    (
+                        await session.scalars(
+                            select(AdjudicationCommandExecution)
+                            .where(
+                                AdjudicationCommandExecution.room_id == player_input.room_id,
+                                AdjudicationCommandExecution.action_request_id.in_(
+                                    own_correlations
+                                ),
+                            )
+                            .order_by(
+                                AdjudicationCommandExecution.committed_state_version,
+                                AdjudicationCommandExecution.created_at,
+                                AdjudicationCommandExecution.request_id,
+                            )
+                        )
+                    ).all()
+                )
+                if own_correlations
+                else []
+            )
             plan_records = (
                 list(
                     (
@@ -297,6 +325,10 @@ class SqlAlchemyRecentHistorySource:
 
         event_by_key = {(event.correlation_id, event.event_type): event for event in related_events}
         execution_by_correlation = {execution.request_id: execution for execution in executions}
+        adjudication_by_action: dict[str, list[AdjudicationCommandExecution]] = {}
+        for record in adjudication_records:
+            if record.action_request_id is not None:
+                adjudication_by_action.setdefault(record.action_request_id, []).append(record)
         plan_by_correlation = {record.parent_action_id: record for record in plan_records}
         agenda_by_turn: dict[str, list[AgendaStepExecutionRecord]] = {}
         for record in agenda_execution_records:
@@ -360,6 +392,7 @@ class SqlAlchemyRecentHistorySource:
 
             accepted_summary = None
             safe_result = None
+            committed_revision: str | None = None
             participants: list[str] = []
             if source_actor_id in safe_participant_ids or own_turn:
                 participants.append(source_actor_id)
@@ -377,6 +410,50 @@ class SqlAlchemyRecentHistorySource:
                 target_id = getattr(target, "id", None)
                 if target_id in safe_participant_ids and target_id not in participants:
                     participants.append(target_id)
+            # 当前生产 writer 保存 Proposal 信封和最终 execution。只从当前玩家
+            # 的首次请求恢复可信目标与焦点，后续检定命令不能覆盖原动作语义。
+            command_records = adjudication_by_action.get(correlation_id, [])
+            if own_turn and command_records:
+                initial = next(
+                    (
+                        record
+                        for record in command_records
+                        if isinstance(record.request_json.get("proposal"), dict)
+                    ),
+                    None,
+                )
+                latest = command_records[-1]
+                if initial is not None:
+                    proposal = initial.request_json.get("proposal")
+                    assert isinstance(proposal, dict)
+                    requested_goal = initial.request_json.get("requested_goal")
+                    semantic_goal = proposal.get("semantic_goal")
+                    summary = (
+                        requested_goal
+                        if isinstance(requested_goal, str)
+                        else semantic_goal
+                        if isinstance(semantic_goal, str)
+                        else None
+                    )
+                    if summary:
+                        truncated_field_count += int(len(summary) > _INTENT_LIMIT)
+                        accepted_summary = _truncate(summary, _INTENT_LIMIT)
+                    focus = proposal.get("semantic_focus")
+                    focus_id = focus.get("id") if isinstance(focus, dict) else None
+                    if (
+                        isinstance(focus_id, str)
+                        and focus_id in safe_participant_ids
+                        and focus_id not in participants
+                    ):
+                        participants.append(focus_id)
+                    source_revision = initial.request_json.get("source_revision")
+                    if isinstance(source_revision, str):
+                        legacy_source_revision = source_revision
+                execution_payload = latest.result_json.get("execution")
+                if isinstance(execution_payload, dict):
+                    view_revision = execution_payload.get("view_revision")
+                    if isinstance(view_revision, str):
+                        committed_revision = view_revision
             if own_turn and (record := plan_by_correlation.get(correlation_id)) is not None:
                 try:
                     plan_run = ActionPlanRun.from_persistence_json_dict(record.run_json)
@@ -417,6 +494,10 @@ class SqlAlchemyRecentHistorySource:
             evidence = [f"transport_event:{action_event.id}"]
             if execution is not None and own_turn:
                 evidence.append(f"action_execution:{correlation_id}")
+            if own_turn:
+                evidence.extend(
+                    f"adjudication_execution:{record.request_id}" for record in command_records
+                )
             if narration_event is not None and narration is not None:
                 evidence.append(f"transport_event:{narration_event.id}")
             if own_turn and action_event.turn_id is not None:
@@ -443,9 +524,12 @@ class SqlAlchemyRecentHistorySource:
                         narration_event.view_revision
                         if narration_event is not None
                         else (
-                            engine_result.action_result.view_revision
-                            if engine_result is not None
-                            else None
+                            committed_revision
+                            or (
+                                engine_result.action_result.view_revision
+                                if engine_result is not None
+                                else None
+                            )
                         )
                     ),
                     participants=tuple(participants),

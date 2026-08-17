@@ -62,6 +62,7 @@ from collaboration_framework.engine import (
 from collaboration_framework.host.adapters import InMemoryActionPlanRunStore
 from collaboration_framework.host.application import (
     ActionPlanOrchestrator,
+    ContextAssembler,
     HostTurnDecisionExecutor,
     NarrationValidationError,
     Narrator,
@@ -1865,8 +1866,7 @@ class ActionPlanTurnApplication:
             narration_evidence=execution.narration_evidence,
             committed_results=execution.committed_results,
         )
-        context = NarrationContext(
-            background=result.player_view.background,
+        context = ContextAssembler().for_narration(
             player_input=player_input,
             plan_goal=summary,
             termination_status=("cancelled" if execution.status == "cancelled" else "resolved"),
@@ -1882,8 +1882,6 @@ class ActionPlanTurnApplication:
             ),
             focus_entity_ids=focus_entity_ids,
             opening_world_time=result.opening_world_time,
-            allowed_evidence_refs=execution.public_event_refs,
-            narration_evidence=execution.narration_evidence,
         )
         context = self._merge_agenda_results(context, agenda_executions)
         return ActionPlanTurnResult(

@@ -8,8 +8,11 @@ from collaboration_framework.contracts import (
     PlayerView,
     SceneView,
     SelfActorView,
+    VisibleEntity,
 )
+from collaboration_framework.host.application import ContextAssembler
 from collaboration_framework.host.schemas import (
+    CompletedPlanStepSummary,
     HostAgentContext,
     RecentSafeResult,
     RecentTurn,
@@ -150,3 +153,84 @@ def test_recent_history_schema_and_serialization_exclude_internal_engine_fields(
     assert "state_changes" not in encoded
     assert '"events"' not in encoded
     assert "event_refs" not in encoded
+
+
+def test_narration_context_keeps_reliable_npc_across_clarification() -> None:
+    """纯澄清失败轮不能清空上一轮唯一、仍可见的交互 NPC。"""
+
+    player_input, base_view = scope()
+    player_view = base_view.model_copy(
+        update={
+            "scene": SceneView(
+                id="study",
+                name="书房",
+                description="安静的书房",
+                visible_entities=(
+                    VisibleEntity(
+                        id="thomas",
+                        kind="npc",
+                        name="托马斯",
+                        description="正在与你交谈。",
+                    ),
+                    VisibleEntity(
+                        id="desk",
+                        kind="object",
+                        name="书桌",
+                        description="一张书桌。",
+                    ),
+                ),
+            )
+        }
+    )
+    clarification = RecentTurn(
+        correlation_id="clarification",
+        source_player_id="viewer",
+        source_actor_id="viewer_actor",
+        scene_id="study",
+        participants=("viewer_actor",),
+        player_utterance=VisibleHistoryText(text="过个侦察", visibility="public"),
+        published_narration=VisibleHistoryText(
+            text="请明确行动对象。",
+            visibility="player_scoped",
+        ),
+    )
+    history = RecentTurnContext(
+        room_id="room",
+        viewer_player_id="viewer",
+        as_of_revision="7",
+        turns=(own_turn(), clarification),
+    )
+    step = CompletedPlanStepSummary(
+        step_index=0,
+        semantic_goal="过个侦察",
+        outcome="success",
+        goal_outcome="achieved",
+        view_revision="7",
+    )
+
+    context = ContextAssembler().for_narration(
+        player_input=player_input,
+        plan_goal="过个侦察",
+        termination_status="resolved",
+        completed_steps=(step,),
+        player_view=player_view,
+        recent_history=history,
+    )
+
+    assert context.focus_entity_ids == ("thomas",)
+    assert context.active_interaction_entity_ids == ("thomas",)
+    assert context.interaction_source_turn_id == "prior"
+    assert context.interaction_continuity == "continued"
+
+    switched = ContextAssembler().for_narration(
+        player_input=player_input,
+        plan_goal="查看书桌",
+        termination_status="resolved",
+        completed_steps=(step,),
+        player_view=player_view,
+        recent_history=history,
+        focus_entity_ids=("desk",),
+    )
+    assert switched.focus_entity_ids == ("desk",)
+    assert switched.active_interaction_entity_ids == ()
+    assert switched.interaction_continuity == "none"

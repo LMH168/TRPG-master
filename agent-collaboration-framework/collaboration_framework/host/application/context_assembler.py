@@ -102,6 +102,11 @@ class ContextAssembler:
         """从最终安全视图和已提交步骤构造统一 NarrationContext。"""
 
         visible_actor_ids = {actor.id for actor in player_view.scene.visible_actors}
+        visible_npc_ids = visible_actor_ids | {
+            entity.id
+            for entity in player_view.scene.visible_entities
+            if entity.kind == "npc"
+        }
         visible_ids = visible_actor_ids | {
             entity.id for entity in player_view.scene.visible_entities
         }
@@ -110,9 +115,11 @@ class ContextAssembler:
                 entity_id for entity_id in focus_entity_ids if entity_id in visible_ids
             )
         )
-        if not current_focus and recent_history is not None:
+        previous_interaction: tuple[str, ...] = ()
+        interaction_source_turn_id: str | None = None
+        if recent_history is not None:
             # 只有最近同场景存在唯一可见 NPC 时才继承焦点；多个参与者时保持
-            # 空值，避免编译器替玩家猜测说话者或交互对象。
+            # 空值。纯澄清失败轮没有接受语义，不应清空上一轮可靠交互。
             for turn in reversed(recent_history.turns):
                 if turn.scene_id != player_view.scene.id:
                     continue
@@ -120,13 +127,33 @@ class ContextAssembler:
                     dict.fromkeys(
                         participant
                         for participant in turn.participants
-                        if participant in visible_actor_ids
+                        if participant in visible_npc_ids
                         and participant != player_view.actor_id
                     )
                 )
                 if len(candidates) == 1:
-                    current_focus = candidates
-                break
+                    previous_interaction = candidates
+                    interaction_source_turn_id = turn.correlation_id
+                    break
+                non_player_participants = tuple(
+                    item for item in turn.participants if item != player_view.actor_id
+                )
+                if non_player_participants or turn.accepted_intent_summary is not None:
+                    break
+        if not current_focus and previous_interaction:
+            current_focus = previous_interaction
+
+        active_interaction = tuple(
+            entity_id for entity_id in current_focus if entity_id in visible_npc_ids
+        )
+        if active_interaction and active_interaction == previous_interaction:
+            interaction_continuity = "continued"
+        elif active_interaction:
+            interaction_continuity = "current"
+            interaction_source_turn_id = None
+        else:
+            interaction_continuity = "none"
+            interaction_source_turn_id = None
 
         return NarrationContext(
             background=player_view.background,
@@ -146,6 +173,9 @@ class ContextAssembler:
                 )
             ),
             focus_entity_ids=current_focus,
+            active_interaction_entity_ids=active_interaction,
+            interaction_source_turn_id=interaction_source_turn_id,
+            interaction_continuity=interaction_continuity,
             opening_world_time=opening_world_time,
             allowed_evidence_refs=tuple(
                 ref for step in completed_steps for ref in step.event_refs
