@@ -509,6 +509,13 @@ class ActionPlanOrchestrator:
 
             assert latest is not None
             agenda_boundary: str | None = None
+            # 先验证裁决返回的 revision 确实对应提交后的权威快照。Agenda 可能随后
+            # 提交时间、SAN 或状态变化；若先 drain 再做等值校验，会把合法的新
+            # revision 误判成裁决结果不一致。
+            view = await self._player_view_projector.refresh_adjudication(
+                player_input,
+                latest,
+            )
             if self._on_step_committed is not None and latest.status not in {
                 "awaiting_skill_choice",
                 "awaiting_post_roll_decision",
@@ -516,10 +523,7 @@ class ActionPlanOrchestrator:
                 # 当前步骤的 RuleAgenda 必须先到稳定边界；下一步骤随后重新投影
                 # PlayerView，不能在旧 revision 上越过被动规则后果。
                 agenda_boundary = await self._on_step_committed(player_input)
-            view = await self._player_view_projector.refresh_adjudication(
-                player_input,
-                latest,
-            )
+                view = await self._player_view_projector.project(player_input)
             run = await self._apply_execution(
                 run,
                 latest,
@@ -1374,15 +1378,15 @@ class ActionPlanOrchestrator:
                 code="PENDING_ADJUDICATION_MISSING",
             )
             return failed, None
-        agenda_boundary = (
-            await self._on_step_committed(player_input)
-            if self._on_step_committed is not None
-            else None
-        )
+        # 恢复路径同样先对账裁决 revision，再允许 Agenda 推进权威状态。
         view = await self._player_view_projector.refresh_adjudication(
             player_input,
             status.execution,
         )
+        agenda_boundary = None
+        if self._on_step_committed is not None:
+            agenda_boundary = await self._on_step_committed(player_input)
+            view = await self._player_view_projector.project(player_input)
         reconciled = await self._apply_execution(
             run,
             status.execution,

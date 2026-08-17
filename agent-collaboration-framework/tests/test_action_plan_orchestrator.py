@@ -687,6 +687,39 @@ def orchestrator(
     )
 
 
+class AgendaRevisionProjector:
+    """模拟 Agenda 在裁决提交后把权威 revision 向前推进。"""
+
+    def __init__(self, delegate: PlayerViewProjector) -> None:
+        self._delegate = delegate
+        self.agenda_committed = False
+        self.shifted_projection_count = 0
+
+    async def project(self, player_input: PlayerInput):
+        view = await self._delegate.project(player_input)
+        if not self.agenda_committed:
+            return view
+        # 这里只模拟 callback 刚提交后读到的新快照；下一步骤会重新建立自己的
+        # 权威基线，因此不应继续沿用测试夹具制造的 revision。
+        self.agenda_committed = False
+        self.shifted_projection_count += 1
+        return view.model_copy(update={"revision": str(int(view.revision) + 1)})
+
+    async def refresh_adjudication(self, player_input, execution):
+        view = await self.project(player_input)
+        if view.revision != execution.view_revision:
+            raise ContractError(
+                "裁决后 PlayerView revision 与 AdjudicationExecution 不一致"
+            )
+        return view
+
+    async def keeper_capabilities(self, player_input, *, expected_revision=None):
+        return await self._delegate.keeper_capabilities(
+            player_input,
+            expected_revision=expected_revision,
+        )
+
+
 class StaticRecentHistorySource:
     """为 Narrator 上下文测试提供同一份玩家安全历史。"""
 
@@ -967,6 +1000,65 @@ async def test_pending_check_stops_plan_and_resumes_same_step_after_decision() -
         )
     )
     assert status.status == "resolved"
+
+
+@pytest.mark.asyncio
+async def test_resolved_check_validates_revision_before_agenda_advances() -> None:
+    """Agenda 提交新 revision 后，计划应使用最终视图而不是误报裁决不一致。"""
+
+    module, engine_store, base_projector = runtime()
+    projector = AgendaRevisionProjector(base_projector)
+    adjudicator = RecordingAdjudicator(module.world_ref, check_step=0)
+    engine = AdjudicationEngineService(
+        engine_store,
+        dice=DiceRoller(SequenceDiceSource([10])),
+    )
+
+    async def commit_agenda(_player_input: PlayerInput) -> str:
+        projector.agenda_committed = True
+        return "stable"
+
+    service = ActionPlanOrchestrator(
+        store=InMemoryActionPlanRunStore(),
+        adjudicator=adjudicator,
+        executor=engine,
+        player_view_projector=projector,
+        on_step_committed=commit_agenda,
+    )
+    original = player_input("agenda-revision-after-check")
+
+    waiting = await service.start_or_resume(original, plan=plan(2))
+    pending = waiting.latest_execution
+    assert pending is not None and pending.pending_decision is not None
+    rolled = await engine.decide(
+        CheckDecisionRequest(
+            request_id="agenda-revision:select",
+            room_id=original.room_id,
+            player_id=original.player_id,
+            source_revision=pending.view_revision,
+            decision_id=pending.pending_decision.decision_id,
+            decision_version=pending.pending_decision.decision_version,
+            choice=SelectCheckChoice(candidate_id="spot"),
+        )
+    )
+    assert rolled.check_run is not None
+    resolved = await engine.decide_post_roll(
+        PostRollDecisionRequest(
+            request_id="agenda-revision:accept",
+            room_id=original.room_id,
+            player_id=original.player_id,
+            source_revision=rolled.view_revision,
+            check_id=rolled.check_run.check_id,
+            check_version=rolled.check_run.version,
+            option_id="accept-current",
+        )
+    )
+
+    resumed = await service.start_or_resume(original, plan=plan(2))
+
+    assert resolved.status == "resolved"
+    assert resumed.run.status == "awaiting_narration"
+    assert projector.shifted_projection_count == 2
 
 
 @pytest.mark.parametrize(
