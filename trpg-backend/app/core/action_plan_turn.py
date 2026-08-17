@@ -493,6 +493,12 @@ class TravelFirstHostTurnDecisionModel:
         )
         if proposal is not None:
             return proposal
+        compound = _compound_travel_plan_proposal(
+            context.player_view,
+            context.player_input.utterance,
+        )
+        if compound is not None:
+            return compound
         return await self._fallback.generate(context)
 
 
@@ -773,9 +779,9 @@ def _direct_travel_proposal(
     # 后续步骤都会令匹配失败，原句随即原样交给 Host/ActionPlan。
     simple_travel = re.fullmatch(
         r"(?:我|我们)?"
-        r"(?:现在|马上|立刻|这就|直接|先)?"
+        r"(?:现在|马上|立刻|这就|直接|先|再)?"
         r"(?:想要|想|要|打算|准备|决定)?"
-        r"(?:现在|马上|立刻|这就|直接|先)?"
+        r"(?:现在|马上|立刻|这就|直接|先|再)?"
         r"(?:去|前往|进入|抵达|到)"
         r"(?:一下)?(?:吧|了)?",
         residual,
@@ -794,6 +800,34 @@ def _direct_travel_proposal(
             check=NoAdjudicationCheck(),
             success_effects=(EnterLocationEffect(location_id=destination.id),),
         )
+    )
+
+
+def _compound_travel_plan_proposal(
+    view: PlayerView,
+    utterance: str,
+) -> ActionPlanProposal | None:
+    """保留带明确连接词的复合行动，并确定其中至少一个可信移动步骤。"""
+
+    clauses = tuple(
+        clause.strip(" \t，,。；;")
+        for clause in re.split(
+            r"\s*(?:，|,)?(?:然后|接着|随后)\s*"
+            r"|\s*[；;]\s*"
+            r"|\s*[，,]\s*(?=再(?:去|前往|进入|抵达|到))",
+            utterance,
+        )
+        if clause.strip(" \t，,。；;")
+    )
+    if len(clauses) < 2:
+        return None
+    # 只有至少一个子句能由当前 PlayerView 唯一证明为纯移动时才接管拆分；
+    # 其他子句只保留玩家原话，不在这里猜测动作类型、技能或 Effect。
+    if not any(_direct_travel_proposal(view, clause) is not None for clause in clauses):
+        return None
+    return ActionPlanProposal(
+        semantic_goal=utterance,
+        steps=tuple(ActionPlanProposalStep(semantic_goal=clause) for clause in clauses),
     )
 
 

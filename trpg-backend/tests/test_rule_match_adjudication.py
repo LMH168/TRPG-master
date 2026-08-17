@@ -25,6 +25,7 @@ from collaboration_framework.contracts import (
     ActionMethod,
     ActionPlan,
     ActionPlanPolicy,
+    ActionPlanProposal,
     ActionPlanStep,
     ActionTarget,
     EnsureRuntimeLocationEffect,
@@ -511,6 +512,52 @@ async def test_production_planner_only_shortcuts_unambiguous_travel(
         assert proposal.semantic_goal == utterance
         assert proposal.semantic_focus.id == expected_location_id
         assert proposal.success_effect_proposals[0].type == "enter_location"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("utterance", "expected_steps"),
+    (
+        ("去墓地，然后调查守墓人", ("去墓地", "调查守墓人")),
+        ("放下随身物品，随后去图书馆", ("放下随身物品", "去图书馆")),
+        ("去墓地，再去图书馆", ("去墓地", "再去图书馆")),
+    ),
+)
+async def test_compound_action_preserves_travel_and_other_steps_without_model(
+    utterance: str,
+    expected_steps: tuple[str, ...],
+) -> None:
+    """明确连接的复合行动应保留全部原句步骤，不能因移动快捷路径丢失其余目标。"""
+
+    class FailingFallback:
+        async def generate(self, context):
+            del context
+            raise AssertionError("含可信移动子句的明确计划不应依赖 Host 随机拆分")
+
+    step_context = await _cemetery_context(
+        utterance,
+        step_kind="action",
+        semantic_goal=utterance,
+        scene_id="thomas_office",
+    )
+    context = HostAgentContext(
+        player_input=step_context.player_input,
+        player_view=step_context.player_view,
+        recent_history=RecentTurnContext.empty(
+            player_input=step_context.player_input,
+            player_view=step_context.player_view,
+        ),
+        memory_context=MemoryContext.empty(
+            player_input=step_context.player_input,
+            player_view=step_context.player_view,
+        ),
+        keeper_capabilities=step_context.keeper_capabilities,
+    )
+
+    proposal = await TravelFirstHostTurnDecisionModel(FailingFallback()).generate(context)
+
+    assert isinstance(proposal, ActionPlanProposal)
+    assert tuple(step.semantic_goal for step in proposal.steps) == expected_steps
 
 
 @pytest.mark.asyncio
