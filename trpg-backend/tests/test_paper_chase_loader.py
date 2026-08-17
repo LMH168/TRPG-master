@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete
@@ -14,6 +15,33 @@ from app.core.seed import (
 from app.models.content import GameSystem, Scenario
 from app.models.engine import ModuleVersion
 from app.service import paper_chase_loader as loader
+
+
+@pytest.mark.asyncio
+async def test_startup_publishes_latest_builtin_module(monkeypatch) -> None:
+    """本地 uvicorn 与容器启动都必须发布最新版，不能依赖额外手动脚本。"""
+
+    from app import main
+
+    session = object()
+
+    class _SessionContext:
+        async def __aenter__(self):
+            return session
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    ensure_seed = AsyncMock()
+    publish_module = AsyncMock()
+    monkeypatch.setattr(main, "async_session_factory", _SessionContext)
+    monkeypatch.setattr(main, "ensure_seed_content", ensure_seed)
+    monkeypatch.setattr(main, "load_paper_chase", publish_module)
+
+    await main._load_builtin_content()
+
+    ensure_seed.assert_awaited_once_with(session)
+    publish_module.assert_awaited_once_with(session)
 
 
 async def test_loader_is_idempotent_and_reports_real_content(
