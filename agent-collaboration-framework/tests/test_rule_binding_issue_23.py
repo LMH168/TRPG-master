@@ -12,6 +12,7 @@ from collaboration_framework.contracts import (
     AdvanceWorldTimeEffect,
     AgentMatchTriggerSpec,
     ModuleContentV3,
+    NarrationEvidence,
     NoAdjudicationCheck,
     RequiredAdjudicationCheck,
     RuleDecisionRef,
@@ -22,10 +23,12 @@ from collaboration_framework.engine import (
     ActorResources,
     ActorState,
     AdjudicationEngineService,
+    DiceRoller,
     EngineRuntimeSnapshot,
     InMemoryEngineStore,
     ProposalCompiler,
     RuleAgendaExecutor,
+    SequenceDiceSource,
     create_initial_game_state,
     engine_turn_context,
 )
@@ -958,7 +961,9 @@ async def test_direct_entry_reaches_awake_stable_boundary_once() -> None:
         module_content=runtime.module_content,
         initial_state=runtime.game_state,
     )
-    engine = AdjudicationEngineService(store)
+    # 固定为失败并损失 1 点 SAN，避免随机 1d6 触发临时疯狂后让证据数量漂移。
+    dice = DiceRoller(SequenceDiceSource([74, 1]))
+    engine = AdjudicationEngineService(store, dice=dice)
     with engine_turn_context("turn-enter"):
         await engine.submit_proposal(
             _request(
@@ -974,7 +979,7 @@ async def test_direct_entry_reaches_awake_stable_boundary_once() -> None:
     agenda = next(iter(after_action.rule_agendas.values()))
     assert agenda.status == "running"
 
-    executor = RuleAgendaExecutor(store, engine=engine)
+    executor = RuleAgendaExecutor(store, engine=engine, dice=dice)
     executions = await executor.drain(
         room_id="room-rule-binding",
         turn_id="turn-enter",
@@ -998,17 +1003,22 @@ async def test_direct_entry_reaches_awake_stable_boundary_once() -> None:
     assert sum(event.type == "actor.condition_applied" for event in events) == 1
     assert sum(event.type == "actor.condition_expired" for event in events) == 1
     assert sum(event.type == "rule.presentation" for event in events) == 1
-    narration_evidence = [
-        item
-        for execution in executions
-        for item in execution.result.get("narration_evidence", [])
-    ]
+    narration_evidence: list[NarrationEvidence] = []
+    for execution in executions:
+        raw_evidence = execution.result.get("narration_evidence", [])
+        if not isinstance(raw_evidence, list):
+            continue
+        narration_evidence.extend(
+            NarrationEvidence.model_validate(item)
+            for item in raw_evidence
+            if isinstance(item, dict)
+        )
     # 多阶段 Agenda 的具体公开结果必须按提交顺序交给 Narrator，不能只留下
     # PlotThread 摘要或最终地点，导致昏迷、醒来和被动检定在叙事中消失。
     required_evidence = [
-        item for item in narration_evidence if item["required_in_narration"]
+        item for item in narration_evidence if item.required_in_narration
     ]
-    assert [item["kind"] for item in required_evidence] == [
+    assert [item.kind for item in required_evidence] == [
         "actor_condition",
         "world_time",
         "actor_condition",
@@ -1020,11 +1030,11 @@ async def test_direct_entry_reaches_awake_stable_boundary_once() -> None:
         "actor_resource_change",
     ]
     assert all(
-        not item["required_in_narration"]
+        not item.required_in_narration
         for item in narration_evidence
-        if item["kind"] == "plot_thread_transition"
+        if item.kind == "plot_thread_transition"
     )
-    evidence_text = "".join(item["description"] for item in required_evidence)
+    evidence_text = "".join(item.description for item in required_evidence)
     assert "失去了意识" in evidence_text
     assert "18点" in evidence_text
     assert "恢复了意识" in evidence_text
