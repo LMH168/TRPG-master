@@ -1571,8 +1571,15 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             {"rule_presentation", "plot_thread_transition"},
         )
         self.assertIn(
-            "沉重的入口石板已经被你推开，通往下方的通道显露出来。",
+            "沉重的入口石板被推开时，一股浓烈的腐臭从下方涌出，"
+            "通道随之显露。你仍站在墓地的入口边，尚未进入地穴。",
             {item.description for item in slab_result.narration_evidence},
+        )
+        # 搬开石板只完成当前动作；后续进入必须由玩家下一次行动触发，不能由
+        # Presentation 或 Agenda 越权替玩家选择隐藏默认分支。
+        self.assertEqual(store.inspect_state(ROOM).scene_id, "cemetery")
+        self.assertIsNot(
+            store.inspect_state(ROOM).entities["crypt_entrance"].get("entered"), True
         )
         self.assertIs(
             store.inspect_state(ROOM).entities["crypt_entrance"]["slab_moved"], True
