@@ -70,8 +70,8 @@ def game_state(**updates) -> GameState:
                 thread_id="crypt_entry_investigation",
                 status="resolved",
             ),
-            "douglas_case": PlotThreadState(
-                thread_id="douglas_case",
+            "cemetery_encounter": PlotThreadState(
+                thread_id="cemetery_encounter",
                 status="available",
                 last_transition_event_id="evt-douglas-available",
             ),
@@ -178,7 +178,7 @@ class RuleAgendaRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         state = store.inspect_state(ROOM)
-        self.assertEqual(state.plot_threads["douglas_case"].status, "in_progress")
+        self.assertEqual(state.plot_threads["cemetery_encounter"].status, "in_progress")
         self.assertEqual(len(state.rule_agendas), 1)
         persisted = next(iter(state.rule_agendas.values()))
         self.assertEqual(persisted.status, "awaiting_passive_check")

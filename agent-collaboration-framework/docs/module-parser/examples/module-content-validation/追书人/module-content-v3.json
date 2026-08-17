@@ -2479,7 +2479,7 @@
           "op": "predicate",
           "predicate": "plot_thread_status_is",
           "args": {
-            "thread_id": "douglas_case",
+            "thread_id": "cemetery_encounter",
             "status": "available"
           }
         },
@@ -2766,7 +2766,7 @@
           "op": "predicate",
           "predicate": "plot_thread_status_is",
           "args": {
-            "thread_id": "douglas_case",
+            "thread_id": "cemetery_encounter",
             "status": "in_progress"
           }
         },
@@ -2845,14 +2845,14 @@
               "type": "set_ending_availability",
               "available": true
             },
-            "next_step_id": "resolve_douglas_case"
+            "next_step_id": "resolve_cemetery_encounter"
           },
           {
-            "id": "resolve_douglas_case",
+            "id": "resolve_cemetery_encounter",
             "kind": "effect",
             "effect": {
               "type": "transition_plot_thread",
-              "thread_id": "douglas_case",
+              "thread_id": "cemetery_encounter",
               "to_status": "resolved"
             },
             "next_step_id": "finish"
@@ -2943,7 +2943,7 @@
           "op": "predicate",
           "predicate": "plot_thread_status_is",
           "args": {
-            "thread_id": "douglas_case",
+            "thread_id": "cemetery_encounter",
             "status": "in_progress"
           }
         },
@@ -2985,14 +2985,14 @@
               "key": "investigator_disappeared",
               "value": true
             },
-            "next_step_id": "fail_douglas_case"
+            "next_step_id": "fail_cemetery_encounter"
           },
           {
-            "id": "fail_douglas_case",
+            "id": "fail_cemetery_encounter",
             "kind": "effect",
             "effect": {
               "type": "transition_plot_thread",
-              "thread_id": "douglas_case",
+              "thread_id": "cemetery_encounter",
               "to_status": "failed"
             },
             "next_step_id": "finish"
@@ -3022,7 +3022,7 @@
           "op": "predicate",
           "predicate": "plot_thread_status_is",
           "args": {
-            "thread_id": "douglas_case",
+            "thread_id": "cemetery_encounter",
             "status": "in_progress"
           }
         },
@@ -3081,14 +3081,14 @@
               "type": "set_ending_availability",
               "available": true
             },
-            "next_step_id": "resolve_douglas_case"
+            "next_step_id": "resolve_cemetery_encounter"
           },
           {
-            "id": "resolve_douglas_case",
+            "id": "resolve_cemetery_encounter",
             "kind": "effect",
             "effect": {
               "type": "transition_plot_thread",
-              "thread_id": "douglas_case",
+              "thread_id": "cemetery_encounter",
               "to_status": "resolved"
             },
             "next_step_id": "finish"
@@ -3184,7 +3184,7 @@
               "op": "predicate",
               "predicate": "plot_thread_status_is",
               "args": {
-                "thread_id": "douglas_case",
+                "thread_id": "cemetery_encounter",
                 "status": "available"
               }
             }
@@ -3196,16 +3196,16 @@
         "branches": [
           {
             "id": "default",
-            "entry_step_id": "start_douglas_case"
+            "entry_step_id": "start_cemetery_encounter"
           }
         ],
         "steps": [
           {
-            "id": "start_douglas_case",
+            "id": "start_cemetery_encounter",
             "kind": "effect",
             "effect": {
               "type": "transition_plot_thread",
-              "thread_id": "douglas_case",
+              "thread_id": "cemetery_encounter",
               "to_status": "in_progress"
             },
             "next_step_id": "san_check"
@@ -3323,7 +3323,7 @@
               "op": "predicate",
               "predicate": "plot_thread_status_is",
               "args": {
-                "thread_id": "douglas_case",
+                "thread_id": "cemetery_encounter",
                 "status": "in_progress"
               }
             }
@@ -3348,14 +3348,14 @@
               "key": "sent_to_asylum",
               "value": true
             },
-            "next_step_id": "fail_douglas_case"
+            "next_step_id": "fail_cemetery_encounter"
           },
           {
-            "id": "fail_douglas_case",
+            "id": "fail_cemetery_encounter",
             "kind": "effect",
             "effect": {
               "type": "transition_plot_thread",
-              "thread_id": "douglas_case",
+              "thread_id": "cemetery_encounter",
               "to_status": "failed"
             },
             "next_step_id": "apply_unconscious"
@@ -3546,14 +3546,14 @@
               "thread_id": "crypt_entry_investigation",
               "to_status": "resolved"
             },
-            "next_step_id": "unlock_douglas_case"
+            "next_step_id": "unlock_cemetery_encounter"
           },
           {
-            "id": "unlock_douglas_case",
+            "id": "unlock_cemetery_encounter",
             "kind": "effect",
             "effect": {
               "type": "transition_plot_thread",
-              "thread_id": "douglas_case",
+              "thread_id": "cemetery_encounter",
               "to_status": "available"
             },
             "next_step_id": "reveal_crypt_figure"
@@ -3600,10 +3600,10 @@
       "player_safe_summary": "墓地中隐藏的地穴入口已经成为调查重点"
     },
     {
-      "id": "douglas_case",
+      "id": "cemetery_encounter",
       "initial_status": "locked",
       "visibility": "player",
-      "player_safe_summary": "道格拉斯与墓地异象之间的联系正在逐步显现",
+      "player_safe_summary": "墓地人影与失踪案之间的联系正在逐步显现",
       "dependency_thread_ids": [
         "crypt_entry_investigation"
       ]

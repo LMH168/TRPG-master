@@ -56,15 +56,15 @@ FIXTURE = (
 )
 
 
-def _make_douglas_available(state: GameState) -> GameState:
-    """把合成测试推进到首次见到道格拉斯之前的权威剧情边界。"""
+def _make_cemetery_encounter_available(state: GameState) -> GameState:
+    """把合成测试推进到墓地人影身份尚未公开的权威剧情边界。"""
 
-    current = state.plot_threads["douglas_case"]
+    current = state.plot_threads["cemetery_encounter"]
     return state.model_copy(
         update={
             "plot_threads": {
                 **state.plot_threads,
-                "douglas_case": PlotThreadState(
+                "cemetery_encounter": PlotThreadState(
                     thread_id=current.thread_id,
                     status="available",
                     version=current.version + 1,
@@ -96,7 +96,7 @@ async def test_passive_check_commits_once_and_recovery_does_not_reroll() -> None
             )
         },
     )
-    state = _make_douglas_available(state)
+    state = _make_cemetery_encounter_available(state)
     store.register_room(module_content=module, initial_state=state)
     engine = AdjudicationEngineService(store)
 
@@ -447,7 +447,7 @@ async def test_transient_agenda_failure_uses_its_own_retry_budget() -> None:
             )
         },
     )
-    state = _make_douglas_available(state)
+    state = _make_cemetery_encounter_available(state)
     store.register_room(module_content=module, initial_state=state)
     engine = AdjudicationEngineService(store)
     with engine_turn_context("turn-1"):
@@ -510,7 +510,7 @@ async def test_effect_event_before_blocking_step_is_queued() -> None:
                     "op": "predicate",
                     "predicate": "plot_thread_status_is",
                     "args": {
-                        "thread_id": "douglas_case",
+                        "thread_id": "cemetery_encounter",
                         "status": "in_progress",
                     },
                 },
@@ -550,7 +550,7 @@ async def test_effect_event_before_blocking_step_is_queued() -> None:
             )
         },
     )
-    state = _make_douglas_available(state)
+    state = _make_cemetery_encounter_available(state)
     store.register_room(module_content=module, initial_state=state)
     engine = AdjudicationEngineService(store)
     with engine_turn_context("turn-1"):

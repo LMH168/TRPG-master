@@ -2048,17 +2048,24 @@ class ActionPlanTurnApplication:
     ) -> NarrationOutput:
         # PlotThread 不进入公开 PlayerView；每次叙事都从最终 Engine snapshot
         # 重新投影，避免历史 Context 覆盖刚由 Agenda 提交的剧情阶段。
-        async with self._store.transaction(context.player_input.room_id) as transaction:
-            runtime = await transaction.load_runtime()
-        if runtime.is_v3:
-            context = context.model_copy(
-                update={
-                    "plot_threads": project_narration_plot_threads(
-                        runtime.v3,
-                        runtime.game_state,
-                    )
-                }
+        try:
+            async with self._store.transaction(context.player_input.room_id) as transaction:
+                runtime = await transaction.load_runtime()
+            plot_threads = (
+                project_narration_plot_threads(runtime.v3, runtime.game_state)
+                if runtime.is_v3
+                else ()
             )
+        except Exception as exc:
+            # Engine 已提交后，这次只读投影失败不能把回合重新打成内部错误。
+            # 清空可能过时的线程摘要，Narrator 仍可依赖最终 PlayerView 与当轮 evidence。
+            logger.exception(
+                "narration_plot_thread_projection_failed",
+                action=context.player_input.client_action_id,
+                error_type=type(exc).__name__,
+            )
+            plot_threads = ()
+        context = context.model_copy(update={"plot_threads": plot_threads})
         # goal_outcome 未完成不等于“没有可叙述结果”。Narrator 仍可表达本轮
         # committed_results，但后续持久声明校验会阻止它把检定成功外推为目标完成。
         for attempt in range(2):

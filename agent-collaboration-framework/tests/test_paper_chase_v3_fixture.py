@@ -128,6 +128,18 @@ class PaperChaseV3FixtureTests(unittest.TestCase):
             )
             self.assertNotEqual(item.player_content, "", f"{item.id} 缺少玩家正文")
 
+    def test_plot_thread_summary_does_not_reveal_unconfirmed_identity(self) -> None:
+        """玩家安全剧情摘要不能抢在权威线索之前公开人影身份。"""
+
+        thread = next(
+            item
+            for item in self.content.plot_threads
+            if item.id == "cemetery_encounter"
+        )
+        player_safe_payload = f"{thread.id} {thread.player_safe_summary}"
+        self.assertNotIn("douglas", player_safe_payload.lower())
+        self.assertNotIn("道格拉斯", player_safe_payload)
+
     def test_narrative_beats_did_not_become_places(self) -> None:
         # v2 modelled "与道格拉斯交谈" and "食尸鬼群现身" as Scenes. They are beats,
         # not locations, and migrating them as places would put the player

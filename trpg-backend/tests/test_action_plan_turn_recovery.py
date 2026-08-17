@@ -182,6 +182,21 @@ class _NarrationContextStub:
         return copied
 
 
+class _FailingNarrationStore:
+    """模拟 Engine 已提交后，Narrator 的只读 snapshot 瞬态不可用。"""
+
+    class _Transaction:
+        async def __aenter__(self):
+            raise OSError("snapshot unavailable")
+
+        async def __aexit__(self, exc_type, exc, traceback) -> None:
+            del exc_type, exc, traceback
+
+    def transaction(self, room_id: str) -> _Transaction:
+        assert room_id == "room-281"
+        return self._Transaction()
+
+
 def _application(run: SimpleNamespace, engine: _Engine, orchestrator: _Orchestrator):
     application = object.__new__(ActionPlanTurnApplication)
     application._adjudication_engine = engine
@@ -797,6 +812,40 @@ async def test_narration_reloads_final_plot_thread_state_before_model_call() -> 
     assert len(final_context.plot_threads) == 1
     assert final_context.plot_threads[0].status == "in_progress"
     assert "过时摘要" not in final_context.plot_threads[0].player_safe_summary
+
+
+@pytest.mark.asyncio
+async def test_plot_thread_read_failure_does_not_fail_committed_narration() -> None:
+    """提交后的附加只读失败必须降级，不能重新制造 TURN_INTERNAL_ERROR。"""
+
+    application = object.__new__(ActionPlanTurnApplication)
+    application._store = _FailingNarrationStore()
+    expected = NarrationOutput(text="已提交的结果仍然有效。")
+    narrate = AsyncMock(return_value=expected)
+    application._narrator = SimpleNamespace(narrate=narrate)
+    context = _NarrationContextStub(
+        NarrationEvidence(
+            ref="evt-committed",
+            kind="rule_presentation",
+            subject_id="committed-result",
+            subject_name="已提交的结果",
+            description="已提交的结果仍然有效。",
+        ),
+        "resolved",
+    )
+    context.plot_threads = (
+        NarrationPlotThread(
+            thread_id="stale-thread",
+            status="resolved",
+            player_safe_summary="不能继续使用的旧摘要。",
+        ),
+    )
+
+    result = await application._narrate(cast(NarrationContext, context))
+
+    assert result == expected
+    assert narrate.await_args is not None
+    assert narrate.await_args.args[0].plot_threads == ()
 
 
 @pytest.mark.asyncio

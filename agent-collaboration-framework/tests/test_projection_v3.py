@@ -91,7 +91,7 @@ def plot_states(
 
     statuses = {
         "crypt_entry_investigation": crypt,
-        "douglas_case": douglas,
+        "cemetery_encounter": douglas,
     }
     return {
         thread.id: PlotThreadState(
@@ -1619,7 +1619,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(store.inspect_state(ROOM).scene_id, "crypt")
         self.assertEqual(
-            store.inspect_state(ROOM).plot_threads["douglas_case"].status,
+            store.inspect_state(ROOM).plot_threads["cemetery_encounter"].status,
             "in_progress",
         )
 
