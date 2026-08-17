@@ -90,7 +90,7 @@ _REPAIR_HINTS: dict[str, str] = {
     "RULE_OUT_OF_SCOPE": (
         "所选 rule_decision 与本次 method.family 或 target 不匹配。"
         "keeper_capabilities.rule_candidates 里一条候选的 action_families、"
-        "target_kinds、target_ids 为空即表示该维度不设限，非空才要求本次裁决落在"
+        "target_interactions、target_kinds、target_ids 为空即表示该维度不设限，非空才要求本次裁决落在"
         "其中——逐个字段判断，非空的都命中才能保留 rule_decision；一条都对不上就"
         "去掉 rule_decision，按普通裁决重新给出这一步。"
     ),

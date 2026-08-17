@@ -70,6 +70,7 @@ from collaboration_framework.contracts.proposal import (
 from collaboration_framework.contracts.validation import Repairability, ValidationFault
 
 from .models import EngineRuntimeSnapshot, ValidatedActionCommand
+from .navigation import travel_access_point_id
 from .persistent_results import validate_persistent_effects
 from .rules_v3 import (
     agent_match_scope_admits,
@@ -101,6 +102,15 @@ class ProposalShadowComparison:
     matches: bool
     proposal_fingerprint: str
     differing_fields: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _RuleMatchContext:
+    """Compiler 从 Proposal 与可信导航图归一化出的规则匹配上下文。"""
+
+    action_family: str
+    target: ActionTarget
+    target_interaction: str | None
 
 
 class ProposalShadowCompiler:
@@ -192,9 +202,23 @@ class ProposalCompiler:
                 request, proposal.completion.requirements, runtime_refs
             )
         focus = self._resolve_focus(runtime, proposal, runtime_refs)
-        rule_decision, check = self._bind_rule_and_check(runtime, request, focus)
-        if rule_decision is not None and (
-            proposal.success_effect_proposals or proposal.failure_effect_proposals
+        (
+            rule_decision,
+            check,
+            adjudication_focus,
+            method_family,
+            auto_bound,
+        ) = self._bind_rule_and_check(
+            runtime,
+            request,
+            focus,
+            success_effects=success,
+            completion_requirements=completion_requirements,
+        )
+        if (
+            rule_decision is not None
+            and not auto_bound
+            and (proposal.success_effect_proposals or proposal.failure_effect_proposals)
         ):
             self._reject(
                 "RULE_EFFECT_OVERRIDE",
@@ -229,9 +253,9 @@ class ProposalCompiler:
             source_revision=request.source_revision,
             actor_id=request.actor_id,
             summary=proposal.semantic_goal,
-            target=focus,
+            target=adjudication_focus,
             method=ActionMethod(
-                family=proposal.method_family,
+                family=method_family,
                 description=proposal.method_description,
             ),
             persistence_intent=self._derive_persistence_intent(
@@ -239,8 +263,10 @@ class ProposalCompiler:
             ),
             check=check,
             rule_decision=rule_decision,
-            success_effects=success,
-            failure_effects=failure,
+            # 自动绑定的 Rule 完整拥有结果；Host 为普通动作提出的 Effect 只能
+            # 作为完成条件输入，不能与规则分支合并或覆盖。
+            success_effects=() if rule_decision is not None else success,
+            failure_effects=() if rule_decision is not None else failure,
         )
         if proposal.schema_version == 2:
             self._validate_requirement_permissions(runtime, request, success)
@@ -289,6 +315,9 @@ class ProposalCompiler:
         runtime: EngineRuntimeSnapshot,
         request: SubmitProposalRequest,
         focus: ActionTarget,
+        *,
+        success_effects: tuple[ActionEffect, ...],
+        completion_requirements: tuple[ActionEffect, ...],
     ):
         """绑定唯一必选 Rule，并从固定规则图编译权威检定。"""
 
@@ -296,32 +325,88 @@ class ProposalCompiler:
         requested_goal = request.requested_goal or proposal.semantic_goal
         self._validate_trusted_step_completion(request)
         if not runtime.is_v3:
-            return proposal.rule_ref, proposal.check_proposal
-        scoped_required = tuple(
+            return (
+                proposal.rule_ref,
+                proposal.check_proposal,
+                focus,
+                proposal.method_family,
+                proposal.rule_ref is None,
+            )
+        contexts = self._rule_match_contexts(
+            runtime,
+            request,
+            focus,
+            effects=(*success_effects, *completion_requirements),
+        )
+
+        def admits(
+            rule: RuleSpecV3,
+            *,
+            stateful: bool,
+            allow_interaction_fallback: bool,
+        ) -> _RuleMatchContext | None:
+            """先匹配规范 family，再按显式 interaction 兼容开放 family。"""
+
+            for context in contexts:
+                kwargs = {
+                    "location_id": runtime.game_state.scene_id,
+                    "state": runtime.game_state if stateful else None,
+                    "actor_id": request.actor_id,
+                    "target_interaction": context.target_interaction,
+                    "target_kind": context.target.kind,
+                    "target_id": context.target.id,
+                }
+                if agent_match_scope_admits(
+                    rule,
+                    action_family=context.action_family,
+                    **kwargs,
+                ):
+                    return context
+                trigger = rule.trigger
+                if (
+                    allow_interaction_fallback
+                    and isinstance(trigger, AgentMatchTriggerSpec)
+                    and trigger.scope.target_interactions
+                    and agent_match_scope_admits(rule, action_family=None, **kwargs)
+                ):
+                    return context
+            return None
+
+        strict_scoped = tuple(
             rule
             for rule in runtime.v3.rules
             if isinstance(rule.trigger, AgentMatchTriggerSpec)
             and rule.trigger.required
-            and agent_match_scope_admits(
+            and admits(
                 rule,
-                location_id=runtime.game_state.scene_id,
-                action_family=proposal.method_family,
-                target_kind=focus.kind,
-                target_id=focus.id,
+                stateful=False,
+                allow_interaction_fallback=False,
             )
+            is not None
+        )
+        # 只在没有任何规范 family 候选时启用 interaction fallback。这样一个
+        # 入口上的不同规则不会互相截获，而开放 family 仍可由结构化 scope 收敛。
+        scoped_required = strict_scoped or tuple(
+            rule
+            for rule in runtime.v3.rules
+            if isinstance(rule.trigger, AgentMatchTriggerSpec)
+            and rule.trigger.required
+            and admits(
+                rule,
+                stateful=False,
+                allow_interaction_fallback=True,
+            )
+            is not None
         )
         matching = tuple(
             rule
             for rule in scoped_required
-            if agent_match_scope_admits(
+            if admits(
                 rule,
-                location_id=runtime.game_state.scene_id,
-                state=runtime.game_state,
-                actor_id=request.actor_id,
-                action_family=proposal.method_family,
-                target_kind=focus.kind,
-                target_id=focus.id,
+                stateful=True,
+                allow_interaction_fallback=not strict_scoped,
             )
+            is not None
         )
         decision = proposal.rule_ref
         auto_bound = decision is None
@@ -368,7 +453,13 @@ class ProposalCompiler:
                     fault="player",
                 )
         if decision is None:
-            return None, proposal.check_proposal
+            return (
+                None,
+                proposal.check_proposal,
+                focus,
+                proposal.method_family,
+                True,
+            )
         rule, option_id = resolve_rule_option(
             runtime.v3,
             rule_id=decision.rule_id,
@@ -377,15 +468,12 @@ class ProposalCompiler:
         trigger = rule.trigger
         if not isinstance(trigger, AgentMatchTriggerSpec):
             self._reject("RULE_OUT_OF_SCOPE", "当前行动不能使用该规则选项")
-        if not agent_match_scope_admits(
+        matched_context = admits(
             rule,
-            location_id=runtime.game_state.scene_id,
-            state=runtime.game_state,
-            actor_id=request.actor_id,
-            action_family=proposal.method_family,
-            target_kind=focus.kind,
-            target_id=focus.id,
-        ):
+            stateful=True,
+            allow_interaction_fallback=not strict_scoped,
+        )
+        if matched_context is None:
             self._reject(
                 "RULE_OUT_OF_SCOPE",
                 "当前行动不能使用该规则选项",
@@ -438,7 +526,72 @@ class ProposalCompiler:
                 repairability="auto_repairable",
                 fault="agent",
             )
-        return decision, canonical_check
+        canonical_family = matched_context.action_family
+        if trigger.scope.action_families:
+            canonical_family = (
+                matched_context.action_family
+                if matched_context.action_family in trigger.scope.action_families
+                else trigger.scope.action_families[0]
+            )
+        return (
+            decision,
+            canonical_check,
+            matched_context.target,
+            canonical_family,
+            auto_bound,
+        )
+
+    @staticmethod
+    def _rule_match_contexts(
+        runtime: EngineRuntimeSnapshot,
+        request: SubmitProposalRequest,
+        focus: ActionTarget,
+        *,
+        effects: tuple[ActionEffect, ...],
+    ) -> tuple[_RuleMatchContext, ...]:
+        """从目标与导航 Effect 派生规则上下文，不解释玩家动作词汇。"""
+
+        proposal = request.proposal
+        contexts = [
+            _RuleMatchContext(
+                action_family=proposal.method_family,
+                target=focus,
+                target_interaction=proposal.target_interaction,
+            )
+        ]
+        if runtime.is_v3:
+            for effect in effects:
+                if not isinstance(effect, EnterLocationEffect):
+                    continue
+                access_point_id = travel_access_point_id(
+                    runtime.v3,
+                    runtime.game_state,
+                    actor_id=request.actor_id,
+                    target_id=effect.location_id,
+                )
+                if access_point_id is None:
+                    continue
+                contexts.append(
+                    _RuleMatchContext(
+                        action_family="enter",
+                        target=ActionTarget(kind="entity", id=access_point_id),
+                        target_interaction="physical",
+                    )
+                )
+        unique: list[_RuleMatchContext] = []
+        identities: set[tuple[str, str, str, str | None]] = set()
+        for context in contexts:
+            identity = (
+                context.action_family,
+                context.target.kind,
+                context.target.id,
+                context.target_interaction,
+            )
+            if identity in identities:
+                continue
+            identities.add(identity)
+            unique.append(context)
+        return tuple(unique)
 
     def _validate_trusted_step_completion(
         self,

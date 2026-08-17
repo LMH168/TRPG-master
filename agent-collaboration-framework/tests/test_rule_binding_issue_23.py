@@ -108,6 +108,7 @@ def _synthetic_runtime() -> EngineRuntimeSnapshot:
             "scope": source_rule.trigger.scope.model_copy(
                 update={
                     "action_families": ("inspect_device",),
+                    "target_interactions": ("observe",),
                     "target_ids": ("sealed_hatch",),
                 },
                 deep=True,
@@ -272,6 +273,112 @@ def test_unique_required_rule_is_bound_and_owns_active_check() -> None:
     assert isinstance(command.adjudication.check, RequiredAdjudicationCheck)
     assert command.adjudication.check.candidates[0].candidate_id == "spot-hidden"
     assert command.adjudication.check.candidates[0].skill_id == "spot-hidden"
+
+
+def test_open_method_family_uses_structured_interaction_scope() -> None:
+    """自然语言 family 不在模组词表时，仍按结构化交互绑定唯一规则。"""
+
+    command = ProposalCompiler().compile(
+        _synthetic_runtime(),
+        _request(
+            goal="用手边的方法处理这个装置",
+            focus_id="sealed_hatch",
+            family="模型自由生成的动作族",
+            interaction="observe",
+            check=_skill_check("mechanical-repair"),
+        ),
+    )
+
+    assert command.adjudication.rule_decision == RuleDecisionRef(
+        rule_id="inspect_sealed_hatch",
+        option_id="diagnose",
+    )
+    assert command.adjudication.method.family == "inspect_device"
+    assert command.adjudication.target.id == "sealed_hatch"
+
+
+def test_authored_physical_rule_cannot_be_bypassed_by_free_method_family() -> None:
+    """Host 使用任意中文 family 时，固定模组的物理规则仍拥有检定与结果。"""
+
+    command = ProposalCompiler().compile(
+        _runtime(slab_moved=False),
+        _request(
+            goal="用随手找到的办法处理入口",
+            focus_id="crypt_entrance",
+            family="任意未登记表达",
+            interaction="physical",
+        ),
+    )
+
+    assert command.adjudication.rule_decision == RuleDecisionRef(
+        rule_id="move_crypt_slab",
+        option_id="STR",
+    )
+    assert command.adjudication.method.family == "move"
+    assert isinstance(command.adjudication.check, RequiredAdjudicationCheck)
+    assert command.adjudication.check.candidates[0].skill_id == "STR"
+
+
+def test_authored_observation_rule_accepts_open_method_family() -> None:
+    """观察类规则按结构化 interaction 绑定，不依赖模型复述英文动作族。"""
+
+    command = ProposalCompiler().compile(
+        _runtime(),
+        _request(
+            goal="我仔细查看附近留下的痕迹，寻找它们通向哪里",
+            focus_id="favorite_grave",
+            family="模型生成的任意观察方式",
+            interaction="observe",
+            check=_skill_check("track"),
+        ),
+    )
+
+    assert command.adjudication.rule_decision == RuleDecisionRef(
+        rule_id="inspect_grave_area",
+        option_id="track",
+    )
+    assert command.adjudication.method.family == "track"
+    assert command.adjudication.target.id == "favorite_grave"
+    assert isinstance(command.adjudication.check, RequiredAdjudicationCheck)
+    assert command.adjudication.check.candidates[0].skill_id == "track"
+
+
+def test_travel_effect_binds_rule_through_authored_access_point() -> None:
+    """旅行目标由导航边推导入口 Rule，Host 不需要知道隐藏入口规则 ID。"""
+
+    request = _request(
+        goal="进入这个已打开的下层地点",
+        focus_id="crypt",
+        focus_kind="location",
+        family="travel",
+        interaction="physical",
+    )
+    enter = {
+        "type": "enter_location",
+        "location_ref": {"kind": "location", "id": "crypt"},
+    }
+    request = request.model_copy(
+        update={
+            "proposal": SingleActionProposal.model_validate(
+                {
+                    **request.proposal.to_json_dict(),
+                    "success_effect_proposals": [enter],
+                    "completion": {"kind": "effects", "requirements": [enter]},
+                }
+            )
+        }
+    )
+
+    command = ProposalCompiler().compile(_runtime(), request)
+
+    assert command.adjudication.rule_decision == RuleDecisionRef(
+        rule_id="crypt_stench_on_entry",
+        option_id="just_enter",
+    )
+    assert command.adjudication.target.kind == "entity"
+    assert command.adjudication.target.id == "crypt_entrance"
+    assert command.adjudication.method.family == "enter"
+    assert command.adjudication.success_effects == ()
 
 
 def test_explicit_rule_ref_cannot_bypass_required_rule_ambiguity() -> None:
@@ -666,6 +773,48 @@ async def test_hold_breath_entry_commits_once_then_runs_first_sight_agenda() -> 
     events = store.inspect_domain_events("room-rule-binding")
     assert sum(event.type == "travel.resolved" for event in events) == 1
     assert not any(event.type == "check.resolved" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_default_entry_records_visit_then_wakes_at_stable_boundary() -> None:
+    """默认后果必须证明曾进入地穴，并按原文在墓地醒来后恢复行动。"""
+
+    runtime = _runtime()
+    store = InMemoryEngineStore()
+    store.register_room(
+        module_content=runtime.module_content,
+        initial_state=runtime.game_state,
+    )
+    engine = AdjudicationEngineService(store)
+    with engine_turn_context("turn-default-entry"):
+        await engine.submit_proposal(
+            _request(
+                goal="进入地穴",
+                focus_id="crypt_entrance",
+                family="enter",
+                interaction="physical",
+            )
+        )
+
+    executions = await RuleAgendaExecutor(store, engine=engine).drain(
+        room_id="room-rule-binding",
+        turn_id="turn-default-entry",
+    )
+    state = store.inspect_state("room-rule-binding")
+
+    assert executions
+    assert state.scene_id == "cemetery"
+    assert state.entities["crypt_entrance"]["entered"] is True
+    assert state.entities["cemetery_figure"]["willing_to_talk"] is True
+    assert all(agenda.status == "stable" for agenda in state.rule_agendas.values())
+    presentations = {
+        event.payload.get("player_safe_summary")
+        for event in store.inspect_domain_events("room-rule-binding")
+        if event.type == "rule.presentation"
+    }
+    assert presentations == {
+        "你越过入口，并看见了地穴中的人影；现在对方就在眼前，愿意与你交谈。"
+    }
 
 
 @pytest.mark.asyncio

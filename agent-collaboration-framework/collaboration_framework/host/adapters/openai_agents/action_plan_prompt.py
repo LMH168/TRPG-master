@@ -101,8 +101,9 @@ keeper_capabilities.world_id，或 kind=location + player_view.scene.id；world 
 world_id 这一个值，不要自己拼一个像 "world" 的 id。
 
 rule_decision 是可选的。keeper_capabilities.rule_candidates 是按玩家当前所在地发布的，
-一条候选还可能声明 action_families、target_kinds、target_ids 作为额外约束：**这三个字段
-为空表示该维度不设限，非空才要求本次裁决落在其中**。逐个字段判断，非空的都命中才能选它。
+一条候选还可能声明 action_families、target_interactions、target_kinds、target_ids 作为额外约束：
+**这些字段为空表示该维度不设限，非空才要求本次裁决落在其中**。逐个字段判断，非空的都命中
+才能选它。target_interactions 是结构化交互类型，不要用自然语言 method.family 替代它。
 玩家的话对不上任何一条候选（例如只是打个招呼）时，不要硬套一条规则，直接不带
 rule_decision 按普通裁决给出这一步。
 

@@ -1,7 +1,7 @@
 {
   "content_schema_version": 3,
   "module_id": "paper-chase-zh-coc7",
-  "version": "3.0.10",
+  "version": "3.0.11",
   "world_ref": "coc-7e",
   "background": "时代与地点为美国禁酒令时期的密歇根州阿诺兹堡。调查员受托马斯·金博尔委托，从五本失窃的旧书和叔叔道格拉斯一年前的失踪案入手，走访旧宅、图书馆与公共墓地。叙事应保持安静、克制而带哥特气息，以夜色、旧书、墓园和孤独感作为反复意象；面对异常时不要急于渲染纯粹敌意，应为同情、选择与淡淡哀伤保留空间。任何尚未由线索确认的真相都不得提前告知玩家。",
   "information": [
@@ -2896,6 +2896,9 @@
           "action_families": [
             "track"
           ],
+          "target_interactions": [
+            "observe"
+          ],
           "location_ids": [
             "cemetery"
           ],
@@ -2998,6 +3001,9 @@
         "scope": {
           "action_families": [
             "move"
+          ],
+          "target_interactions": [
+            "physical"
           ],
           "location_ids": [
             "cemetery"
@@ -4182,6 +4188,17 @@
               "type": "enter_location",
               "location_id": "crypt"
             },
+            "next_step_id": "mark_default_entry"
+          },
+          {
+            "id": "mark_default_entry",
+            "kind": "effect",
+            "effect": {
+              "type": "change_entity_state",
+              "entity_id": "crypt_entrance",
+              "key": "entered",
+              "value": true
+            },
             "next_step_id": "faint"
           },
           {
@@ -4298,7 +4315,7 @@
       },
       "presentation": {
         "id": "crypt_entry_result",
-        "player_safe_summary": "地穴入口行动已经推进到稳定状态；以权威地点、时间、角色状态和已出现人物为准描述结果，并明确现在可以与眼前人物交谈。"
+        "player_safe_summary": "你越过入口，并看见了地穴中的人影；现在对方就在眼前，愿意与你交谈。"
       },
       "source_refs": [
         {

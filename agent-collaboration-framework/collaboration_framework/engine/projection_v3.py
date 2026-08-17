@@ -727,6 +727,7 @@ def _rule_candidates(
                 question_kind=trigger.question.kind,
                 semantic_hints=trigger.question.semantic_hints,
                 action_families=scope.action_families,
+                target_interactions=scope.target_interactions,
                 target_kinds=scope.target_kinds,
                 target_ids=scope.target_ids,
                 options=tuple(

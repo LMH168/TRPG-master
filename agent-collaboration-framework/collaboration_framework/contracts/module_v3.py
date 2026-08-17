@@ -322,6 +322,11 @@ class CandidateScopeSpec(ContractModel):
     """
 
     action_families: tuple[str, ...] = ()
+    # interaction 描述目标受到的结构化作用；与 Host 可自由表达的 method family
+    # 分离后，模组规则无需枚举“推、撬、搬”等自然语言动作词。
+    target_interactions: tuple[
+        Literal["observe", "social", "physical", "other"], ...
+    ] = ()
     location_ids: tuple[Identifier, ...] = ()
     target_kinds: tuple[TargetKind, ...] = ()
     target_ids: tuple[Identifier, ...] = ()

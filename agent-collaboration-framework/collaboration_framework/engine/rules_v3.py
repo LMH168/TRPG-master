@@ -494,6 +494,7 @@ def agent_match_scope_admits(
     state: GameState | None = None,
     actor_id: str | None = None,
     action_family: str | None = None,
+    target_interaction: str | None = None,
     target_kind: str | None = None,
     target_id: str | None = None,
 ) -> bool:
@@ -524,6 +525,12 @@ def agent_match_scope_admits(
         action_family is not None
         and scope.action_families
         and action_family not in scope.action_families
+    ):
+        return False
+    if (
+        target_interaction is not None
+        and scope.target_interactions
+        and target_interaction not in scope.target_interactions
     ):
         return False
     if (

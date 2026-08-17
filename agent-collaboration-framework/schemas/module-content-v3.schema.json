@@ -479,6 +479,20 @@
           "title": "Action Families",
           "type": "array"
         },
+        "target_interactions": {
+          "default": [],
+          "items": {
+            "enum": [
+              "observe",
+              "social",
+              "physical",
+              "other"
+            ],
+            "type": "string"
+          },
+          "title": "Target Interactions",
+          "type": "array"
+        },
         "location_ids": {
           "default": [],
           "items": {
