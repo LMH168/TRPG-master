@@ -1227,10 +1227,19 @@ def test_transient_classification_covers_transport_and_server_errors() -> None:
 def _retry_policy_of(owner: object) -> ModelClientRetryPolicy:
     """穿过 composer / planner，取它实际持有的 client 的重试策略。
 
-    这些持有者的声明类型都是 Protocol，直接点私有属性过不了 ty。
+    这些持有者的声明类型都是 Protocol，直接点私有属性过不了 ty。Planner 还可由
+    确定性意图解析器装饰，因此沿 `_fallback` 逐层找到真正发请求的模型适配器。
     """
 
-    return getattr(getattr(owner, "_client"), "_retry_policy")  # noqa: B009
+    current: object | None = owner
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        client = getattr(current, "_client", None)
+        if client is not None:
+            return getattr(client, "_retry_policy")  # noqa: B009
+        current = getattr(current, "_fallback", None)
+    raise AssertionError("未在模型适配器装饰链中找到 StructuredJsonClient")
 
 
 def test_configured_retry_policy_reaches_every_structured_client() -> None:
