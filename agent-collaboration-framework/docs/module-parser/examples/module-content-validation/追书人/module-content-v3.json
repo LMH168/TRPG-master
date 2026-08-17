@@ -125,6 +125,20 @@
       }
     },
     {
+      "id": "douglas_corpse_identity",
+      "kind": "clue",
+      "title": "尸体的真实身份",
+      "keeper_content": "死去的人影是一头食尸鬼，面部与失踪的道格拉斯·金博尔有惊人的相似之处。",
+      "player_content": "你确认眼前死去的是一头食尸鬼，而它的面容与失踪的道格拉斯·金博尔惊人地相似。",
+      "criticality": "essential",
+      "recovery": {
+        "policy": "strict",
+        "allowed_source_types": [
+          "explicit_entity"
+        ]
+      }
+    },
+    {
       "id": "douglas_true_nature",
       "kind": "clue",
       "title": "人影的真实身份",
@@ -183,9 +197,10 @@
       "id": "learn_douglas_fate",
       "target_information_ids": [
         "douglas_true_nature",
-        "douglas_confession"
+        "douglas_confession",
+        "douglas_corpse_identity"
       ],
-      "completion": "all",
+      "completion": "any",
       "required_for_core_resolution": true
     }
   ],
@@ -227,6 +242,7 @@
         "visit_observed": false,
         "willing_to_talk": false,
         "truth_told": false,
+        "ghoul_san_resolved": false,
         "corpse_identified": false,
         "left_forever": false
       },
@@ -260,6 +276,15 @@
                 "entity_id": "cemetery_figure",
                 "key": "true_form_seen",
                 "value": true
+              }
+            },
+            {
+              "op": "predicate",
+              "predicate": "entity_state_is",
+              "args": {
+                "entity_id": "cemetery_figure",
+                "key": "ghoul_san_resolved",
+                "value": false
               }
             },
             {
@@ -3571,19 +3596,333 @@
               }
             },
             "result_routes": {
-              "critical_success": "finish",
-              "extreme_success": "finish",
-              "hard_success": "finish",
-              "regular_success": "finish",
-              "failure": "finish",
-              "fumble": "finish"
+              "critical_success": "mark_san_resolved",
+              "extreme_success": "mark_san_resolved",
+              "hard_success": "mark_san_resolved",
+              "regular_success": "mark_san_resolved",
+              "failure": "mark_san_resolved",
+              "fumble": "mark_san_resolved"
             }
+          },
+          {
+            "id": "mark_san_resolved",
+            "kind": "effect",
+            "effect": {
+              "type": "change_entity_state",
+              "entity_id": "cemetery_figure",
+              "key": "ghoul_san_resolved",
+              "value": true
+            },
+            "next_step_id": "finish"
           },
           {
             "id": "finish",
             "kind": "finish"
           }
         ]
+      }
+    },
+    {
+      "id": "reveal_douglas_form_after_death",
+      "priority": 210,
+      "trigger": {
+        "kind": "event",
+        "event_type": "entity.state_changed",
+        "when": {
+          "op": "all",
+          "items": [
+            {
+              "op": "any",
+              "items": [
+                {
+                  "op": "predicate",
+                  "predicate": "entity_state_is",
+                  "args": {
+                    "entity_id": "cemetery_figure",
+                    "key": "consciousness",
+                    "value": "dead"
+                  }
+                },
+                {
+                  "op": "predicate",
+                  "predicate": "entity_state_is",
+                  "args": {
+                    "entity_id": "cemetery_figure",
+                    "key": "dead",
+                    "value": true
+                  }
+                }
+              ]
+            },
+            {
+              "op": "predicate",
+              "predicate": "entity_state_is",
+              "args": {
+                "entity_id": "cemetery_figure",
+                "key": "true_form_seen",
+                "value": false
+              }
+            }
+          ]
+        },
+        "entry_branch_id": "default"
+      },
+      "execution": {
+        "branches": [
+          {
+            "id": "default",
+            "entry_step_id": "reveal_form"
+          }
+        ],
+        "steps": [
+          {
+            "id": "reveal_form",
+            "kind": "effect",
+            "effect": {
+              "type": "change_entity_state",
+              "entity_id": "cemetery_figure",
+              "key": "true_form_seen",
+              "value": true
+            },
+            "next_step_id": "finish"
+          },
+          {
+            "id": "finish",
+            "kind": "finish"
+          }
+        ]
+      }
+    },
+    {
+      "id": "identify_douglas_after_death",
+      "priority": 190,
+      "trigger": {
+        "kind": "event",
+        "event_type": "entity.state_changed",
+        "when": {
+          "op": "all",
+          "items": [
+            {
+              "op": "any",
+              "items": [
+                {
+                  "op": "predicate",
+                  "predicate": "entity_state_is",
+                  "args": {
+                    "entity_id": "cemetery_figure",
+                    "key": "consciousness",
+                    "value": "dead"
+                  }
+                },
+                {
+                  "op": "predicate",
+                  "predicate": "entity_state_is",
+                  "args": {
+                    "entity_id": "cemetery_figure",
+                    "key": "dead",
+                    "value": true
+                  }
+                }
+              ]
+            },
+            {
+              "op": "predicate",
+              "predicate": "entity_state_is",
+              "args": {
+                "entity_id": "cemetery_figure",
+                "key": "ghoul_san_resolved",
+                "value": true
+              }
+            },
+            {
+              "op": "predicate",
+              "predicate": "entity_state_is",
+              "args": {
+                "entity_id": "cemetery_figure",
+                "key": "corpse_identified",
+                "value": false
+              }
+            }
+          ]
+        },
+        "entry_branch_id": "default"
+      },
+      "execution": {
+        "branches": [
+          {
+            "id": "default",
+            "entry_step_id": "mark_identified"
+          }
+        ],
+        "steps": [
+          {
+            "id": "mark_identified",
+            "kind": "effect",
+            "effect": {
+              "type": "change_entity_state",
+              "entity_id": "cemetery_figure",
+              "key": "corpse_identified",
+              "value": true
+            },
+            "next_step_id": "reveal_identity"
+          },
+          {
+            "id": "reveal_identity",
+            "kind": "effect",
+            "effect": {
+              "type": "reveal_information",
+              "information_id": "douglas_corpse_identity",
+              "scope": "party"
+            },
+            "next_step_id": "identity_san"
+          },
+          {
+            "id": "identity_san",
+            "kind": "check",
+            "check": {
+              "profile_id": "coc7.sanity",
+              "actor_binding": "actor",
+              "initiation_kind": "passive_rule",
+              "parameters": {
+                "success_loss": "1",
+                "failure_loss": "1d8"
+              }
+            },
+            "result_routes": {
+              "critical_success": "present_choice",
+              "extreme_success": "present_choice",
+              "hard_success": "present_choice",
+              "regular_success": "present_choice",
+              "failure": "present_choice",
+              "fumble": "present_choice"
+            }
+          },
+          {
+            "id": "present_choice",
+            "kind": "presentation",
+            "presentation_id": "douglas_death_aftermath",
+            "next_step_id": "await_aftermath_choice"
+          },
+          {
+            "id": "await_aftermath_choice",
+            "kind": "await_player_input",
+            "schema_version": 2,
+            "boundary_id": "douglas_death_aftermath_choice",
+            "player_safe_prompt": "墓地四周传来密集而细碎的脚步声。你要立刻离开、留下观察，还是准备对抗？",
+            "options": [
+              {
+                "id": "leave",
+                "semantic_hints": [
+                  "离开",
+                  "逃走"
+                ],
+                "next_step_id": "body_removed"
+              },
+              {
+                "id": "stay",
+                "semantic_hints": [
+                  "留下观察",
+                  "看看会发生什么"
+                ],
+                "next_step_id": "position_crowd"
+              },
+              {
+                "id": "fight",
+                "semantic_hints": [
+                  "对抗",
+                  "开枪"
+                ],
+                "next_step_id": "investigator_disappeared"
+              }
+            ]
+          },
+          {
+            "id": "body_removed",
+            "kind": "effect",
+            "effect": {
+              "type": "change_entity_state",
+              "entity_id": "case_tracker",
+              "key": "douglas_body_removed",
+              "value": true
+            },
+            "next_step_id": "resolve_after_death"
+          },
+          {
+            "id": "resolve_after_death",
+            "kind": "effect",
+            "effect": {
+              "type": "transition_plot_thread",
+              "thread_id": "cemetery_encounter",
+              "to_status": "resolved"
+            },
+            "next_step_id": "enable_ending"
+          },
+          {
+            "id": "position_crowd",
+            "kind": "effect",
+            "effect": {
+              "type": "move_entity",
+              "entity_id": "ghoul_crowd",
+              "location_id": "cemetery"
+            },
+            "next_step_id": "reveal_crowd"
+          },
+          {
+            "id": "reveal_crowd",
+            "kind": "effect",
+            "effect": {
+              "type": "change_entity_state",
+              "entity_id": "ghoul_crowd",
+              "key": "revealed",
+              "value": true
+            },
+            "next_step_id": "present_aftermath"
+          },
+          {
+            "id": "investigator_disappeared",
+            "kind": "effect",
+            "effect": {
+              "type": "change_entity_state",
+              "entity_id": "case_tracker",
+              "key": "investigator_disappeared",
+              "value": true
+            },
+            "next_step_id": "fail_after_death"
+          },
+          {
+            "id": "fail_after_death",
+            "kind": "effect",
+            "effect": {
+              "type": "transition_plot_thread",
+              "thread_id": "cemetery_encounter",
+              "to_status": "failed"
+            },
+            "next_step_id": "enable_ending"
+          },
+          {
+            "id": "enable_ending",
+            "kind": "effect",
+            "effect": {
+              "type": "set_ending_availability",
+              "available": true
+            },
+            "next_step_id": "present_aftermath"
+          },
+          {
+            "id": "present_aftermath",
+            "kind": "presentation",
+            "presentation_id": "douglas_death_aftermath",
+            "next_step_id": "finish"
+          },
+          {
+            "id": "finish",
+            "kind": "finish"
+          }
+        ]
+      },
+      "presentation": {
+        "id": "douglas_death_aftermath",
+        "player_safe_summary": "道格拉斯死亡后的身份、理智后果和玩家选择均已形成权威结果；只描述已提交的尸体、食尸鬼群或离场状态。"
       }
     },
     {
@@ -3960,7 +4299,14 @@
       "presentation": {
         "id": "crypt_entry_result",
         "player_safe_summary": "地穴入口行动已经推进到稳定状态；以权威地点、时间、角色状态和已出现人物为准描述结果，并明确现在可以与眼前人物交谈。"
-      }
+      },
+      "source_refs": [
+        {
+          "document_id": "paper-chase-zh-pdf",
+          "page": 5,
+          "excerpt": "如果调查员没有特别说明他要屏住呼吸，他会因恶臭而昏厥。"
+        }
+      ]
     }
   ],
   "plot_threads": [
@@ -4034,7 +4380,7 @@
       "id": "ending_douglas_killed_and_recovered",
       "tone": "tragic",
       "required_fact_refs": [
-        "douglas_true_nature"
+        "douglas_corpse_identity"
       ],
       "forbidden_claims": [
         "uncommitted_transformation"

@@ -1718,7 +1718,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             )
             return {item.rule_id: item for item in view.rule_candidates}
 
-        # 带默认后果的隐藏例外不投影给 Agent，避免它主动提示玩家规避后果。
+        # 带默认后果的整条规则不投影给 Agent，避免它主动提示玩家规避后果。
         at_open_crypt = await candidates(
             game_state(
                 self.content,
@@ -1727,7 +1727,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
                 plot_threads=plot_states(self.content, crypt="in_progress"),
             )
         )
-        self.assertEqual(at_open_crypt["crypt_stench_on_entry"].options, ())
+        self.assertNotIn("crypt_stench_on_entry", at_open_crypt)
 
         # 搬石板要掷 STR，而它属于墓地——石板在墓地，不在地穴里。
         at_cemetery = await candidates(

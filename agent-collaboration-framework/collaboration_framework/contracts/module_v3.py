@@ -656,6 +656,14 @@ class RuleLimitsSpec(ContractModel):
     max_steps: int = Field(default=128, ge=1, le=1024)
 
 
+class SourceReferenceSpec(ContractModel):
+    """解析 Agent 保留的原文依据，用于发布审查而不进入玩家投影。"""
+
+    document_id: Identifier
+    page: int = Field(ge=1)
+    excerpt: str = Field(min_length=1, max_length=1000)
+
+
 class RuleSpecV3(ContractModel):
     """One authored rule.
 
@@ -670,6 +678,7 @@ class RuleSpecV3(ContractModel):
     execution: RuleExecutionSpec
     presentation: RulePresentationSpec | None = None
     limits: RuleLimitsSpec = Field(default_factory=RuleLimitsSpec)
+    source_refs: tuple[SourceReferenceSpec, ...] = ()
 
     @model_validator(mode="after")
     def validate_entry_branch(self) -> RuleSpecV3:
@@ -692,6 +701,14 @@ class RuleSpecV3(ContractModel):
                 raise ValueError(
                     f"agent_match rule {self.id} 的候选没有对应分支: {', '.join(missing)}"
                 )
+            if (
+                isinstance(
+                    self.trigger.selection_policy,
+                    DefaultWithOverridesSelectionPolicy,
+                )
+                and not self.source_refs
+            ):
+                raise ValueError("带默认隐藏后果的 Rule 必须保留原文 source_refs")
         return self
 
 
@@ -953,6 +970,7 @@ __all__ = [
     "RuleSpecV3",
     "RuleStepSpec",
     "RuleTriggerSpec",
+    "SourceReferenceSpec",
     "TargetKind",
     "TimePointSpec",
     "TransitionPlotThreadEffect",

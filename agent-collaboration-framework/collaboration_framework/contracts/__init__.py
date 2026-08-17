@@ -226,6 +226,7 @@ from .module_v3 import (
     RuleSpecV3,
     RuleStepSpec,
     RuleTriggerSpec,
+    SourceReferenceSpec,
     TimePointSpec,
     TransitionPlotThreadEffect,
     TravelCostSpec,

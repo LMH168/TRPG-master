@@ -152,6 +152,99 @@ async def test_passive_check_commits_once_and_recovery_does_not_reroll() -> None
     assert tuple(item.execution_id for item in by_turn) == (executions[0].execution_id,)
 
 
+@pytest.mark.asyncio
+async def test_douglas_death_reaches_durable_player_choice_once() -> None:
+    """死亡事件依次确认外貌、尸体身份和后续选择，恢复时不重复 SAN。"""
+
+    module = ModuleContentV3.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    store = InMemoryEngineStore()
+    state = create_initial_game_state(
+        module,
+        room_id="room-death",
+        actors={
+            "actor-1": ActorState(
+                player_id="player-1",
+                name="调查员",
+                source_character_id="character-1",
+                source_character_version=1,
+                resources=ActorResources(san=60),
+            )
+        },
+    )
+    state = _make_cemetery_encounter_available(state).model_copy(
+        update={"scene_id": "cemetery"}, deep=True
+    )
+    store.register_room(module_content=module, initial_state=state)
+    engine = AdjudicationEngineService(store)
+
+    with engine_turn_context("turn-death"):
+        await engine._submit_internal_adjudication(
+            SubmitAdjudicationRequest(
+                room_id="room-death",
+                player_id="player-1",
+                adjudication=ActionAdjudication(
+                    request_id="kill-douglas",
+                    source_revision="0",
+                    actor_id="actor-1",
+                    summary="杀死墓地人影",
+                    target=ActionTarget(kind="entity", id="cemetery_figure"),
+                    method=ActionMethod(family="attack", description="完成致命攻击"),
+                    check=NoAdjudicationCheck(),
+                    success_effects=(
+                        ChangeEntityStateEffect(
+                            entity_id="cemetery_figure",
+                            key="consciousness",
+                            value="dead",
+                        ),
+                    ),
+                ),
+            )
+        )
+
+    executor = RuleAgendaExecutor(
+        store,
+        engine=engine,
+        dice=DiceRoller(SequenceDiceSource([40, 40])),
+    )
+    await executor.drain(room_id="room-death", turn_id="turn-death")
+
+    current = store.inspect_state("room-death")
+    agenda = next(iter(current.rule_agendas.values()))
+    assert agenda.status == "awaiting_player_input"
+    assert current.entities["cemetery_figure"]["corpse_identified"] is True
+    assert "douglas_corpse_identity" in current.discovered_facts
+    assert current.actors["actor-1"].resources.san == 59
+    candidates = await executor.continuation_candidates(
+        room_id="room-death",
+        player_id="player-1",
+        actor_id="actor-1",
+    )
+    assert {option.option_id for option in candidates[0].options} == {
+        "fight",
+        "leave",
+        "stay",
+    }
+
+    await executor.resume_continuation(
+        AgendaContinuationProposal(
+            agenda_id=agenda.agenda_id,
+            boundary_id="douglas_death_aftermath_choice",
+            option_id="leave",
+        ),
+        room_id="room-death",
+        player_id="player-1",
+        actor_id="actor-1",
+        turn_id="turn-leave",
+        source_revision=str(current.event_sequence),
+    )
+    await executor.drain(room_id="room-death", turn_id="turn-leave")
+
+    final = store.inspect_state("room-death")
+    assert final.entities["case_tracker"]["douglas_body_removed"] is True
+    assert final.rule_agendas[agenda.agenda_id].status == "stable"
+    assert final.actors["actor-1"].resources.san == 59
+
+
 def test_rule_presentation_becomes_required_player_safe_evidence() -> None:
     """Agenda 只能从显式 Presentation 生成叙事证据，不能解释普通事件载荷。"""
 

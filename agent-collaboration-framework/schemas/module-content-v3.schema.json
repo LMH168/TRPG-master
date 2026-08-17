@@ -2939,6 +2939,14 @@
         },
         "limits": {
           "$ref": "#/$defs/RuleLimitsSpec"
+        },
+        "source_refs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SourceReferenceSpec"
+          },
+          "title": "Source Refs",
+          "type": "array"
         }
       },
       "required": [
@@ -3012,6 +3020,37 @@
         "visible"
       ],
       "title": "SetVisibilityEffect",
+      "type": "object"
+    },
+    "SourceReferenceSpec": {
+      "additionalProperties": false,
+      "description": "解析 Agent 保留的原文依据，用于发布审查而不进入玩家投影。",
+      "properties": {
+        "document_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$",
+          "title": "Document Id",
+          "type": "string"
+        },
+        "page": {
+          "minimum": 1,
+          "title": "Page",
+          "type": "integer"
+        },
+        "excerpt": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Excerpt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "document_id",
+        "page",
+        "excerpt"
+      ],
+      "title": "SourceReferenceSpec",
       "type": "object"
     },
     "TimePointSpec": {

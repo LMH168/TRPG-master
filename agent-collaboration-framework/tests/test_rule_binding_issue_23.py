@@ -461,17 +461,14 @@ def test_multi_option_rule_uses_author_hints_without_inventing_check(
     assert isinstance(command.adjudication.check, NoAdjudicationCheck)
 
 
-def test_hidden_override_options_are_not_projected_to_host() -> None:
-    """默认后果的主动例外只供 Engine 匹配，Host 不能据此提示玩家。"""
+def test_hidden_default_rule_is_not_projected_to_host() -> None:
+    """默认后果及主动例外只供 Engine 匹配，Host 不能据此提示玩家。"""
 
     capabilities = keeper_capabilities_v3(_runtime(), actor_id="actor-1")
-    candidate = next(
-        item
-        for item in capabilities.rule_candidates
-        if item.rule_id == "crypt_stench_on_entry"
-    )
 
-    assert candidate.options == ()
+    assert "crypt_stench_on_entry" not in {
+        item.rule_id for item in capabilities.rule_candidates
+    }
 
 
 def test_actor_profile_selects_speakeasy_route_without_check() -> None:
@@ -598,8 +595,8 @@ def test_unmet_required_rule_cannot_fall_back_to_process_success() -> None:
     assert raised.value.result.code == "RULE_PRECONDITION_UNMET"
 
 
-def test_rule_when_uses_same_state_for_candidate_projection() -> None:
-    """未满足前置条件的规则不能只从 Prompt 隐藏一半，投影与提交必须一致。"""
+def test_hidden_default_rule_never_enters_candidate_projection() -> None:
+    """隐藏默认规则无论前置条件是否满足都不能进入 Host Prompt。"""
 
     blocked = keeper_capabilities_v3(_runtime(slab_moved=False), actor_id="actor-1")
     admitted = keeper_capabilities_v3(_runtime(slab_moved=True), actor_id="actor-1")
@@ -607,7 +604,7 @@ def test_rule_when_uses_same_state_for_candidate_projection() -> None:
     assert "crypt_stench_on_entry" not in {
         candidate.rule_id for candidate in blocked.rule_candidates
     }
-    assert "crypt_stench_on_entry" in {
+    assert "crypt_stench_on_entry" not in {
         candidate.rule_id for candidate in admitted.rule_candidates
     }
 

@@ -713,6 +713,13 @@ def _rule_candidates(
             actor_id=actor_id,
         ):
             continue
+        if isinstance(
+            trigger.selection_policy,
+            DefaultWithOverridesSelectionPolicy,
+        ):
+            # 默认后果及其主动例外都由 Engine 从可信玩家原话解析；Host 既不
+            # 需要构造 rule_ref，也不能据此提前向玩家泄露规避方式。
+            continue
         scope = trigger.scope
         candidates.append(
             KeeperRuleCandidate(
@@ -722,24 +729,15 @@ def _rule_candidates(
                 action_families=scope.action_families,
                 target_kinds=scope.target_kinds,
                 target_ids=scope.target_ids,
-                # 默认后果的例外只能由 Engine 在玩家原话中识别，不能交给
-                # Host 主动建议；真正的公开选择仍保留原有候选投影。
-                options=(
-                    ()
-                    if isinstance(
-                        trigger.selection_policy,
-                        DefaultWithOverridesSelectionPolicy,
+                options=tuple(
+                    KeeperRuleOption(
+                        id=option.id,
+                        semantic_hints=option.semantic_hints,
+                        # 分支里有没有检定步，是 Agent 必须知道的；后果仍然不出服务端。
+                        requires_check=pending_check_for(rule, option.id)[0]
+                        is not None,
                     )
-                    else tuple(
-                        KeeperRuleOption(
-                            id=option.id,
-                            semantic_hints=option.semantic_hints,
-                            # 分支里有没有检定步，是 Agent 必须知道的；后果仍然不出服务端。
-                            requires_check=pending_check_for(rule, option.id)[0]
-                            is not None,
-                        )
-                        for option in trigger.options
-                    )
+                    for option in trigger.options
                 ),
             )
         )
