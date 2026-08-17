@@ -553,7 +553,8 @@ def _has_explicit_action_sequence(text: str) -> bool:
         for clause in re.split(
             r"\s*(?:，|,)?(?:然后|接着|随后)\s*"
             r"|\s*[；;]\s*"
-            r"|\s*[，,]\s*(?=再)",
+            r"|\s*[，,]\s*"
+            r"|\s*(?:并且|同时|以及|并)\s*",
             text,
         )
         if clause.strip(" \t，,。；;")

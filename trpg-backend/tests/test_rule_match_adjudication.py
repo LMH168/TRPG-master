@@ -319,13 +319,17 @@ async def test_rule_fallback_preserves_ambiguity_and_compound_actions() -> None:
         _host_context(await _cemetery_context("开启控制阀")),
         duplicate=True,
     )
-    compound = _with_synthetic_rule(
-        _host_context(await _cemetery_context("开启控制阀，然后检查仪表"))
-    )
     wrapper = PublishedRuleFallbackHostTurnDecisionModel(ClarifyingHost())
 
     assert await wrapper.generate(ambiguous) == clarification
-    assert await wrapper.generate(compound) == clarification
+    for utterance in (
+        "开启控制阀，然后检查仪表",
+        "开启控制阀并检查仪表",
+        "开启控制阀，同时检查仪表",
+        "开启控制阀，检查仪表",
+    ):
+        compound = _with_synthetic_rule(_host_context(await _cemetery_context(utterance)))
+        assert await wrapper.generate(compound) == clarification
 
 
 async def test_fake_host_only_expresses_published_rule_scope() -> None:
