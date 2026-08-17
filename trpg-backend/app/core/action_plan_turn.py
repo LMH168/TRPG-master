@@ -26,6 +26,7 @@ from collaboration_framework.contracts import (
     CancelCheckChoice,
     ChangeEntityStateEffect,
     CheckDecisionRequest,
+    ClarificationProposal,
     CommittedResult,
     ConsumeEntityEffect,
     ContractError,
@@ -433,6 +434,7 @@ class DeterministicHostTurnDecisionModel:
 
         published_proposal = _proposal_from_published_rule_scope(
             capabilities=context.keeper_capabilities,
+            player_view=context.player_view,
             semantic_goal=utterance,
         )
         if published_proposal is not None:
@@ -502,6 +504,61 @@ class TravelFirstHostTurnDecisionModel:
         if compound is not None:
             return compound
         return await self._fallback.generate(context)
+
+
+class PublishedRuleFallbackHostTurnDecisionModel:
+    """模型无法给出可执行单动作时，按唯一公开规则恢复无授权 Proposal。"""
+
+    def __init__(self, fallback: HostTurnDecisionModel) -> None:
+        self._fallback = fallback
+
+    async def generate(self, context: HostAgentContext) -> HostDecisionProposal:
+        """只接管唯一且有作者语义证据的规则，歧义和复合行动仍交还原结果。"""
+
+        utterance = context.player_input.utterance
+        if _has_explicit_action_sequence(utterance):
+            return await self._fallback.generate(context)
+
+        try:
+            decision = await self._fallback.generate(context)
+        except TurnExecutionError as exc:
+            if exc.code != "MODEL_OUTPUT_UNREADABLE":
+                raise
+            proposal = _proposal_from_published_rule_scope(
+                capabilities=context.keeper_capabilities,
+                player_view=context.player_view,
+                semantic_goal=utterance,
+            )
+            if proposal is None:
+                raise
+            # 规则候选来自与 PlayerView 同 revision 的受控投影；这里只恢复动作
+            # 范围，具体分支、检定与 Effect 仍由 Engine 在事务内重新校验。
+            return proposal
+
+        if not isinstance(decision, ClarificationProposal):
+            return decision
+        proposal = _proposal_from_published_rule_scope(
+            capabilities=context.keeper_capabilities,
+            player_view=context.player_view,
+            semantic_goal=utterance,
+        )
+        return proposal if proposal is not None else decision
+
+
+def _has_explicit_action_sequence(text: str) -> bool:
+    """识别玩家明确连接的多个动作，防止规则恢复把复合目标截成第一步。"""
+
+    clauses = tuple(
+        clause.strip(" \t，,。；;")
+        for clause in re.split(
+            r"\s*(?:，|,)?(?:然后|接着|随后)\s*"
+            r"|\s*[；;]\s*"
+            r"|\s*[，,]\s*(?=再)",
+            text,
+        )
+        if clause.strip(" \t，,。；;")
+    )
+    return len(clauses) >= 2
 
 
 def _compact_travel_plan(view: PlayerView, utterance: str) -> ActionPlan | None:
@@ -2580,7 +2637,9 @@ def build_action_plan_turn_application(
         store=store,
         engine=engine,
         adjudication_engine=adjudication_engine,
-        planner=TravelFirstHostTurnDecisionModel(planner),
+        planner=TravelFirstHostTurnDecisionModel(
+            PublishedRuleFallbackHostTurnDecisionModel(planner)
+        ),
         orchestrator=orchestrator,
         narrator=Narrator(narration_model),
         recent_history_source=history_source,
@@ -2599,6 +2658,7 @@ class _DeterministicStepAdjudicator:
     async def adjudicate(self, context: ActionPlanStepContext) -> SingleActionProposal:
         published_proposal = _proposal_from_published_rule_scope(
             capabilities=context.keeper_capabilities,
+            player_view=context.player_view,
             semantic_goal=context.step.semantic_goal,
         )
         if published_proposal is not None:
@@ -2644,6 +2704,7 @@ class _RuleFirstStepAdjudicator:
     async def adjudicate(self, context: ActionPlanStepContext) -> SingleActionProposal:
         published_proposal = _proposal_from_published_rule_scope(
             capabilities=context.keeper_capabilities,
+            player_view=context.player_view,
             semantic_goal=context.step.semantic_goal,
         )
         if published_proposal is not None:
@@ -2856,8 +2917,8 @@ def _requested_companions(
     return tuple(requested)
 
 
-def _match_published_rule_scope(capabilities, text: str):
-    """Fake Host 仅按模组公开提示确定唯一动作范围，不解释技能或结果。"""
+def _match_published_rule_scope(capabilities, player_view: PlayerView, text: str):
+    """按模组作者语义确定唯一动作范围，不解释技能、分支或结果。"""
 
     if capabilities is None:
         return None
@@ -2866,19 +2927,51 @@ def _match_published_rule_scope(capabilities, text: str):
     for candidate in capabilities.rule_candidates:
         if (
             len(candidate.action_families) != 1
+            or len(candidate.target_interactions) > 1
             or len(candidate.target_kinds) != 1
             or len(candidate.target_ids) != 1
         ):
             continue
-        hints = (
-            *candidate.semantic_hints,
-            *(hint for option in candidate.options for hint in option.semantic_hints),
-        )
-        matched_hints = {
+        question_hints = {
             "".join(hint.casefold().split())
-            for hint in hints
+            for hint in candidate.semantic_hints
             if "".join(hint.casefold().split()) in normalized
         }
+        option_hints = {
+            "".join(hint.casefold().split())
+            for option in candidate.options
+            for hint in option.semantic_hints
+            if "".join(hint.casefold().split()) in normalized
+        }
+        target_kind = candidate.target_kinds[0]
+        target_id = candidate.target_ids[0]
+        target_labels = [target_id]
+        if target_kind == "entity":
+            target_labels.extend(
+                entity.name for entity in capabilities.entities if entity.id == target_id
+            )
+            for entity in player_view.scene.visible_entities:
+                if entity.id == target_id:
+                    target_labels.extend((entity.name, *entity.aliases))
+        elif target_kind == "location":
+            target_labels.extend(
+                location.name for location in capabilities.locations if location.id == target_id
+            )
+            target_labels.extend(
+                location.name
+                for location in player_view.known_locations
+                if location.id == target_id
+            )
+        elif target_kind == "information":
+            target_labels.extend(
+                information.title
+                for information in capabilities.information
+                if information.id == target_id
+            )
+        target_matched = _best_label_overlap(text, tuple(target_labels)) is not None
+        # 方法选项（如技能名）本身不能证明目标；只有同时点明当前唯一目标时，
+        # 才能作为作者语义证据。question hint 则已经表达完整动作声明。
+        matched_hints = question_hints | (option_hints if target_matched else set())
         if matched_hints:
             # 多条作者提示共同命中时证据强于单条方法提示；完全同分仍视为歧义，
             # Fake Host 不替模型猜测玩家意图。
@@ -2903,6 +2996,7 @@ def _match_published_rule_scope(capabilities, text: str):
     candidate = matches[0][2]
     return (
         candidate.action_families[0],
+        candidate.target_interactions[0] if candidate.target_interactions else "other",
         candidate.target_kinds[0],
         candidate.target_ids[0],
     )
@@ -2911,28 +3005,29 @@ def _match_published_rule_scope(capabilities, text: str):
 def _proposal_from_published_rule_scope(
     *,
     capabilities: KeeperCapabilityView | None,
+    player_view: PlayerView,
     semantic_goal: str,
 ) -> SingleActionProposal | None:
     """把唯一公开 Rule 语义范围转换为无授权 Proposal。"""
 
-    published_scope = _match_published_rule_scope(capabilities, semantic_goal)
+    published_scope = _match_published_rule_scope(capabilities, player_view, semantic_goal)
     if published_scope is None:
         return None
-    family, target_kind, target_id = published_scope
+    family, target_interaction, target_kind, target_id = published_scope
     return SingleActionProposal.model_validate(
         {
             "kind": "single_action",
             "schema_version": 2,
             "semantic_goal": semantic_goal,
             "semantic_focus": {"kind": target_kind, "id": target_id},
-            "target_interaction": "other",
+            "target_interaction": target_interaction,
             "method_family": family,
             "method_description": semantic_goal,
             "execution_means": {"kind": "intrinsic"},
             "check_proposal": {"mode": "none", "candidates": []},
             "success_effect_proposals": [],
             "failure_effect_proposals": [],
-            "completion": {"kind": "process", "interaction": "other"},
+            "completion": {"kind": "process", "interaction": target_interaction},
         }
     )
 
@@ -2943,6 +3038,7 @@ __all__ = [
     "DeterministicNarrationModel",
     "DeterministicHostTurnDecisionModel",
     "HostTurnDecisionModel",
+    "PublishedRuleFallbackHostTurnDecisionModel",
     "build_action_plan_turn_application",
 ]
 
