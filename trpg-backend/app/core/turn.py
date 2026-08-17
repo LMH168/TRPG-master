@@ -67,6 +67,7 @@ _PUBLIC_TOOL_LABELS = {
     "get_visible_entity": "守秘人正在确认可见目标",
 }
 _MAX_NARRATION_ATTEMPTS = 2
+_MAX_OPENING_OUTPUT_ATTEMPTS = 2
 
 
 def _public_tool_label(tool_name: str) -> str:
@@ -172,7 +173,20 @@ class SessionViewApplication:
         else:
             try:
                 with anyio.fail_after(self.opening_narration_timeout_seconds):
-                    narration = await OpeningNarrator(self.opening_narration_model).narrate(context)
+                    narrator = OpeningNarrator(self.opening_narration_model)
+                    for attempt in range(_MAX_OPENING_OUTPUT_ATTEMPTS):
+                        try:
+                            narration = await narrator.narrate(context)
+                            break
+                        except (
+                            OpeningNarrationValidationError,
+                            ValidationError,
+                            json.JSONDecodeError,
+                        ):
+                            # 仅重试已经返回但不符合契约的候选；连接、HTTP 和超时
+                            # 继续立即降级，避免开场长时间阻塞玩家进入房间。
+                            if attempt + 1 >= _MAX_OPENING_OUTPUT_ATTEMPTS:
+                                raise
                 result = "model"
             except Exception as exc:  # the opening must never prevent entering InGame
                 failure_category = _opening_failure_category(exc)

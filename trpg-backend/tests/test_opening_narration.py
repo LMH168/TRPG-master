@@ -18,6 +18,7 @@ from collaboration_framework.contracts import (
     WorldStateView,
 )
 from collaboration_framework.engine import InMemoryEngineStore, RuleEngineService
+from collaboration_framework.host.ports import OpeningNarrationModelPort
 from collaboration_framework.host.schemas import OpeningNarrationContext
 
 from app.core import turn as turn_module
@@ -101,8 +102,32 @@ class CandidateOpeningModel:
         }
 
 
+class RepairableOpeningModel:
+    """首个候选缺少参与者，第二个候选满足开场证据边界。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate(self, context: OpeningNarrationContext):
+        del context
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "kind": "narration",
+                "text": "杜明站在旧宅门厅。",
+                "claimed_fact_ids": [],
+                "suggested_actions": [],
+            }
+        return {
+            "kind": "narration",
+            "text": "12:00，杜明与林夏一同站在旧宅门厅的昏黄灯光下。",
+            "claimed_fact_ids": [],
+            "suggested_actions": [],
+        }
+
+
 def application(
-    model: CandidateOpeningModel,
+    model: OpeningNarrationModelPort,
     *,
     mode: Literal["model", "template"] = "model",
 ):
@@ -152,6 +177,19 @@ async def test_opening_model_failures_use_player_safe_template(
 async def test_valid_model_opening_mentions_every_public_participant() -> None:
     result = await application(CandidateOpeningModel("valid")).generate_opening(opening_view())
 
+    assert result.result == "model"
+    assert result.failure_category is None
+    assert "杜明" in result.narration.text
+    assert "林夏" in result.narration.text
+
+
+async def test_invalid_model_candidate_is_retried_within_opening_budget() -> None:
+    """偶发输出校验失败不应直接让 AI 开场退化为固定模板。"""
+
+    model = RepairableOpeningModel()
+    result = await application(model).generate_opening(opening_view())
+
+    assert model.calls == 2
     assert result.result == "model"
     assert result.failure_category is None
     assert "杜明" in result.narration.text
