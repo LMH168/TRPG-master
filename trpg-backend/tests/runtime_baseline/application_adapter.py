@@ -340,6 +340,14 @@ class InMemoryRuntimeAdapter:
             narration_evidence = tuple(coordinated.result.narration.get("claimedFactIds", ()))
         else:
             narration_evidence = narration.claimed_evidence_refs if narration is not None else ()
+        # DomainEvent ID 在生产中可以是随机值，但 baseline 必须对同一
+        # 提交和幂等重放产生完全相同的快照。这里只规范化测试输出，
+        # 不改写 Engine 中的真实 event_id 或 Narrator 证据关系。
+        stable_event_refs = {
+            event.event_id: f"{event.client_action_id}:{event.type}:{event.sequence}"
+            for event in events
+        }
+        narration_evidence = tuple(stable_event_refs.get(ref, ref) for ref in narration_evidence)
         return BaselineTurnResult(
             client_action_id=turn.client_action_id,
             status=coordinated.status.value,

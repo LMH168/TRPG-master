@@ -83,8 +83,11 @@ def _runtime_store(*, handgun_location_id: str | None = None) -> InMemoryEngineS
         source_character_id="character-goal-runtime",
         source_character_version=1,
         state={
-            "skills": {"firearm-handgun": 80},
-            "skill_labels": {"firearm-handgun": "射击：手枪"},
+            "skills": {"firearm-handgun": 80, "intimidate": 80},
+            "skill_labels": {
+                "firearm-handgun": "射击：手枪",
+                "intimidate": "恐吓",
+            },
             "equipment": ["手枪"],
         },
     )
@@ -215,6 +218,83 @@ def _submission(
         requested_goal=goal,
         requested_step_kind=step_kind,
     )
+
+
+@pytest.mark.asyncio
+async def test_rule_information_event_becomes_required_narration_evidence() -> None:
+    """普通裁决揭示的玩家信息必须在同一 execution 中交给 Narrator。"""
+
+    store = _runtime_store()
+    engine = AdjudicationEngineService(
+        store,
+        dice=DiceRoller(SequenceDiceSource([20])),
+    )
+    goal = "恐吓守墓人说出他看到的事情"
+    pending = await engine.submit_proposal(
+        _submission(
+            request_id="intimidate-for-information",
+            revision="0",
+            goal=goal,
+            payload={
+                "semantic_focus": {"kind": "entity", "id": "melodias"},
+                "target_interaction": "social",
+                "method_family": "intimidate",
+                "method_description": goal,
+                "check_proposal": {
+                    "mode": "required",
+                    "candidates": [
+                        {
+                            "candidate_id": "intimidate",
+                            "skill_id": "intimidate",
+                            "difficulty": "regular",
+                            "method_summary": goal,
+                            "player_safe_reason": "社交行动需要检定",
+                        }
+                    ],
+                },
+                "rule_ref": {
+                    "rule_id": "intimidate_caretaker",
+                    "option_id": "intimidate",
+                },
+                "success_effect_proposals": [],
+                "failure_effect_proposals": [],
+                "completion": {"kind": "process", "interaction": "social"},
+            },
+        )
+    )
+    assert pending.pending_decision is not None
+    rolled = await engine.decide(
+        CheckDecisionRequest(
+            request_id="intimidate-for-information:select",
+            room_id=ROOM,
+            player_id=PLAYER,
+            source_revision=pending.view_revision,
+            decision_id=pending.pending_decision.decision_id,
+            decision_version=pending.pending_decision.decision_version,
+            choice=SelectCheckChoice(candidate_id="intimidate"),
+        )
+    )
+    assert rolled.check_run is not None
+    resolved = await engine.decide_post_roll(
+        PostRollDecisionRequest(
+            request_id="intimidate-for-information:accept",
+            room_id=ROOM,
+            player_id=PLAYER,
+            source_revision=rolled.view_revision,
+            check_id=rolled.check_run.check_id,
+            check_version=rolled.check_run.version,
+            option_id="accept-current",
+        )
+    )
+
+    information = next(
+        item
+        for item in resolved.narration_evidence
+        if item.kind == "information_revealed"
+    )
+    assert information.subject_id == "melodias_night_sighting"
+    assert "深夜看到一个人影坐在那块墓碑上" in information.description
+    assert information.required_in_narration is True
 
 
 @pytest.mark.asyncio

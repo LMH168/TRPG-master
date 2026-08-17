@@ -1359,7 +1359,7 @@ class RuleOwnedCheckTests(unittest.IsolatedAsyncioTestCase):
             PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
         )
         with patch(
-            "collaboration_framework.engine.adjudication.project_v3",
+            "collaboration_framework.engine.narration_evidence.project_v3",
             side_effect=AssertionError("projection should be skipped"),
         ):
             execution = await engine._submit_internal_adjudication(

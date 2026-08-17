@@ -87,6 +87,7 @@ from .models import (
     ValidatedActionCommand,
     WorldTimeState,
 )
+from .narration_evidence import EvidenceAssembler
 from .navigation import resolve_location_target
 from .persistent_results import (
     committed_results_from_events,
@@ -95,7 +96,6 @@ from .persistent_results import (
 )
 from .plot_threads import player_safe_plot_thread_summary, transition_plot_thread
 from .ports import EngineStore
-from .projection_v3 import project_v3
 from .proposal_compiler import ProposalCompiler
 from .rules_v3 import (
     agenda_item_for_event,
@@ -103,7 +103,6 @@ from .rules_v3 import (
     agent_match_scope_admits,
     create_rule_agenda,
     effects_after_degree,
-    entity_state,
     matching_event_rules,
     ordered_agenda_items,
     pending_check_for,
@@ -1431,121 +1430,15 @@ class AdjudicationEngineService:
         player_id: str,
         actor_id: str,
     ) -> tuple[NarrationEvidence, ...]:
-        """Project newly discovered entities through the final player-safe view."""
+        """通过唯一 EvidenceAssembler 编译本次提交的玩家安全结果。"""
 
-        if not runtime.is_v3:
-            return ()
-        presentation_evidence: list[NarrationEvidence] = []
-        for event in events:
-            if event.visibility == "public" and event.type == "travel.interrupted":
-                boundary = event.payload.get("reached_boundary")
-                if isinstance(boundary, dict):
-                    boundary_id = boundary.get("id")
-                    label = boundary.get("label")
-                    if isinstance(boundary_id, str) and isinstance(label, str):
-                        presentation_evidence.append(
-                            NarrationEvidence(
-                                ref=event.event_id,
-                                kind="travel_interrupted",
-                                subject_id=boundary_id,
-                                subject_name=label,
-                                description=(
-                                    f"你抵达{label}，但通路仍被阻挡，尚未进入目标地点。"
-                                ),
-                                required_in_narration=True,
-                            )
-                        )
-                continue
-            if (
-                event.visibility == "public"
-                and event.type == "plot_thread.transitioned"
-            ):
-                thread_id = event.payload.get("thread_id")
-                summary = event.payload.get("player_safe_summary")
-                if isinstance(thread_id, str) and isinstance(summary, str):
-                    presentation_evidence.append(
-                        NarrationEvidence(
-                            ref=event.event_id,
-                            kind="plot_thread_transition",
-                            subject_id=thread_id,
-                            subject_name=summary,
-                            description=summary,
-                            required_in_narration=True,
-                        )
-                    )
-                continue
-            presentation_id = event.payload.get("presentation_id")
-            summary = event.payload.get("player_safe_summary")
-            if (
-                event.visibility != "public"
-                or event.type != "rule.presentation"
-                or not isinstance(presentation_id, str)
-                or not isinstance(summary, str)
-            ):
-                continue
-            presentation_evidence.append(
-                NarrationEvidence(
-                    ref=event.event_id,
-                    kind="rule_presentation",
-                    subject_id=presentation_id,
-                    subject_name=summary,
-                    description=summary,
-                    required_in_narration=True,
-                )
-            )
-        candidate_events = tuple(
-            event
-            for event in events
-            if (
-                event.visibility == "public"
-                and event.type == "entity.state_changed"
-                and event.payload.get("key") == "discovered"
-                and event.payload.get("value") is True
-                and isinstance(event.payload.get("entity_id"), str)
-                and entity_state(
-                    runtime.game_state,
-                    event.payload["entity_id"],
-                ).get("discovered")
-                is not True
-            )
+        return EvidenceAssembler.from_committed_events(
+            runtime,
+            final_state=new_state,
+            events=events,
+            player_id=player_id,
+            actor_id=actor_id,
         )
-        if not candidate_events:
-            return tuple(presentation_evidence)
-        final_runtime = runtime.model_copy(
-            update={
-                "game_state": new_state,
-                "revision": str(new_state.event_sequence),
-            },
-            deep=True,
-        )
-        visible = {
-            item.id: item
-            for item in project_v3(
-                final_runtime,
-                player_id=player_id,
-                actor_id=actor_id,
-            ).scene.visible_entities
-        }
-        evidence: list[NarrationEvidence] = []
-        for event in candidate_events:
-            entity_id = event.payload.get("entity_id")
-            if not isinstance(entity_id, str):
-                continue
-            projected = visible.get(entity_id)
-            if projected is None:
-                continue
-            evidence.append(
-                NarrationEvidence(
-                    ref=event.event_id,
-                    kind="entity_discovered",
-                    subject_id=projected.id,
-                    subject_name=projected.name,
-                    subject_aliases=projected.aliases,
-                    description=projected.description,
-                    required_in_narration=True,
-                )
-            )
-        return (*evidence, *presentation_evidence)
 
     @staticmethod
     def _validate_identity(

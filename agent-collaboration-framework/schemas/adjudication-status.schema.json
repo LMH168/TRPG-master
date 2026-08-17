@@ -425,7 +425,10 @@
             "location_transition",
             "npc_opportunity",
             "passive_check",
-            "actor_resource_change"
+            "actor_resource_change",
+            "information_revealed",
+            "entity_state_change",
+            "entity_moved"
           ],
           "title": "Kind",
           "type": "string"

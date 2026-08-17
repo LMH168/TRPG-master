@@ -39,6 +39,7 @@ from .models import (
     WorldTimePoint,
     WorldTimeState,
 )
+from .narration_evidence import EvidenceAssembler
 from .navigation import effective_location_knowledge, resolve_location_target
 from .persistent_results import (
     CHARACTER_STATE_VALUES,
@@ -81,6 +82,7 @@ __all__ = [
     "EngineRuntimeSnapshot",
     "EngineStore",
     "EngineTransaction",
+    "EvidenceAssembler",
     "GameState",
     "InMemoryEngineStore",
     "LocationKnowledge",

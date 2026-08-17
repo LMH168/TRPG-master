@@ -35,6 +35,7 @@ from collaboration_framework.engine import (
     DiceRoller,
     DomainEvent,
     EngineRuntimeSnapshot,
+    EvidenceAssembler,
     GameState,
     InMemoryEngineStore,
     PlotThreadState,
@@ -248,13 +249,35 @@ async def test_douglas_death_reaches_durable_player_choice_once() -> None:
 def test_rule_presentation_becomes_required_player_safe_evidence() -> None:
     """显式 Presentation 必须成为叙事证据，hidden 内容不得进入玩家上下文。"""
 
-    evidence = RuleAgendaExecutor._narration_evidence(
-        (
+    module = ModuleContentV3.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    state = create_initial_game_state(
+        module,
+        room_id="room-evidence",
+        actors={
+            "actor-1": ActorState(
+                player_id="player-1",
+                name="调查员",
+                source_character_id="character-1",
+                source_character_version=1,
+            )
+        },
+    )
+    runtime = EngineRuntimeSnapshot(
+        module_id=module.module_id,
+        module_version=module.version,
+        module_content=module,
+        game_state=state,
+        revision="0",
+    )
+    evidence = EvidenceAssembler.from_committed_events(
+        runtime,
+        final_state=state,
+        events=(
             DomainEvent(
                 event_id="evt-presentation",
                 sequence=1,
                 type="rule.presentation",
-                room_id="room-1",
+                room_id="room-evidence",
                 actor_id="actor-1",
                 client_action_id="agenda-execution",
                 cause="agenda:agenda-1",
@@ -268,7 +291,7 @@ def test_rule_presentation_becomes_required_player_safe_evidence() -> None:
                 event_id="evt-hidden",
                 sequence=2,
                 type="rule.presentation",
-                room_id="room-1",
+                room_id="room-evidence",
                 actor_id="actor-1",
                 client_action_id="agenda-execution",
                 cause="agenda:agenda-1",
@@ -278,7 +301,9 @@ def test_rule_presentation_becomes_required_player_safe_evidence() -> None:
                     "player_safe_summary": "这段内容不能公开。",
                 },
             ),
-        )
+        ),
+        player_id="player-1",
+        actor_id="actor-1",
     )
 
     assert len(evidence) == 1

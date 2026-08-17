@@ -1013,6 +1013,7 @@ async def test_direct_entry_reaches_awake_stable_boundary_once() -> None:
         "world_time",
         "actor_condition",
         "location_transition",
+        "entity_moved",
         "npc_opportunity",
         "rule_presentation",
         "passive_check",

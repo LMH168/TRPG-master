@@ -181,12 +181,15 @@ class _WsFirstPersonThenSafeNarration:
         self.calls = 0
 
     async def generate(self, context) -> JsonObject:
-        del context
         self.calls += 1
         return {
             "kind": "narration",
-            "text": ("我带着你们进入墓地。" if self.calls == 1 else "你带着托马斯进入墓地。"),
-            "claimed_evidence_refs": [],
+            "text": (
+                "我带着你们进入阿诺兹堡公共墓地。"
+                if self.calls == 1
+                else "你带着托马斯来到阿诺兹堡公共墓地。"
+            ),
+            "claimed_evidence_refs": [item.ref for item in context.narration_evidence],
             "suggested_actions": [],
         }
 
@@ -1650,6 +1653,6 @@ def test_subject_ownership_failure_retries_before_publishing_narration(
         completed, narration, seen = receive_turn_outbox(ws, limit=40)
 
     assert narration_model.calls == 2
-    assert completed["payload"]["narration"]["text"] == "你带着托马斯进入墓地。"
-    assert narration["payload"]["text"] == "你带着托马斯进入墓地。"
+    assert completed["payload"]["narration"]["text"] == ("你带着托马斯来到阿诺兹堡公共墓地。")
+    assert narration["payload"]["text"] == "你带着托马斯来到阿诺兹堡公共墓地。"
     assert all("我带着你们进入墓地" not in str(message) for message in seen)

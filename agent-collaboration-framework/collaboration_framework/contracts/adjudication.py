@@ -451,6 +451,9 @@ class NarrationEvidence(ContractModel):
         "npc_opportunity",
         "passive_check",
         "actor_resource_change",
+        "information_revealed",
+        "entity_state_change",
+        "entity_moved",
     ]
     subject_id: str = Field(min_length=1)
     subject_name: str = Field(min_length=1)
