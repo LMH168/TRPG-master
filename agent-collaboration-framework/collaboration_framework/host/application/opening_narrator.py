@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from collaboration_framework.contracts import ContractError
@@ -21,6 +22,7 @@ OpeningRejectionReason = Literal[
     "schema_fragment",
     "world_time_conflict",
     "unsupported_dialogue",
+    "unsupported_language",
 ]
 
 
@@ -67,6 +69,10 @@ class OpeningNarrator:
             # 开场 Context 没有任何已发生对白；允许模型补写台词就等于允许它借
             # NPC 之口创造信件、钥匙和线索。真实对话必须留给可靠 Turn。
             raise OpeningNarrationValidationError("unsupported_dialogue")
+        if _opening_has_unsupported_latin_terms(output.text, context):
+            # 模组和角色的公开展示名必须逐字保留。模型自行把中文 NPC 名翻成
+            # 英文会破坏玩家体验，也让后续实体指代无法与权威 ID 对齐。
+            raise OpeningNarrationValidationError("unsupported_language")
         return output
 
 
@@ -140,3 +146,29 @@ def _opening_time_conflicts(
         term in text and clock.hour_of_day not in hours
         for term, hours in hour_terms.items()
     )
+
+
+def _opening_has_unsupported_latin_terms(
+    text: str,
+    context: OpeningNarrationContext,
+) -> bool:
+    """只允许 Context 原本存在的拉丁词，阻止模型擅自翻译中文展示名。"""
+
+    source_parts = [
+        context.background,
+        context.scene.name,
+        context.scene.description,
+        *(detail.text for detail in context.scene.narrative_details),
+        context.solo_background_summary,
+    ]
+    for participant in context.participants:
+        source_parts.extend(
+            (
+                participant.name,
+                participant.occupation or "",
+                participant.status_summary,
+            )
+        )
+    latin_word = re.compile(r"[A-Za-z][A-Za-z'’-]*")
+    allowed = {token for source in source_parts for token in latin_word.findall(source)}
+    return any(token not in allowed for token in latin_word.findall(text))

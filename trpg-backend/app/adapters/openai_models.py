@@ -226,7 +226,8 @@ solo_background_summary，多人开场不得推断或补写任何角色的私密
 
 world_time 是当前唯一权威时钟，优先级高于 background 中的风格或意象描述。正文必须
 逐字包含 HH:00 格式的当前小时，并与 time_of_day 一致；例如 12:00 不得写成夜晚、
-傍晚或清晨。Opening Context 不包含已发生对白，正文不得替任何人物补写台词。
+傍晚或清晨。Opening Context 不包含已发生对白，正文不得替任何人物补写台词。所有
+中文展示名必须逐字使用，不得翻译或改写成英文；除 Context 原有专名外，正文使用中文。
 
 不得创造门窗、路线、人物、物品、线索、秘密、规则结果或玩家行动，不得暗示角色已
 作出选择。输出 kind 必须为 narration，claimed_fact_ids 和 suggested_actions 必须

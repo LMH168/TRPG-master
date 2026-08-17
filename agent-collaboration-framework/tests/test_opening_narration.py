@@ -175,6 +175,7 @@ class OpeningNarratorTests(unittest.IsolatedAsyncioTestCase):
         candidates = (
             "12:00，夜幕低垂，杜明与林夏站在旧宅门厅。",
             "12:00，杜明对林夏说：“桌上有一把秘密钥匙。”",
+            "12:00，Du Ming 与 Lin Xia 一同站在旧宅门厅。杜明与林夏都在场。",
         )
         for text in candidates:
             with (
