@@ -2222,13 +2222,36 @@ def single_travel_decision(*, target_id: str) -> SingleActionProposal:
     )
 
 
-def _landmark_runtime(*, target_id: str, target_name: str):
-    """构造同场景地标运行时，合成目标用于证明分类不依赖示例模组 ID。"""
+def _landmark_runtime(
+    *,
+    scene_id: str,
+    scene_name: str,
+    target_id: str,
+    target_name: str,
+):
+    """构造同场景地标运行时，证明分类不依赖示例模组实体或地点 ID。"""
 
     module = load_model(
         "docs/module-parser/examples/module-content-validation/追书人/module-content-v3.json",
         ModuleContentV3,
     )
+    if scene_id != "cemetery":
+        source_location = next(
+            location for location in module.locations if location.id == "cemetery"
+        )
+        synthetic_location = source_location.model_copy(
+            update={
+                "id": scene_id,
+                "name": scene_name,
+                "player_visible_name": scene_name,
+                "player_visible_description": f"{scene_name}中的公开区域。",
+            },
+            deep=True,
+        )
+        module = module.model_copy(
+            update={"locations": (*module.locations, synthetic_location)},
+            deep=True,
+        )
     if target_id != "favorite_grave":
         source = next(
             entity for entity in module.entities if entity.id == "favorite_grave"
@@ -2239,6 +2262,7 @@ def _landmark_runtime(*, target_id: str, target_name: str):
                 "name": target_name,
                 "player_visible_name": target_name,
                 "player_visible_aliases": (target_name,),
+                "located_in": scene_id,
                 "state": {"identified": True},
                 "visibility_conditions": (),
             },
@@ -2263,7 +2287,7 @@ def _landmark_runtime(*, target_id: str, target_name: str):
     entities = dict(state.entities)
     entities[target_id] = {**entities[target_id], "identified": True}
     state = state.model_copy(
-        update={"scene_id": "cemetery", "entities": entities},
+        update={"scene_id": scene_id, "entities": entities},
         deep=True,
     )
     store = InMemoryEngineStore()
@@ -2294,12 +2318,22 @@ def _landmark_decision(*, host_goal: str, target_id: str) -> SingleActionProposa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("action_id", "utterance", "host_goal", "target_id", "target_name"),
+    (
+        "action_id",
+        "utterance",
+        "host_goal",
+        "scene_id",
+        "scene_name",
+        "target_id",
+        "target_name",
+    ),
     (
         (
             "approach-authored-landmark",
             "去道格拉斯的墓碑",
             "前往道格拉斯常坐的低矮墓碑",
+            "cemetery",
+            "阿诺兹堡公共墓地",
             "favorite_grave",
             "道格拉斯常坐的墓碑",
         ),
@@ -2307,6 +2341,8 @@ def _landmark_decision(*, host_goal: str, target_id: str) -> SingleActionProposa
             "approach-synthetic-landmark",
             "前往纪念碑旁边",
             "靠近当前场景里的纪念标志",
+            "memorial_garden",
+            "纪念花园",
             "memorial_marker",
             "纪念标志",
         ),
@@ -2316,12 +2352,16 @@ async def test_single_action_approaches_visible_landmark_without_fake_travel(
     action_id: str,
     utterance: str,
     host_goal: str,
+    scene_id: str,
+    scene_name: str,
     target_id: str,
     target_name: str,
 ) -> None:
     """走向同场景实体是焦点动作，不能因措辞含“去”而要求地点 Effect。"""
 
     module, engine_store, projector = _landmark_runtime(
+        scene_id=scene_id,
+        scene_name=scene_name,
         target_id=target_id,
         target_name=target_name,
     )
@@ -2348,7 +2388,7 @@ async def test_single_action_approaches_visible_landmark_without_fake_travel(
     assert isinstance(result, SingleActionTurnResult)
     assert result.execution.status == "resolved"
     assert result.execution.goal_outcome == "achieved"
-    assert result.player_view.scene.id == "cemetery"
+    assert result.player_view.scene.id == scene_id
     async with engine_store.transaction(original.room_id) as tx:
         command = await tx.find_latest_adjudication_command_by_action(
             original.client_action_id
