@@ -9,7 +9,7 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 PREVIOUS_REVISION = "1a02058345ee"
 ENGINE_IDENTITY_PREVIOUS_REVISION = "9c4e7a2b1d6f"
-HEAD_REVISION = "b6c7d8e9f0a1"
+HEAD_REVISION = "c7d8e9f0a1b2"
 MERGED_PARENT_REVISIONS = ("a5b6c7d8e9f0", "d7e8f9a0b1c2")
 
 
@@ -175,6 +175,10 @@ def test_migration_upgrades_empty_sqlite_and_round_trips(tmp_path: Path) -> None
     assert "turn_id" in _column_names(database, "action_plan_runs")
     assert ("room_id", "client_action_id") in _unique_column_sets(database, "turn_records")
     assert "pending_decision_json" in _column_names(database, "turn_records")
+    assert {
+        "orchestration_schema_version",
+        "orchestration_json",
+    }.issubset(_column_names(database, "turn_records"))
     assert ("turn_id",) in _unique_column_sets(database, "room_turn_reservations")
     assert ("turn_id", "message_type") in _unique_column_sets(database, "narration_outbox")
     assert {

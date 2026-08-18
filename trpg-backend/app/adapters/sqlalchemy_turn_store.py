@@ -13,6 +13,7 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.gm_orchestration import GameMasterOrchestrationSnapshot
 from app.core.turn_runtime import (
     TERMINAL_TURN_STATUSES,
     NarrationOutboxMessage,
@@ -782,6 +783,12 @@ class SqlAlchemyTurnStore:
             actor_id=turn.actor_id,
             request_schema_version=turn.request.schema_version,
             request_json=turn.request.model_dump(mode="json"),
+            orchestration_schema_version=(
+                turn.orchestration.schema_version if turn.orchestration else None
+            ),
+            orchestration_json=(
+                turn.orchestration.model_dump(mode="json") if turn.orchestration else None
+            ),
             status=turn.status.value,
             phase_version=turn.phase_version,
             resume_point=turn.resume_point.value,
@@ -804,6 +811,12 @@ class SqlAlchemyTurnStore:
     def _record_values(turn: TurnRecord) -> dict[str, object]:
         return {
             "status": turn.status.value,
+            "orchestration_schema_version": (
+                turn.orchestration.schema_version if turn.orchestration else None
+            ),
+            "orchestration_json": (
+                turn.orchestration.model_dump(mode="json") if turn.orchestration else None
+            ),
             "phase_version": turn.phase_version,
             "resume_point": turn.resume_point.value,
             "waiting_reason": turn.waiting_reason.value,
@@ -822,6 +835,12 @@ class SqlAlchemyTurnStore:
 
     @staticmethod
     def _turn_from_record(record: TurnRecordModel) -> TurnRecord:
+        if (record.orchestration_schema_version is None) != (record.orchestration_json is None):
+            raise TurnContractError("GM 编排版本与快照必须同时存在或为空")
+        if record.orchestration_schema_version not in {None, 1}:
+            raise TurnContractError(
+                f"不支持的 GM 编排快照版本: {record.orchestration_schema_version}"
+            )
         return TurnRecord.model_validate(
             {
                 "turn_id": record.turn_id,
@@ -831,6 +850,11 @@ class SqlAlchemyTurnStore:
                 "player_id": record.player_id,
                 "actor_id": record.actor_id,
                 "request": record.request_json,
+                "orchestration": (
+                    GameMasterOrchestrationSnapshot.model_validate(record.orchestration_json)
+                    if record.orchestration_json
+                    else None
+                ),
                 "status": record.status,
                 "phase_version": record.phase_version,
                 "resume_point": record.resume_point,

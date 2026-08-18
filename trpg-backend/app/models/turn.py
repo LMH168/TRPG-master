@@ -81,6 +81,8 @@ class TurnRecordModel(Base):
         Integer, nullable=False, default=1, server_default="1"
     )
     request_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    orchestration_schema_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    orchestration_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False)
     phase_version: Mapped[int] = mapped_column(Integer, nullable=False)
     resume_point: Mapped[str] = mapped_column(String(30), nullable=False)

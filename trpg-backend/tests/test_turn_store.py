@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters import SqlAlchemyTurnStore
+from app.core.gm_orchestration import GameMasterExecutionMode, GameMasterStage
 from app.core.turn_runtime import (
     NarrationOutboxMessage,
     TurnCommitReceipt,
@@ -81,6 +82,9 @@ async def test_create_or_get_is_idempotent_and_rejects_changed_input(
     assert was_created is True
     assert retry_created is False
     assert retried.turn_id == created.turn_id
+    assert created.orchestration is not None
+    assert created.orchestration.execution_mode == GameMasterExecutionMode.NEW_ACTION
+    assert created.orchestration.completed_stages == (GameMasterStage.ACCEPTED,)
     with pytest.raises(TurnConflictError, match="幂等键") as conflict:
         await store.create_or_get(_turn(room_id, player_id, text="打开房门"))
     assert conflict.value.code == "TURN_IDEMPOTENCY_CONFLICT"
