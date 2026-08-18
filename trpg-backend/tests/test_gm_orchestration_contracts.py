@@ -97,16 +97,40 @@ def test_legacy_mode_is_adopted_only_from_authoritative_evidence(
 
 
 def test_legacy_mode_rejects_ambiguous_or_unproven_state() -> None:
+    assert resolve_legacy_execution_mode(GameMasterRecoveryEvidence()) is None
+
+
+def test_legacy_recovery_prefers_the_owner_with_a_remaining_cursor() -> None:
     assert (
         resolve_legacy_execution_mode(
             GameMasterRecoveryEvidence(
                 has_action_plan=True,
                 has_adjudication_execution=True,
+                has_agenda_execution=True,
+                receipt_count=2,
             )
         )
-        is None
+        == GameMasterExecutionMode.ACTION_PLAN
     )
-    assert resolve_legacy_execution_mode(GameMasterRecoveryEvidence()) is None
+    assert (
+        resolve_legacy_execution_mode(
+            GameMasterRecoveryEvidence(
+                has_adjudication_execution=True,
+                has_agenda_execution=True,
+                receipt_count=2,
+            )
+        )
+        == GameMasterExecutionMode.AGENDA_CONTINUATION
+    )
+    assert (
+        resolve_legacy_execution_mode(
+            GameMasterRecoveryEvidence(
+                has_adjudication_execution=True,
+                receipt_count=1,
+            )
+        )
+        == GameMasterExecutionMode.SINGLE_ADJUDICATION
+    )
 
 
 async def test_orchestrator_delegates_and_observes_monotonic_trace() -> None:

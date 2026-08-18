@@ -27,10 +27,28 @@ def upgrade() -> None:
         "turn_records",
         sa.Column("orchestration_json", sa.JSON(), nullable=True),
     )
+    with op.batch_alter_table("turn_records") as batch_op:
+        batch_op.create_check_constraint(
+            "ck_turn_records_complete_orchestration",
+            "(orchestration_schema_version IS NULL) = (orchestration_json IS NULL)",
+        )
+        batch_op.create_check_constraint(
+            "ck_turn_records_orchestration_version",
+            "orchestration_schema_version IS NULL OR orchestration_schema_version = 1",
+        )
 
 
 def downgrade() -> None:
     """只移除派生编排索引，不改写 Turn、receipt、Event 或 Outbox。"""
 
-    op.drop_column("turn_records", "orchestration_json")
-    op.drop_column("turn_records", "orchestration_schema_version")
+    with op.batch_alter_table("turn_records") as batch_op:
+        batch_op.drop_constraint(
+            "ck_turn_records_orchestration_version",
+            type_="check",
+        )
+        batch_op.drop_constraint(
+            "ck_turn_records_complete_orchestration",
+            type_="check",
+        )
+        batch_op.drop_column("orchestration_json")
+        batch_op.drop_column("orchestration_schema_version")

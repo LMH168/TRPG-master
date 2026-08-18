@@ -65,6 +65,18 @@ def _foreign_keys(database: Path, table: str) -> set[tuple[str, str, str]]:
         }
 
 
+def _check_constraints(database: Path, table: str) -> str:
+    """返回 SQLite 建表 SQL，供迁移测试验证命名检查约束存在。"""
+
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+    assert row is not None and isinstance(row[0], str)
+    return row[0]
+
+
 def test_migration_upgrades_empty_sqlite_and_round_trips(tmp_path: Path) -> None:
     database = tmp_path / "round-trip.db"
 
@@ -179,6 +191,9 @@ def test_migration_upgrades_empty_sqlite_and_round_trips(tmp_path: Path) -> None
         "orchestration_schema_version",
         "orchestration_json",
     }.issubset(_column_names(database, "turn_records"))
+    turn_table_sql = _check_constraints(database, "turn_records")
+    assert "ck_turn_records_complete_orchestration" in turn_table_sql
+    assert "ck_turn_records_orchestration_version" in turn_table_sql
     assert ("turn_id",) in _unique_column_sets(database, "room_turn_reservations")
     assert ("turn_id", "message_type") in _unique_column_sets(database, "narration_outbox")
     assert {

@@ -181,16 +181,21 @@ class GameMasterOrchestrator:
 def resolve_legacy_execution_mode(
     evidence: GameMasterRecoveryEvidence,
 ) -> GameMasterExecutionMode | None:
-    """只在旧回合的权威证据唯一时收养；歧义时交由玩家安全失败处理。"""
+    """按权威 owner 层级收养旧回合；无法证明任何 owner 时安全失败。
+
+    ActionPlan 的步骤天然可以拥有 adjudication，Agenda 也可以承接原动作的
+    adjudication，因此这些证据不是互斥候选。恢复必须优先选择仍拥有后续游标的
+    上层执行对象，不能因为底层提交证明同时存在就误判或退化成单动作。
+    """
 
     if evidence.has_outbox or evidence.has_result:
         return GameMasterExecutionMode.DELIVERY_ONLY
-    if evidence.has_action_plan and not evidence.has_adjudication_execution:
+    if evidence.has_action_plan:
         return GameMasterExecutionMode.ACTION_PLAN
-    if evidence.has_adjudication_execution and not evidence.has_action_plan:
-        return GameMasterExecutionMode.SINGLE_ADJUDICATION
     if evidence.has_agenda_execution and evidence.receipt_count > 0:
         return GameMasterExecutionMode.AGENDA_CONTINUATION
+    if evidence.has_adjudication_execution:
+        return GameMasterExecutionMode.SINGLE_ADJUDICATION
     if evidence.receipt_count > 0:
         return GameMasterExecutionMode.NARRATION_ONLY
     return None

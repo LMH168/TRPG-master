@@ -62,6 +62,14 @@ class TurnRecordModel(Base):
             "(lease_owner IS NULL) = (lease_expires_at IS NULL)",
             name="ck_turn_records_complete_lease",
         ),
+        CheckConstraint(
+            "(orchestration_schema_version IS NULL) = (orchestration_json IS NULL)",
+            name="ck_turn_records_complete_orchestration",
+        ),
+        CheckConstraint(
+            "orchestration_schema_version IS NULL OR orchestration_schema_version = 1",
+            name="ck_turn_records_orchestration_version",
+        ),
         Index("ix_turn_records_room_player_created", "room_id", "player_id", "created_at"),
         Index("ix_turn_records_room_status", "room_id", "status"),
         Index("ix_turn_records_lease", "status", "lease_expires_at"),
