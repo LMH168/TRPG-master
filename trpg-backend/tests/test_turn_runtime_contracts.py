@@ -4,6 +4,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.core.gm_orchestration import (
+    GameMasterExecutionMode,
+    GameMasterOrchestrationSnapshot,
+    GameMasterStage,
+)
 from app.core.turn_runtime import (
     InMemoryTurnStore,
     TurnCommitState,
@@ -17,6 +22,7 @@ from app.core.turn_runtime import (
     TurnWaitingReason,
     new_turn_record,
     transition_turn,
+    validate_turn_cas_update,
 )
 
 
@@ -41,6 +47,56 @@ def test_input_fingerprint_normalizes_boundary_whitespace() -> None:
 
     assert first.utterance == "观察书房"
     assert first.fingerprint() == second.fingerprint()
+
+
+def test_new_turn_persists_initial_gm_orchestration_snapshot() -> None:
+    turn = new_turn_record(_request())
+
+    assert turn.orchestration is not None
+    assert turn.orchestration.execution_mode == GameMasterExecutionMode.NEW_ACTION
+    assert turn.orchestration.completed_stages == (GameMasterStage.ACCEPTED,)
+
+
+def test_legacy_turn_without_orchestration_snapshot_remains_readable() -> None:
+    turn = new_turn_record(_request())
+
+    legacy_payload = turn.model_dump()
+    legacy_payload.pop("orchestration")
+    legacy_turn = TurnRecord.model_validate(legacy_payload)
+
+    assert legacy_turn.orchestration is None
+
+
+def test_cas_rejects_switching_an_already_determined_execution_mode() -> None:
+    turn = new_turn_record(_request())
+    action_plan = turn.model_copy(
+        update={
+            "phase_version": turn.phase_version + 1,
+            "orchestration": GameMasterOrchestrationSnapshot(
+                execution_mode=GameMasterExecutionMode.ACTION_PLAN,
+                completed_stages=(GameMasterStage.ACCEPTED,),
+            ),
+            "updated_at": turn.updated_at + timedelta(seconds=1),
+        }
+    )
+    validate_turn_cas_update(turn, action_plan, expected_phase_version=turn.phase_version)
+    switched = action_plan.model_copy(
+        update={
+            "phase_version": action_plan.phase_version + 1,
+            "orchestration": GameMasterOrchestrationSnapshot(
+                execution_mode=GameMasterExecutionMode.SINGLE_ADJUDICATION,
+                completed_stages=(GameMasterStage.ACCEPTED,),
+            ),
+            "updated_at": action_plan.updated_at + timedelta(seconds=1),
+        }
+    )
+
+    with pytest.raises(TurnContractError, match="执行模式不得切换"):
+        validate_turn_cas_update(
+            action_plan,
+            switched,
+            expected_phase_version=action_plan.phase_version,
+        )
 
 
 def test_transition_rejects_skipped_or_reversed_phase() -> None:

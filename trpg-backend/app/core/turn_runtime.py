@@ -17,6 +17,13 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.gm_orchestration import (
+    GameMasterExecutionMode,
+    GameMasterOrchestrationSnapshot,
+    GameMasterStage,
+    validate_orchestration_update,
+)
+
 
 class TurnStatus(StrEnum):
     """一次玩家输入在回合协调器中的持久化阶段。"""
@@ -242,6 +249,7 @@ class TurnRecord(BaseModel):
     player_id: str = Field(min_length=1)
     actor_id: str = Field(min_length=1)
     request: TurnInputSnapshot
+    orchestration: GameMasterOrchestrationSnapshot | None = None
     status: TurnStatus = TurnStatus.RECEIVED
     phase_version: int = Field(default=1, ge=1)
     resume_point: TurnResumePoint = TurnResumePoint.PLANNING
@@ -406,6 +414,10 @@ def new_turn_record(request: TurnInputSnapshot, *, now: datetime | None = None) 
         player_id=request.player_id,
         actor_id=request.actor_id,
         request=request,
+        orchestration=GameMasterOrchestrationSnapshot(
+            execution_mode=GameMasterExecutionMode.NEW_ACTION,
+            completed_stages=(GameMasterStage.ACCEPTED,),
+        ),
         created_at=current,
         updated_at=current,
     )
@@ -477,6 +489,10 @@ def validate_turn_cas_update(
         raise TurnContractError("commit_state 不得从已提交状态降级")
     if updated.request != current.request or updated.created_at != current.created_at:
         raise TurnContractError("CAS 不得修改回合请求快照或创建时间")
+    try:
+        validate_orchestration_update(current.orchestration, updated.orchestration)
+    except ValueError as exc:
+        raise TurnContractError(str(exc)) from exc
 
 
 class TurnStore(Protocol):
