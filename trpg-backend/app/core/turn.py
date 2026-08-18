@@ -67,6 +67,7 @@ _PUBLIC_TOOL_LABELS = {
     "get_visible_entity": "守秘人正在确认可见目标",
 }
 _MAX_NARRATION_ATTEMPTS = 2
+_MAX_OPENING_OUTPUT_ATTEMPTS = 2
 
 
 def _public_tool_label(tool_name: str) -> str:
@@ -164,6 +165,7 @@ class SessionViewApplication:
         context = ContextAssembler().for_opening(player_view)
         started_at = time.perf_counter()
         failure_category: str | None = None
+        failure_family: str | None = None
         result: Literal["model", "template", "fallback"]
         if self.opening_narration_mode == "template":
             narration = deterministic_opening_narration(context)
@@ -171,10 +173,34 @@ class SessionViewApplication:
         else:
             try:
                 with anyio.fail_after(self.opening_narration_timeout_seconds):
-                    narration = await OpeningNarrator(self.opening_narration_model).narrate(context)
+                    narrator = OpeningNarrator(self.opening_narration_model)
+                    for attempt in range(_MAX_OPENING_OUTPUT_ATTEMPTS):
+                        try:
+                            narration = await narrator.narrate(context)
+                            break
+                        except (
+                            OpeningNarrationValidationError,
+                            ValidationError,
+                            json.JSONDecodeError,
+                        ) as exc:
+                            # 每次候选拒绝都记录稳定类别；不记录模型正文或 Context，
+                            # 既便于按房间定位 fallback，也不泄露玩家与模组内容。
+                            logger.warning(
+                                "opening_narration_candidate_rejected",
+                                room_ref=hashlib.sha256(player_view.room_id.encode()).hexdigest()[
+                                    :12
+                                ],
+                                attempt=attempt + 1,
+                                failure_category=_opening_failure_category(exc),
+                            )
+                            # 仅重试已经返回但不符合契约的候选；连接、HTTP 和超时
+                            # 继续立即降级，避免开场长时间阻塞玩家进入房间。
+                            if attempt + 1 >= _MAX_OPENING_OUTPUT_ATTEMPTS:
+                                raise
                 result = "model"
             except Exception as exc:  # the opening must never prevent entering InGame
                 failure_category = _opening_failure_category(exc)
+                failure_family = _opening_failure_family(exc)
                 narration = deterministic_opening_narration(context)
                 result = "fallback"
 
@@ -192,6 +218,7 @@ class SessionViewApplication:
             elapsed_ms=elapsed_ms,
             result=result,
             failure_category=failure_category,
+            failure_family=failure_family,
             input_chars=input_chars,
             output_chars=len(narration.text),
         )
@@ -215,6 +242,20 @@ def _opening_failure_category(exc: Exception) -> str:
         return f"validation_{exc.reason}"
     if isinstance(exc, ValidationError):
         return "pydantic_validation"
+    return "unexpected"
+
+
+def _opening_failure_family(exc: Exception) -> str:
+    """将细分异常归入稳定类别，便于按房间检索开场失败来源。"""
+
+    if isinstance(exc, TimeoutError | httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.RequestError | httpx.HTTPStatusError):
+        return "provider"
+    if isinstance(exc, OpeningNarrationValidationError):
+        return "evidence"
+    if isinstance(exc, json.JSONDecodeError | ValidationError):
+        return "schema"
     return "unexpected"
 
 

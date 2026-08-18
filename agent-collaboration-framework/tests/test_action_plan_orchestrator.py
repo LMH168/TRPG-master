@@ -45,6 +45,7 @@ from collaboration_framework.engine import (
     InMemoryEngineStore,
     RuleEngineService,
     SequenceDiceSource,
+    create_initial_game_state,
 )
 from collaboration_framework.host.adapters import InMemoryActionPlanRunStore
 from collaboration_framework.host.application import (
@@ -189,7 +190,7 @@ class RecordingAdjudicator:
                 else candidate
             )
 
-        cls.adjudicate = proposal_only
+        cls.adjudicate = proposal_only  # ty: ignore[invalid-assignment]
 
     def __init__(self, world_ref: str, *, check_step: int | None = None) -> None:
         self.world_ref = world_ref
@@ -608,11 +609,11 @@ class MissingRequiredEvidenceNarrationModel:
         }
 
 
-class ClaimsButOmitsRequiredEvidenceNarrationModel:
+class ParaphrasedRequiredEvidenceNarrationModel:
     async def generate(self, context):
         return {
             "kind": "narration",
-            "text": "你在墓碑附近发现了一些痕迹。",
+            "text": "沿着断续的痕迹，你确认脚下藏着一条通往地下的入口。",
             "claimed_evidence_refs": [context.narration_evidence[0].ref],
             "suggested_actions": [],
         }
@@ -1023,7 +1024,7 @@ async def test_resolved_check_validates_revision_before_agenda_advances() -> Non
         store=InMemoryActionPlanRunStore(),
         adjudicator=adjudicator,
         executor=engine,
-        player_view_projector=projector,
+        player_view_projector=projector,  # ty: ignore[invalid-argument-type]
         on_step_committed=commit_agenda,
     )
     original = player_input("agenda-revision-after-check")
@@ -1438,7 +1439,7 @@ async def test_second_step_context_failure_releases_adjudicating_state() -> None
         store=InMemoryActionPlanRunStore(),
         adjudicator=RecordingAdjudicator(module.world_ref),
         executor=AdjudicationEngineService(engine_store),
-        player_view_projector=FailSecondProjection(projector),
+        player_view_projector=FailSecondProjection(projector),  # ty: ignore[invalid-argument-type]
     )
     original = player_input("projection-retry-parent")
 
@@ -2221,6 +2222,184 @@ def single_travel_decision(*, target_id: str) -> SingleActionProposal:
     )
 
 
+def _landmark_runtime(
+    *,
+    scene_id: str,
+    scene_name: str,
+    target_id: str,
+    target_name: str,
+):
+    """构造同场景地标运行时，证明分类不依赖示例模组实体或地点 ID。"""
+
+    module = load_model(
+        "docs/module-parser/examples/module-content-validation/追书人/module-content-v3.json",
+        ModuleContentV3,
+    )
+    if scene_id != "cemetery":
+        source_location = next(
+            location for location in module.locations if location.id == "cemetery"
+        )
+        synthetic_location = source_location.model_copy(
+            update={
+                "id": scene_id,
+                "name": scene_name,
+                "player_visible_name": scene_name,
+                "player_visible_description": f"{scene_name}中的公开区域。",
+            },
+            deep=True,
+        )
+        module = module.model_copy(
+            update={"locations": (*module.locations, synthetic_location)},
+            deep=True,
+        )
+    if target_id != "favorite_grave":
+        source = next(
+            entity for entity in module.entities if entity.id == "favorite_grave"
+        )
+        synthetic = source.model_copy(
+            update={
+                "id": target_id,
+                "name": target_name,
+                "player_visible_name": target_name,
+                "player_visible_aliases": (target_name,),
+                "located_in": scene_id,
+                "state": {"identified": True},
+                "visibility_conditions": (),
+            },
+            deep=True,
+        )
+        module = module.model_copy(
+            update={"entities": (*module.entities, synthetic)},
+            deep=True,
+        )
+    state = create_initial_game_state(
+        module,
+        room_id="room_01",
+        actors={
+            "pc_1": ActorState(
+                player_id="player_01",
+                name="调查员",
+                source_character_id="character_01",
+                source_character_version=1,
+            )
+        },
+    )
+    entities = dict(state.entities)
+    entities[target_id] = {**entities[target_id], "identified": True}
+    state = state.model_copy(
+        update={"scene_id": scene_id, "entities": entities},
+        deep=True,
+    )
+    store = InMemoryEngineStore()
+    store.register_room(module_content=module, initial_state=state)
+    return module, store, PlayerViewProjector(RuleEngineService(store))
+
+
+def _landmark_decision(*, host_goal: str, target_id: str) -> SingleActionProposal:
+    """Host 只表达走向同场景地标，不提议地点变化或其他持久结果。"""
+
+    return SingleActionProposal.model_validate(
+        {
+            "kind": "single_action",
+            "schema_version": 2,
+            "semantic_goal": host_goal,
+            "semantic_focus": {"kind": "entity", "id": target_id},
+            "target_interaction": "physical",
+            "method_family": "approach_landmark",
+            "method_description": host_goal,
+            "execution_means": {"kind": "intrinsic"},
+            "check_proposal": {"mode": "none", "candidates": []},
+            "success_effect_proposals": [{"type": "narrative_only"}],
+            "failure_effect_proposals": [],
+            "completion": {"kind": "process", "interaction": "physical"},
+        }
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "action_id",
+        "utterance",
+        "host_goal",
+        "scene_id",
+        "scene_name",
+        "target_id",
+        "target_name",
+    ),
+    (
+        (
+            "approach-authored-landmark",
+            "去道格拉斯的墓碑",
+            "前往道格拉斯常坐的低矮墓碑",
+            "cemetery",
+            "阿诺兹堡公共墓地",
+            "favorite_grave",
+            "道格拉斯常坐的墓碑",
+        ),
+        (
+            "approach-synthetic-landmark",
+            "前往纪念碑旁边",
+            "靠近当前场景里的纪念标志",
+            "memorial_garden",
+            "纪念花园",
+            "memorial_marker",
+            "纪念标志",
+        ),
+    ),
+)
+async def test_single_action_approaches_visible_landmark_without_fake_travel(
+    action_id: str,
+    utterance: str,
+    host_goal: str,
+    scene_id: str,
+    scene_name: str,
+    target_id: str,
+    target_name: str,
+) -> None:
+    """走向同场景实体是焦点动作，不能因措辞含“去”而要求地点 Effect。"""
+
+    module, engine_store, projector = _landmark_runtime(
+        scene_id=scene_id,
+        scene_name=scene_name,
+        target_id=target_id,
+        target_name=target_name,
+    )
+    engine = AdjudicationEngineService(engine_store)
+    orchestrator_service = ActionPlanOrchestrator(
+        store=InMemoryActionPlanRunStore(),
+        adjudicator=RecordingAdjudicator(module.world_ref),
+        executor=engine,
+        player_view_projector=projector,
+    )
+    dispatcher = HostTurnDecisionExecutor(
+        plan_orchestrator=orchestrator_service,
+        executor=engine,
+        player_view_projector=projector,
+        policy=ActionPlanPolicy(),
+    )
+    original = player_input(action_id, utterance)
+
+    result = await dispatcher.execute(
+        original,
+        _landmark_decision(host_goal=host_goal, target_id=target_id),
+    )
+
+    assert isinstance(result, SingleActionTurnResult)
+    assert result.execution.status == "resolved"
+    assert result.execution.goal_outcome == "achieved"
+    assert result.player_view.scene.id == scene_id
+    async with engine_store.transaction(original.room_id) as tx:
+        command = await tx.find_latest_adjudication_command_by_action(
+            original.client_action_id
+        )
+    assert command is not None
+    assert command.validated_command is not None
+    assert command.validated_command.request.requested_goal == utterance
+    assert command.validated_command.request.proposal.semantic_goal == utterance
+    assert command.validated_command.adjudication.target.id == target_id
+
+
 @pytest.mark.asyncio
 async def test_single_action_binds_trusted_goal_over_host_paraphrase() -> None:
     """Host 同义改写不应阻塞结构化目标，最终目标仍以玩家原话为准。"""
@@ -2819,17 +2998,19 @@ async def test_narrator_rejects_missing_required_evidence() -> None:
 
     assert raised.value.reason == "required_evidence_missing"
 
-    with pytest.raises(NarrationValidationError) as claimed_but_omitted:
-        await Narrator(ClaimsButOmitsRequiredEvidenceNarrationModel()).narrate(context)
-
-    assert claimed_but_omitted.value.reason == "required_evidence_missing"
-
-    # A natural narration that clearly names a safe alias is authoritative
-    # enough for the service to record the required public ref itself.
-    alias_output = await Narrator(AliasRequiredEvidenceNarrationModel()).narrate(
+    # 模型用自然措辞改写权威结果时，结构化 claim 是覆盖声明；
+    # 不再要求正文逐字出现固定名称或 Presentation 原句。
+    paraphrased = await Narrator(ParaphrasedRequiredEvidenceNarrationModel()).narrate(
         context
     )
-    assert alias_output.claimed_evidence_refs == (required_ref,)
+    assert paraphrased.claimed_evidence_refs == (required_ref,)
+
+    # 仅在正文提到别名不能代替结构化 claim，否则服务端无法
+    # 区分“提到对象”与“已表达该条提交结果”。
+    with pytest.raises(NarrationValidationError) as alias_without_claim:
+        await Narrator(AliasRequiredEvidenceNarrationModel()).narrate(context)
+
+    assert alias_without_claim.value.reason == "required_evidence_missing"
 
 
 @pytest.mark.asyncio

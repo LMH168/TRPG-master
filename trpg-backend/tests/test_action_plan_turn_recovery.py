@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 from collaboration_framework.contracts import (
     ActionPlanPolicy,
+    AdjudicationExecution,
+    AdjudicationRecovery,
     AgendaContinuationProposal,
     CommittedResult,
     NarrationEvidence,
@@ -21,11 +23,13 @@ from collaboration_framework.engine import (
     AgendaStepExecution,
     InMemoryEngineStore,
     PlotThreadState,
+    RuleEngineService,
     create_initial_game_state,
     engine_turn_context,
 )
 from collaboration_framework.host.application import (
     NarrationValidationError,
+    PlayerViewProjector,
 )
 from collaboration_framework.host.application.narrator import (
     unsupported_focus_shift_claim,
@@ -227,6 +231,55 @@ def test_application_injects_plan_repair_dependencies_into_single_action_path() 
     assert application._dispatcher._policy is orchestrator.policy
 
 
+@pytest.mark.asyncio
+async def test_resume_single_uses_current_view_after_agenda_advanced_revision() -> None:
+    """叙事恢复必须接受同一 Turn 的 Agenda 已把 revision 向前推进。"""
+
+    store = _narration_store("room-281")
+    player_input = PlayerInput(
+        room_id="room-281",
+        player_id="player-281",
+        actor_id="actor-281",
+        client_action_id="action-after-agenda",
+        utterance="与当前可见的人交谈",
+    )
+    current_view = await PlayerViewProjector(RuleEngineService(store)).project(player_input)
+    # 模拟原裁决在 revision 63 提交，而同一 Turn 的 Agenda 随后推进到 70。
+    current_view = current_view.model_copy(update={"revision": "70"})
+    recovery = AdjudicationRecovery(
+        action_request_id=player_input.client_action_id,
+        actor_id=player_input.actor_id,
+        summary=player_input.utterance,
+        execution=AdjudicationExecution(
+            request_id=player_input.client_action_id,
+            action_request_id=player_input.client_action_id,
+            status="resolved",
+            view_revision="63",
+            outcome="success",
+            goal_outcome="achieved",
+        ),
+    )
+    application = object.__new__(ActionPlanTurnApplication)
+    application._adjudication_engine = SimpleNamespace(
+        recover_action=AsyncMock(return_value=recovery)
+    )
+    application._projector = SimpleNamespace(project=AsyncMock(return_value=current_view))
+    application._from_single = AsyncMock(return_value="recovered")
+
+    result = await application.resume_single(
+        room_id=player_input.room_id,
+        player_id=player_input.player_id,
+        parent_action_id=player_input.client_action_id,
+    )
+
+    assert result == "recovered"
+    application._projector.project.assert_awaited_once()
+    assert application._from_single.await_args is not None
+    submitted = application._from_single.await_args.args[2]
+    assert submitted.execution.view_revision == "63"
+    assert submitted.player_view.revision == "70"
+
+
 @pytest.mark.parametrize(
     ("outcomes", "goal_outcomes", "termination_status", "expected"),
     (
@@ -415,6 +468,24 @@ def test_real_model_focus_shift_wording_is_rejected_without_name_hardcoding() ->
     assert shifted == "douglas_grave"
 
 
+def test_prior_npc_cannot_block_new_object_focus_without_evidence() -> None:
+    """玩家转向新对象后，旧 NPC 不能凭空成为阻挡当前行动的剧情门槛。"""
+
+    visible = (
+        SimpleNamespace(id="prior_npc", name="管理员", aliases=("那个人",)),
+        SimpleNamespace(id="new_object", name="陈旧书柜", aliases=("书柜",)),
+    )
+
+    shifted = unsupported_focus_shift_claim(
+        "管理员突然挡在书柜前，不许你继续查看。",
+        focus_entity_ids=("new_object",),
+        visible_entities=visible,
+        evidence_subject_ids=set(),
+    )
+
+    assert shifted == "prior_npc"
+
+
 def test_recent_history_rebinds_to_post_commit_player_view_revision() -> None:
     """单动作提交推进 revision 后，叙事历史应只重绑定截止点而不改写内容。"""
 
@@ -563,6 +634,74 @@ async def test_narration_falls_back_to_required_player_safe_evidence() -> None:
     assert "石板下的地穴入口" in narration.text
     assert "沉重石板" in narration.text
     assert "。。" not in narration.text
+
+
+def test_required_evidence_fallback_groups_generic_multistage_result() -> None:
+    """多阶段规则降级时应保持顺序并连成过程，不按模组名称定制。"""
+
+    evidence = (
+        NarrationEvidence(
+            ref="evt-condition-applied",
+            kind="actor_condition",
+            subject_id="actor-1",
+            subject_name="失去意识",
+            description="你失去了意识。",
+            required_in_narration=True,
+        ),
+        NarrationEvidence(
+            ref="evt-time",
+            kind="world_time",
+            subject_id="evening",
+            subject_name="18点",
+            description="时间推进到第1天18点。",
+            required_in_narration=True,
+        ),
+        NarrationEvidence(
+            ref="evt-condition-expired",
+            kind="actor_condition",
+            subject_id="actor-1",
+            subject_name="恢复意识",
+            description="你恢复了意识。",
+            required_in_narration=True,
+        ),
+        NarrationEvidence(
+            ref="evt-location",
+            kind="location_transition",
+            subject_id="destination",
+            subject_name="目的地",
+            description="你来到目的地。",
+            required_in_narration=True,
+        ),
+        NarrationEvidence(
+            ref="evt-check",
+            kind="passive_check",
+            subject_id="san-check",
+            subject_name="理智检定",
+            description="理智检定失败。",
+            required_in_narration=True,
+        ),
+        NarrationEvidence(
+            ref="evt-resource",
+            kind="actor_resource_change",
+            subject_id="san",
+            subject_name="理智值",
+            description="你的理智值降低了4点。",
+            required_in_narration=True,
+        ),
+    )
+    context = cast(
+        NarrationContext,
+        SimpleNamespace(narration_evidence=evidence),
+    )
+
+    narration = ActionPlanTurnApplication._required_evidence_fallback(context)
+
+    assert narration.text.index("失去了意识") < narration.text.index("恢复了意识")
+    assert "不知过了多久" in narration.text
+    assert "醒来时" in narration.text
+    assert "\n理智检定失败" in narration.text
+    assert "这次冲击之后" in narration.text
+    assert narration.claimed_evidence_refs == tuple(item.ref for item in evidence)
 
 
 @pytest.mark.asyncio

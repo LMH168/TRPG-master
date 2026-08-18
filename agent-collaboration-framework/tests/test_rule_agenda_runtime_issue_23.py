@@ -128,6 +128,9 @@ async def test_passive_check_commits_once_and_recovery_does_not_reroll() -> None
     persisted = next(iter(store.inspect_state("room-1").rule_agendas.values()))
     assert persisted.schema_version == 2
     assert persisted.active_turn_id == "turn-1"
+    async with store.transaction("room-1") as transaction:
+        runtime_before_agenda = await transaction.load_runtime()
+    event_count_before_agenda = len(store.inspect_domain_events("room-1"))
     executor = RuleAgendaExecutor(
         store,
         engine=engine,
@@ -138,6 +141,18 @@ async def test_passive_check_commits_once_and_recovery_does_not_reroll() -> None
     assert len(executions) == 1
     assert executions[0].execution_kind == "passive_check"
     assert executions[0].result["roll"] == 50
+    agenda_events = store.inspect_domain_events("room-1")[event_count_before_agenda:]
+    adjudication_evidence = AdjudicationEngineService._narration_evidence(
+        runtime_before_agenda,
+        new_state=store.inspect_state("room-1"),
+        events=agenda_events,
+        player_id="player-1",
+        actor_id="actor-1",
+    )
+    # Agenda 持久化结果与普通裁决必须对同一事件产生完全相同的玩家安全证据。
+    assert executions[0].result["narration_evidence"] == [
+        item.to_json_dict() for item in adjudication_evidence
+    ]
     final_agenda = next(iter(store.inspect_state("room-1").rule_agendas.values()))
     assert final_agenda.status == "stable"
     assert await executor.drain(room_id="room-1", turn_id="turn-1") == ()
@@ -301,6 +316,20 @@ def test_rule_presentation_becomes_required_player_safe_evidence() -> None:
                     "player_safe_summary": "这段内容不能公开。",
                 },
             ),
+            DomainEvent(
+                event_id="evt-other-player-private",
+                sequence=3,
+                type="rule.presentation",
+                room_id="room-evidence",
+                actor_id="actor-2",
+                client_action_id="other-player-action",
+                cause="agenda:agenda-2",
+                visibility="private",
+                payload={
+                    "presentation_id": "other-player-only",
+                    "player_safe_summary": "这是其他玩家的私有结果。",
+                },
+            ),
         ),
         player_id="player-1",
         actor_id="actor-1",
@@ -308,6 +337,162 @@ def test_rule_presentation_becomes_required_player_safe_evidence() -> None:
 
     assert len(evidence) == 1
     assert evidence[0].ref == "evt-presentation"
+
+
+def test_synthetic_module_ids_project_through_the_same_evidence_path() -> None:
+    """替换地点、NPC 和信息 ID 后，证据仍只能来自 ModuleVersion 安全字段。"""
+
+    source = ModuleContentV3.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    location = source.locations[0].model_copy(
+        update={
+            "id": "synthetic_archive",
+            "kind": "site",
+            "name": "内部档案室",
+            "player_visible_name": "旧档案室",
+            "parent_location_id": None,
+            "region_id": None,
+        },
+        deep=True,
+    )
+    npc_source = next(entity for entity in source.entities if entity.kind == "npc")
+    npc = npc_source.model_copy(
+        update={
+            "id": "synthetic_curator",
+            "name": "内部管理员名称",
+            "player_visible_name": "档案管理员",
+            "player_visible_aliases": ("管理员",),
+            "located_in": location.id,
+        },
+        deep=True,
+    )
+    information = source.information[0].model_copy(
+        update={
+            "id": "synthetic_record",
+            "title": "公开登记记录",
+            "keeper_content": "不能交给 Narrator 的隐藏解释。",
+            "player_content": "登记簿显示昨晚有人借阅过这份档案。",
+        },
+        deep=True,
+    )
+    module = source.model_copy(
+        update={
+            "locations": (*source.locations, location),
+            "entities": (*source.entities, npc),
+            "information": (*source.information, information),
+        },
+        deep=True,
+    )
+    state = create_initial_game_state(
+        module,
+        room_id="room-synthetic-evidence",
+        actors={
+            "actor-1": ActorState(
+                player_id="player-1",
+                name="调查员",
+                source_character_id="character-1",
+                source_character_version=1,
+            )
+        },
+    )
+    # 提交前后都位于同一合成场景，让本用例只验证状态变化文本；实体首次发现
+    # 的独立证据由其他投影用例覆盖。
+    runtime_state = state.model_copy(update={"scene_id": location.id}, deep=True)
+    final_state = runtime_state.model_copy(
+        update={
+            "discovered_facts": (*runtime_state.discovered_facts, information.id),
+            "entities": {
+                **runtime_state.entities,
+                npc.id: {
+                    **runtime_state.entities[npc.id],
+                    "consciousness": "dead",
+                },
+            },
+            "public_entity_state_keys": {
+                **runtime_state.public_entity_state_keys,
+                npc.id: (
+                    *runtime_state.public_entity_state_keys.get(npc.id, ()),
+                    "consciousness",
+                ),
+            },
+        },
+        deep=True,
+    )
+    runtime = EngineRuntimeSnapshot(
+        module_id=module.module_id,
+        module_version=module.version,
+        module_content=module,
+        game_state=runtime_state,
+        revision="0",
+    )
+    events = (
+        DomainEvent(
+            event_id="evt-synthetic-travel",
+            sequence=1,
+            type="travel.resolved",
+            room_id=state.room_id,
+            actor_id="actor-1",
+            client_action_id="synthetic-action",
+            cause="test",
+            payload={"destination_id": location.id},
+        ),
+        DomainEvent(
+            event_id="evt-synthetic-npc",
+            sequence=2,
+            type="npc.action_opportunity",
+            room_id=state.room_id,
+            actor_id="actor-1",
+            client_action_id="synthetic-action",
+            cause="test",
+            payload={"entity_id": npc.id},
+        ),
+        DomainEvent(
+            event_id="evt-synthetic-state",
+            sequence=3,
+            type="entity.state_changed",
+            room_id=state.room_id,
+            actor_id="actor-1",
+            client_action_id="synthetic-action",
+            cause="test",
+            payload={
+                "entity_id": npc.id,
+                "key": "consciousness",
+                "value": "dead",
+            },
+        ),
+        DomainEvent(
+            event_id="evt-synthetic-information",
+            sequence=4,
+            type="information.revealed",
+            room_id=state.room_id,
+            actor_id="actor-1",
+            client_action_id="synthetic-action",
+            cause="test",
+            payload={"information_id": information.id},
+        ),
+    )
+
+    evidence = EvidenceAssembler.from_committed_events(
+        runtime,
+        final_state=final_state,
+        events=events,
+        player_id="player-1",
+        actor_id="actor-1",
+    )
+
+    assert [item.subject_id for item in evidence] == [
+        location.id,
+        npc.id,
+        npc.id,
+        information.id,
+    ]
+    descriptions = "".join(item.description for item in evidence)
+    assert "旧档案室" in descriptions
+    assert "档案管理员" in descriptions
+    assert "档案管理员已经死亡。" in descriptions
+    assert "consciousness" not in descriptions
+    assert "dead" not in descriptions
+    assert information.player_content in descriptions
+    assert information.keeper_content not in descriptions
     assert evidence[0].required_in_narration is True
 
 

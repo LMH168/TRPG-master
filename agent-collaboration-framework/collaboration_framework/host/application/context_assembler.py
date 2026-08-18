@@ -19,6 +19,18 @@ from collaboration_framework.host.schemas import (
 )
 from collaboration_framework.memory import MemoryContext
 
+_NON_INTERACTIVE_CONSCIOUSNESS = frozenset({"dead", "unconscious"})
+
+
+def _visible_npc_is_interactive(entity: object) -> bool:
+    """只在最终 PlayerView 未证明 NPC 失去交互能力时延续对话。"""
+
+    observable_state = getattr(entity, "observable_state", ())
+    return not any(
+        state.key == "consciousness" and state.value in _NON_INTERACTIVE_CONSCIOUSNESS
+        for state in observable_state
+    )
+
 
 class ContextAssembler:
     """Build minimal model inputs from player-safe views and completed results."""
@@ -105,7 +117,7 @@ class ContextAssembler:
         visible_npc_ids = visible_actor_ids | {
             entity.id
             for entity in player_view.scene.visible_entities
-            if entity.kind == "npc"
+            if entity.kind == "npc" and _visible_npc_is_interactive(entity)
         }
         visible_ids = visible_actor_ids | {
             entity.id for entity in player_view.scene.visible_entities

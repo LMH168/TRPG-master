@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Literal
+from unittest.mock import Mock
 
 import anyio
 import httpx
@@ -16,8 +18,10 @@ from collaboration_framework.contracts import (
     WorldStateView,
 )
 from collaboration_framework.engine import InMemoryEngineStore, RuleEngineService
+from collaboration_framework.host.ports import OpeningNarrationModelPort
 from collaboration_framework.host.schemas import OpeningNarrationContext
 
+from app.core import turn as turn_module
 from app.core.config import Settings
 from app.core.turn import HostModelMetadata, build_session_view_application
 
@@ -98,8 +102,32 @@ class CandidateOpeningModel:
         }
 
 
+class RepairableOpeningModel:
+    """首个候选缺少参与者，第二个候选满足开场证据边界。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate(self, context: OpeningNarrationContext):
+        del context
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "kind": "narration",
+                "text": "杜明站在旧宅门厅。",
+                "claimed_fact_ids": [],
+                "suggested_actions": [],
+            }
+        return {
+            "kind": "narration",
+            "text": "12:00，杜明与林夏一同站在旧宅门厅的昏黄灯光下。",
+            "claimed_fact_ids": [],
+            "suggested_actions": [],
+        }
+
+
 def application(
-    model: CandidateOpeningModel,
+    model: OpeningNarrationModelPort,
     *,
     mode: Literal["model", "template"] = "model",
 ):
@@ -153,6 +181,50 @@ async def test_valid_model_opening_mentions_every_public_participant() -> None:
     assert result.failure_category is None
     assert "杜明" in result.narration.text
     assert "林夏" in result.narration.text
+
+
+async def test_invalid_model_candidate_is_retried_within_opening_budget() -> None:
+    """偶发输出校验失败不应直接让 AI 开场退化为固定模板。"""
+
+    model = RepairableOpeningModel()
+    result = await application(model).generate_opening(opening_view())
+
+    assert model.calls == 2
+    assert result.result == "model"
+    assert result.failure_category is None
+    assert "杜明" in result.narration.text
+    assert "林夏" in result.narration.text
+
+
+@pytest.mark.parametrize(
+    ("outcome", "failure_family"),
+    [
+        ("timeout", "timeout"),
+        ("connection", "provider"),
+        ("http", "provider"),
+        ("json", "schema"),
+        ("invalid-output", "evidence"),
+    ],
+)
+async def test_opening_log_is_room_searchable_and_has_stable_failure_family(
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+    failure_family: str,
+) -> None:
+    """开场降级日志必须能按匿名房间标识检索并稳定分类。"""
+
+    log_info = Mock()
+    monkeypatch.setattr(turn_module.logger, "info", log_info)
+
+    await application(CandidateOpeningModel(outcome)).generate_opening(opening_view())
+
+    log_info.assert_called_once()
+    (event_name,) = log_info.call_args.args
+    fields = log_info.call_args.kwargs
+    assert event_name == "opening_narration_completed"
+    assert fields["room_ref"] == hashlib.sha256(b"room-1").hexdigest()[:12]
+    assert fields["result"] == "fallback"
+    assert fields["failure_family"] == failure_family
 
 
 async def test_template_mode_does_not_call_model() -> None:

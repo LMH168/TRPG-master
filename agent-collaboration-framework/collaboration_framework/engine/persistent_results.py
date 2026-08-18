@@ -42,6 +42,86 @@ OBJECT_STATE_VALUES: dict[str, tuple[JsonValue, ...]] = {
 }
 PUBLIC_STATE_KEYS = frozenset((*CHARACTER_STATE_VALUES, *OBJECT_STATE_VALUES))
 
+# 标准状态键仍作为 Engine 内部稳定标识；投影和叙事必须使用这里的玩家可读标签，
+# 不能把 consciousness、dead 等协议值直接暴露给玩家。
+PUBLIC_STATE_LABELS: dict[str, str] = {
+    "consciousness": "意识状态",
+    "posture": "姿态",
+    "restraint": "束缚状态",
+    "injury": "伤势",
+    "open": "开启状态",
+    "locked": "锁定状态",
+    "broken": "损坏状态",
+}
+
+_PUBLIC_STATE_VALUE_LABELS: dict[str, dict[JsonValue, str]] = {
+    "consciousness": {
+        "conscious": "清醒",
+        "unconscious": "昏迷",
+        "dead": "死亡",
+    },
+    "posture": {"standing": "站立", "prone": "倒地"},
+    "restraint": {"free": "自由", "restrained": "被束缚"},
+    "injury": {
+        "none": "无明显伤势",
+        "minor": "轻伤",
+        "major": "重伤",
+        "critical": "伤势危重",
+    },
+    "open": {True: "已打开", False: "已关闭"},
+    "locked": {True: "已锁住", False: "未锁住"},
+    "broken": {True: "已损坏", False: "完好"},
+}
+
+_PUBLIC_STATE_CHANGE_TEMPLATES: dict[tuple[str, JsonValue], str] = {
+    ("consciousness", "conscious"): "{subject}保持清醒。",
+    ("consciousness", "unconscious"): "{subject}失去了意识。",
+    ("consciousness", "dead"): "{subject}已经死亡。",
+    ("posture", "standing"): "{subject}处于站立状态。",
+    ("posture", "prone"): "{subject}已经倒地。",
+    ("restraint", "free"): "{subject}已经摆脱束缚。",
+    ("restraint", "restrained"): "{subject}已被束缚。",
+    ("injury", "none"): "{subject}目前没有明显伤势。",
+    ("injury", "minor"): "{subject}受了轻伤。",
+    ("injury", "major"): "{subject}受了重伤。",
+    ("injury", "critical"): "{subject}伤势危重。",
+    ("open", True): "{subject}已经打开。",
+    ("open", False): "{subject}已经关闭。",
+    ("locked", True): "{subject}已经锁住。",
+    ("locked", False): "{subject}目前没有锁住。",
+    ("broken", True): "{subject}已经损坏。",
+    ("broken", False): "{subject}目前完好。",
+}
+
+
+def public_state_label(key: str) -> str:
+    """返回标准公开状态的玩家可读名称。"""
+
+    return PUBLIC_STATE_LABELS.get(key, key)
+
+
+def public_state_value_label(key: str, value: JsonValue) -> str:
+    """把受控标准值转换为玩家可读文本，未知值保持可诊断但不猜测。"""
+
+    # JsonValue 也可能是 list/dict；这两类值不可哈希，不能直接用于映射查询。
+    if isinstance(value, (str, bool)):
+        return _PUBLIC_STATE_VALUE_LABELS.get(key, {}).get(value, str(value))
+    return str(value)
+
+
+def public_state_change_description(subject: str, key: str, value: JsonValue) -> str:
+    """生成可直接交给 Narrator 或安全 fallback 的状态变化句。"""
+
+    # 标准状态契约当前只接受字符串或布尔值；异常复合值仍需安全降级。
+    template = (
+        _PUBLIC_STATE_CHANGE_TEMPLATES.get((key, value))
+        if isinstance(value, (str, bool))
+        else None
+    )
+    if template is not None:
+        return template.format(subject=subject)
+    return f"{subject}的{public_state_label(key)}变为{public_state_value_label(key, value)}。"
+
 
 @dataclass(frozen=True)
 class PersistentEffectProblem:

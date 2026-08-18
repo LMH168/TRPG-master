@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pydantic import JsonValue
+
 from collaboration_framework.contracts import (
     ActionRequest,
     ActorBindingError,
@@ -32,14 +34,13 @@ from collaboration_framework.contracts import (
     SceneSpec,
     VisibilityPolicy,
 )
-from pydantic import JsonValue
+from collaboration_framework.runtime_context import current_turn_id
 
 from .expression import ExpressionEvaluator, expression_context
-from collaboration_framework.runtime_context import current_turn_id
-from .projection_v3 import keeper_capabilities_v3, project_v3
 from .models import EngineRuntimeSnapshot, GameState
-from .persistent_results import PUBLIC_STATE_KEYS
+from .persistent_results import PUBLIC_STATE_KEYS, public_state_label
 from .ports import EngineStore
+from .projection_v3 import keeper_capabilities_v3, project_v3
 
 
 class RuleEngineService:
@@ -504,7 +505,11 @@ class RuleEngineService:
         )
         blocked = excluded or set()
         return tuple(
-            ProjectionObservableState(key=key, label=key, value=values[key])
+            ProjectionObservableState(
+                key=key,
+                label=public_state_label(key),
+                value=values[key],
+            )
             for key in state.public_entity_state_keys.get(entity_id, ())
             if key in PUBLIC_STATE_KEYS and key not in blocked and key in values
         )

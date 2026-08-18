@@ -28,8 +28,12 @@ from collaboration_framework.contracts import (
     ActionPlanProposal,
     ActionPlanStep,
     ActionTarget,
+    ClarificationProposal,
     EnsureRuntimeLocationEffect,
     EnterLocationEffect,
+    KeeperEntityCapability,
+    KeeperRuleCandidate,
+    KeeperRuleOption,
     LocationContextView,
     ModuleContentV3,
     MoveEntityEffect,
@@ -58,10 +62,12 @@ from collaboration_framework.memory import MemoryContext
 
 from app.core.action_plan_turn import (
     DeterministicHostTurnDecisionModel,
+    PublishedRuleFallbackHostTurnDecisionModel,
     TravelFirstHostTurnDecisionModel,
     _deterministic_step_adjudication,
     _DeterministicStepAdjudicator,
     _match_travel_target,
+    _normalize_rule_owned_proposal,
     _RuleFirstStepAdjudicator,
 )
 
@@ -153,6 +159,88 @@ def _located(view: PlayerView) -> LocationContextView:
     return location_context
 
 
+def _host_context(step_context: ActionPlanStepContext) -> HostAgentContext:
+    """把步骤测试上下文转换为生产单动作 Host 输入，并保持同一 revision。"""
+
+    return HostAgentContext(
+        player_input=step_context.player_input,
+        player_view=step_context.player_view,
+        recent_history=RecentTurnContext.empty(
+            player_input=step_context.player_input,
+            player_view=step_context.player_view,
+        ),
+        memory_context=MemoryContext.empty(
+            player_input=step_context.player_input,
+            player_view=step_context.player_view,
+        ),
+        keeper_capabilities=step_context.keeper_capabilities,
+    )
+
+
+def _with_synthetic_rule(
+    context: HostAgentContext,
+    *,
+    duplicate: bool = False,
+) -> HostAgentContext:
+    """用非《追书人》名称替换候选，证明恢复逻辑只依赖模组作者契约。"""
+
+    capabilities = context.keeper_capabilities
+    assert capabilities is not None
+    candidate = KeeperRuleCandidate(
+        rule_id="operate_control_valve",
+        question_kind="method",
+        semantic_hints=("开启控制阀",),
+        action_families=("operate",),
+        target_interactions=("physical",),
+        target_kinds=("entity",),
+        target_ids=("control_valve",),
+        options=(
+            KeeperRuleOption(
+                id="manual_force",
+                semantic_hints=("手动",),
+                requires_check=True,
+            ),
+        ),
+    )
+    candidates = (candidate,)
+    entities = (
+        KeeperEntityCapability(
+            id="control_valve",
+            name="控制阀",
+            kind="object",
+            origin="canon",
+            location_id=context.player_view.scene.id,
+        ),
+    )
+    if duplicate:
+        candidates = (
+            candidate,
+            candidate.model_copy(
+                update={
+                    "rule_id": "operate_backup_valve",
+                    "target_ids": ("backup_valve",),
+                }
+            ),
+        )
+        entities += (
+            KeeperEntityCapability(
+                id="backup_valve",
+                name="备用阀",
+                kind="object",
+                origin="canon",
+                location_id=context.player_view.scene.id,
+            ),
+        )
+    return context.model_copy(
+        update={
+            "keeper_capabilities": capabilities.model_copy(
+                update={"rule_candidates": candidates, "entities": entities}
+            )
+        },
+        deep=True,
+    )
+
+
 async def test_engine_publishes_rule_candidates_where_the_actor_stands() -> None:
     """规则匹配的前提：引擎得先把候选发出来。"""
 
@@ -161,6 +249,155 @@ async def test_engine_publishes_rule_candidates_where_the_actor_stands() -> None
     assert context.keeper_capabilities is not None
     rule_ids = {candidate.rule_id for candidate in context.keeper_capabilities.rule_candidates}
     assert "observe_caretaker" in rule_ids
+
+
+@pytest.mark.asyncio
+async def test_published_rule_owns_results_even_when_host_attaches_effects() -> None:
+    """任意模组的已发布 Rule 都应剥离 Host 猜测结果，而不是终止玩家回合。"""
+
+    context = _with_synthetic_rule(_host_context(await _cemetery_context("开启控制阀")))
+    proposal = SingleActionProposal.model_validate(
+        {
+            "schema_version": 2,
+            "semantic_goal": "开启控制阀",
+            "semantic_focus": {"kind": "entity", "id": "control_valve"},
+            "target_interaction": "physical",
+            "method_family": "operate",
+            "method_description": "手动开启控制阀",
+            "execution_means": {"kind": "intrinsic"},
+            "check_proposal": {"mode": "none", "candidates": []},
+            "rule_ref": {
+                "rule_id": "operate_control_valve",
+                "option_id": "manual_force",
+            },
+            "success_effect_proposals": [{"type": "narrative_only"}],
+            "failure_effect_proposals": [{"type": "narrative_only"}],
+            "completion": {"kind": "process", "interaction": "physical"},
+        }
+    )
+
+    normalized = _normalize_rule_owned_proposal(
+        proposal,
+        context.keeper_capabilities,
+    )
+
+    assert normalized.success_effect_proposals == ()
+    assert normalized.failure_effect_proposals == ()
+    assert normalized.completion is not None
+    assert normalized.completion.kind == "process"
+    assert normalized.completion.interaction == "physical"
+
+
+@pytest.mark.asyncio
+async def test_unknown_rule_reference_is_not_normalized() -> None:
+    """未知 rule_ref 必须保留给 Engine 拒绝，不能借规范化绕过权限。"""
+
+    context = _with_synthetic_rule(_host_context(await _cemetery_context("开启控制阀")))
+    proposal = SingleActionProposal.model_validate(
+        {
+            "schema_version": 2,
+            "semantic_goal": "开启控制阀",
+            "semantic_focus": {"kind": "entity", "id": "control_valve"},
+            "target_interaction": "physical",
+            "method_family": "operate",
+            "method_description": "手动开启控制阀",
+            "execution_means": {"kind": "intrinsic"},
+            "check_proposal": {"mode": "none", "candidates": []},
+            "rule_ref": {"rule_id": "unknown_rule", "option_id": "unknown_option"},
+            "success_effect_proposals": [{"type": "narrative_only"}],
+            "failure_effect_proposals": [],
+            "completion": {"kind": "process", "interaction": "physical"},
+        }
+    )
+
+    normalized = _normalize_rule_owned_proposal(
+        proposal,
+        context.keeper_capabilities,
+    )
+
+    assert normalized == proposal
+
+
+@pytest.mark.asyncio
+async def test_production_single_action_recovers_unique_authored_rule_from_clarification() -> None:
+    """真实 Host 若误澄清，唯一作者规则仍应进入 Engine，而不是随机吞掉检定。"""
+
+    class ClarifyingHost:
+        async def generate(self, context):
+            del context
+            return ClarificationProposal(
+                reason_code="model_uncertain",
+                question="请说明你想怎么做。",
+            )
+
+    context = _with_synthetic_rule(_host_context(await _cemetery_context("开启控制阀")))
+
+    proposal = await PublishedRuleFallbackHostTurnDecisionModel(ClarifyingHost()).generate(context)
+
+    assert isinstance(proposal, SingleActionProposal)
+    assert proposal.semantic_goal == "开启控制阀"
+    assert proposal.semantic_focus.id == "control_valve"
+    assert proposal.method_family == "operate"
+    assert proposal.target_interaction == "physical"
+    assert proposal.completion is not None
+    assert proposal.completion.kind == "process"
+    assert proposal.completion.interaction == "physical"
+    assert proposal.rule_ref is None
+    assert isinstance(proposal.check_proposal, NoAdjudicationCheck)
+
+
+@pytest.mark.asyncio
+async def test_production_single_action_recovers_rule_from_unreadable_model_output() -> None:
+    """结构输出失败时也只恢复公开动作范围，不能由适配层伪造技能和 Effect。"""
+
+    class UnreadableHost:
+        async def generate(self, context):
+            del context
+            raise TurnExecutionError(
+                "MODEL_OUTPUT_UNREADABLE",
+                "模型输出无法读取",
+                retryable=True,
+            )
+
+    context = _with_synthetic_rule(_host_context(await _cemetery_context("开启控制阀")))
+
+    proposal = await PublishedRuleFallbackHostTurnDecisionModel(UnreadableHost()).generate(context)
+
+    assert isinstance(proposal, SingleActionProposal)
+    assert proposal.semantic_focus.id == "control_valve"
+    assert proposal.success_effect_proposals == ()
+    assert proposal.failure_effect_proposals == ()
+
+
+@pytest.mark.asyncio
+async def test_rule_fallback_preserves_ambiguity_and_compound_actions() -> None:
+    """多候选和明确复合目标必须保留 Host 澄清，不能被降级成任意单动作。"""
+
+    clarification = ClarificationProposal(
+        reason_code="model_uncertain",
+        question="请确认你要执行哪一步。",
+    )
+
+    class ClarifyingHost:
+        async def generate(self, context):
+            del context
+            return clarification
+
+    ambiguous = _with_synthetic_rule(
+        _host_context(await _cemetery_context("开启控制阀")),
+        duplicate=True,
+    )
+    wrapper = PublishedRuleFallbackHostTurnDecisionModel(ClarifyingHost())
+
+    assert await wrapper.generate(ambiguous) == clarification
+    for utterance in (
+        "开启控制阀，然后检查仪表",
+        "开启控制阀并检查仪表",
+        "开启控制阀，同时检查仪表",
+        "开启控制阀，检查仪表",
+    ):
+        compound = _with_synthetic_rule(_host_context(await _cemetery_context(utterance)))
+        assert await wrapper.generate(compound) == clarification
 
 
 async def test_fake_host_only_expresses_published_rule_scope() -> None:

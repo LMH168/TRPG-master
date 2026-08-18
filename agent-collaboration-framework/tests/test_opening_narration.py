@@ -153,6 +153,23 @@ class OpeningContextTests(unittest.TestCase):
 
 
 class OpeningNarratorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_solo_opening_may_address_player_without_repeating_name(self) -> None:
+        """单人开场使用第二人称时不应因未直呼角色名而退回固定模板。"""
+
+        context = ContextAssembler().for_opening(player_view(multiplayer=False))
+        output = await OpeningNarrator(
+            CandidateOpeningModel(
+                {
+                    "kind": "narration",
+                    "text": "12:00，你站在旧宅门厅的昏黄灯光下，雨水沿衣角滴落。",
+                    "claimed_fact_ids": [],
+                    "suggested_actions": [],
+                }
+            )
+        ).narrate(context)
+
+        self.assertIn("你站在旧宅门厅", output.text)
+
     async def test_accepts_valid_public_opening(self) -> None:
         context = ContextAssembler().for_opening(player_view(multiplayer=True))
         output = await OpeningNarrator(

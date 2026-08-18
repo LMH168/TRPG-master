@@ -26,6 +26,7 @@ from collaboration_framework.contracts import (
     CancelCheckChoice,
     ChangeEntityStateEffect,
     CheckDecisionRequest,
+    ClarificationProposal,
     CommittedResult,
     ConsumeEntityEffect,
     ContractError,
@@ -45,6 +46,7 @@ from collaboration_framework.contracts import (
     PlayerInput,
     PlayerView,
     PostRollDecisionRequest,
+    ProcessGoalCompletionProposal,
     RevealInformationEffect,
     SetEndingAvailabilityEffect,
     SetVisibilityEffect,
@@ -103,6 +105,64 @@ from app.core.turn_events import TurnPhase
 logger = structlog.get_logger()
 
 TurnPhaseObserver = Callable[[TurnPhase], Awaitable[None]]
+
+_FALLBACK_NEW_PARAGRAPH_KINDS = frozenset({"passive_check"})
+
+
+def _fallback_evidence_sentence(
+    item: NarrationEvidence,
+    *,
+    previous_kind: str | None,
+) -> str:
+    """将一条玩家安全证据改写为确定性叙事句。
+
+    这里只依赖通用 evidence kind 和已审核的 description，不读取
+    玩家原话、模组 ID 或隐藏规则，因此 fallback 不会补造未提交结果。
+    """
+
+    if item.kind == "entity_discovered":
+        sentence = f"随着调查深入，你很快辨认出{item.subject_name}"
+        if item.description:
+            detail = item.description.rstrip("。！？!?；;，,")
+            sentence = f"{sentence}：{detail}"
+        return sentence + "。"
+
+    description = item.description.rstrip("。！？!?；;，,")
+    if not description:
+        description = f"你注意到{item.subject_name}"
+
+    # 连接词只表达已提交事件的先后顺序，不改变任何状态语义。
+    if item.kind == "world_time":
+        prefix = "不知过了多久，"
+    elif item.kind == "location_transition" and previous_kind == "actor_condition":
+        prefix = "醒来时，"
+    elif item.kind == "entity_moved":
+        prefix = "与此同时，"
+    elif item.kind == "npc_opportunity":
+        prefix = "此时，"
+    elif item.kind == "actor_resource_change" and previous_kind == "passive_check":
+        prefix = "这次冲击之后，"
+    elif previous_kind is not None:
+        prefix = "随后，"
+    else:
+        prefix = ""
+    return prefix + description + "。"
+
+
+def _required_evidence_fallback_text(
+    required: tuple[NarrationEvidence, ...],
+) -> str:
+    """按权威事件顺序组织 fallback，并将检定后果分成独立段落。"""
+
+    paragraphs: list[list[str]] = [[]]
+    previous_kind: str | None = None
+    for item in required:
+        if item.kind in _FALLBACK_NEW_PARAGRAPH_KINDS and paragraphs[-1]:
+            paragraphs.append([])
+            previous_kind = None
+        paragraphs[-1].append(_fallback_evidence_sentence(item, previous_kind=previous_kind))
+        previous_kind = item.kind
+    return "\n".join("".join(paragraph) for paragraph in paragraphs if paragraph)
 
 
 async def _emit_phase(observer: TurnPhaseObserver | None, phase: TurnPhase) -> None:
@@ -433,6 +493,7 @@ class DeterministicHostTurnDecisionModel:
 
         published_proposal = _proposal_from_published_rule_scope(
             capabilities=context.keeper_capabilities,
+            player_view=context.player_view,
             semantic_goal=utterance,
         )
         if published_proposal is not None:
@@ -502,6 +563,62 @@ class TravelFirstHostTurnDecisionModel:
         if compound is not None:
             return compound
         return await self._fallback.generate(context)
+
+
+class PublishedRuleFallbackHostTurnDecisionModel:
+    """模型无法给出可执行单动作时，按唯一公开规则恢复无授权 Proposal。"""
+
+    def __init__(self, fallback: HostTurnDecisionModel) -> None:
+        self._fallback = fallback
+
+    async def generate(self, context: HostAgentContext) -> HostDecisionProposal:
+        """只接管唯一且有作者语义证据的规则，歧义和复合行动仍交还原结果。"""
+
+        utterance = context.player_input.utterance
+        if _has_explicit_action_sequence(utterance):
+            return await self._fallback.generate(context)
+
+        try:
+            decision = await self._fallback.generate(context)
+        except TurnExecutionError as exc:
+            if exc.code != "MODEL_OUTPUT_UNREADABLE":
+                raise
+            proposal = _proposal_from_published_rule_scope(
+                capabilities=context.keeper_capabilities,
+                player_view=context.player_view,
+                semantic_goal=utterance,
+            )
+            if proposal is None:
+                raise
+            # 规则候选来自与 PlayerView 同 revision 的受控投影；这里只恢复动作
+            # 范围，具体分支、检定与 Effect 仍由 Engine 在事务内重新校验。
+            return proposal
+
+        if not isinstance(decision, ClarificationProposal):
+            return decision
+        proposal = _proposal_from_published_rule_scope(
+            capabilities=context.keeper_capabilities,
+            player_view=context.player_view,
+            semantic_goal=utterance,
+        )
+        return proposal if proposal is not None else decision
+
+
+def _has_explicit_action_sequence(text: str) -> bool:
+    """识别玩家明确连接的多个动作，防止规则恢复把复合目标截成第一步。"""
+
+    clauses = tuple(
+        clause.strip(" \t，,。；;")
+        for clause in re.split(
+            r"\s*(?:，|,)?(?:然后|接着|随后)\s*"
+            r"|\s*[；;]\s*"
+            r"|\s*[，,]\s*"
+            r"|\s*(?:并且|同时|以及|并)\s*",
+            text,
+        )
+        if clause.strip(" \t，,。；;")
+    )
+    return len(clauses) >= 2
 
 
 def _compact_travel_plan(view: PlayerView, utterance: str) -> ActionPlan | None:
@@ -1119,6 +1236,14 @@ class ActionPlanTurnApplication:
                     keeper_capabilities=keeper_capabilities,
                 )
             )
+            if isinstance(decision, SingleActionProposal):
+                # Host 可能正确选中服务端发布的 Rule，却仍附带它自己猜测的 Effect。
+                # 在可信候选边界统一去掉这些无授权结果，Engine 随后仍会重新校验
+                # rule、option、目标、前置条件与 revision，不能借此使用未知规则。
+                decision = _normalize_rule_owned_proposal(
+                    decision,
+                    keeper_capabilities,
+                )
         except TurnExecutionError as exc:
             if exc.code != "MODEL_OUTPUT_UNREADABLE":
                 raise
@@ -1371,12 +1496,14 @@ class ActionPlanTurnApplication:
             # the frozen adjudication summary is the safe recovery label.
             utterance=recovery.summary,
         )
+        # 单动作提交后，同一 Turn 的 RuleAgenda 可以继续提交被动检定、资源变化、
+        # NPC 机会和剧情线程，因此当前 revision 合法地晚于原 adjudication。
+        # 恢复时必须读取最新权威视图，再由 _from_single 按 execution/receipt 合并
+        # Agenda 证据；若强制与旧 execution.view_revision 相等，每次叙事重试都会
+        # 把已经提交的 Agenda 误判为并发状态漂移，最终耗尽 Turn 恢复预算。
         result = SingleActionTurnResult(
             execution=recovery.execution,
-            player_view=await self._projector.refresh_adjudication(
-                player_input,
-                recovery.execution,
-            ),
+            player_view=await self._projector.project(player_input),
         )
         if recovery.execution.status in {
             "awaiting_skill_choice",
@@ -2097,7 +2224,15 @@ class ActionPlanTurnApplication:
         # committed_results，但后续持久声明校验会阻止它把检定成功外推为目标完成。
         for attempt in range(2):
             try:
-                return await self._narrator.narrate(context)
+                narration = await self._narrator.narrate(context)
+                logger.info(
+                    "action_plan_narration_completed",
+                    action=context.player_input.client_action_id,
+                    source="model",
+                    attempt=attempt + 1,
+                    claimed_evidence_count=len(narration.claimed_evidence_refs),
+                )
+                return narration
             except NarrationValidationError as exc:
                 # 只记录校验类别和权威结果，不记录模型正文或其他敏感上下文。
                 logger.warning(
@@ -2128,6 +2263,8 @@ class ActionPlanTurnApplication:
                     ):
                         logger.info(
                             "action_plan_narration_required_evidence_fallback",
+                            action=context.player_input.client_action_id,
+                            source="fallback",
                             evidence_refs=[
                                 item.ref
                                 for item in context.narration_evidence
@@ -2193,19 +2330,8 @@ class ActionPlanTurnApplication:
                 "规则结果已保存，但叙事未通过安全校验；请使用原请求重试",
                 retryable=True,
             )
-        sentences: list[str] = []
-        for item in required:
-            if item.kind == "entity_discovered":
-                sentences.append(f"随着调查深入，你很快辨认出{item.subject_name}。")
-                if item.description:
-                    sentences.append(item.description.rstrip("。！？!?；;，,") + "。")
-                continue
-            if item.description:
-                sentences.append(item.description.rstrip("。！？!?；;，,") + "。")
-                continue
-            sentences.append(f"随着调查深入，你很快辨认出{item.subject_name}。")
         return NarrationOutput(
-            text="".join(sentences),
+            text=_required_evidence_fallback_text(required),
             claimed_evidence_refs=tuple(item.ref for item in required),
         )
 
@@ -2578,7 +2704,9 @@ def build_action_plan_turn_application(
         store=store,
         engine=engine,
         adjudication_engine=adjudication_engine,
-        planner=TravelFirstHostTurnDecisionModel(planner),
+        planner=TravelFirstHostTurnDecisionModel(
+            PublishedRuleFallbackHostTurnDecisionModel(planner)
+        ),
         orchestrator=orchestrator,
         narrator=Narrator(narration_model),
         recent_history_source=history_source,
@@ -2597,6 +2725,7 @@ class _DeterministicStepAdjudicator:
     async def adjudicate(self, context: ActionPlanStepContext) -> SingleActionProposal:
         published_proposal = _proposal_from_published_rule_scope(
             capabilities=context.keeper_capabilities,
+            player_view=context.player_view,
             semantic_goal=context.step.semantic_goal,
         )
         if published_proposal is not None:
@@ -2642,6 +2771,7 @@ class _RuleFirstStepAdjudicator:
     async def adjudicate(self, context: ActionPlanStepContext) -> SingleActionProposal:
         published_proposal = _proposal_from_published_rule_scope(
             capabilities=context.keeper_capabilities,
+            player_view=context.player_view,
             semantic_goal=context.step.semantic_goal,
         )
         if published_proposal is not None:
@@ -2654,7 +2784,53 @@ class _RuleFirstStepAdjudicator:
         adjudication = _deterministic_step_adjudication(context)
         if adjudication is not None:
             return _proposal_from_adjudication(adjudication)
-        return await self._fallback.adjudicate(context)
+        proposal = await self._fallback.adjudicate(context)
+        if isinstance(proposal, SingleActionProposal):
+            return _normalize_rule_owned_proposal(
+                proposal,
+                context.keeper_capabilities,
+            )
+        # 旧测试/兼容 Adapter 仍可能返回 ActionAdjudication；生产 Adapter 已只写
+        # Proposal，但这里保持 reader 兼容，不把迁移期对象误当成新契约处理。
+        return proposal
+
+
+def _normalize_rule_owned_proposal(
+    proposal: SingleActionProposal,
+    capabilities: KeeperCapabilityView | None,
+) -> SingleActionProposal:
+    """将已发布 Rule 的 Proposal 收敛为由规则独占结果的安全形态。
+
+    这里只识别当前 Keeper View 中精确存在的 rule/option。其余 Proposal 原样进入
+    Engine，让严格 Validator 拒绝未知、过期、目标漂移或越权引用。
+    """
+
+    rule_ref = proposal.rule_ref
+    if (
+        proposal.schema_version != 2
+        or rule_ref is None
+        or proposal.target_interaction is None
+        or capabilities is None
+    ):
+        return proposal
+    candidate = next(
+        (
+            item
+            for item in capabilities.rule_candidates
+            if item.rule_id == rule_ref.rule_id
+            and any(option.id == rule_ref.option_id for option in item.options)
+        ),
+        None,
+    )
+    if candidate is None:
+        return proposal
+    return proposal.model_copy(
+        update={
+            "success_effect_proposals": (),
+            "failure_effect_proposals": (),
+            "completion": ProcessGoalCompletionProposal(interaction=proposal.target_interaction),
+        }
+    )
 
 
 def _deterministic_step_adjudication(
@@ -2854,8 +3030,8 @@ def _requested_companions(
     return tuple(requested)
 
 
-def _match_published_rule_scope(capabilities, text: str):
-    """Fake Host 仅按模组公开提示确定唯一动作范围，不解释技能或结果。"""
+def _match_published_rule_scope(capabilities, player_view: PlayerView, text: str):
+    """按模组作者语义确定唯一动作范围，不解释技能、分支或结果。"""
 
     if capabilities is None:
         return None
@@ -2864,19 +3040,51 @@ def _match_published_rule_scope(capabilities, text: str):
     for candidate in capabilities.rule_candidates:
         if (
             len(candidate.action_families) != 1
+            or len(candidate.target_interactions) > 1
             or len(candidate.target_kinds) != 1
             or len(candidate.target_ids) != 1
         ):
             continue
-        hints = (
-            *candidate.semantic_hints,
-            *(hint for option in candidate.options for hint in option.semantic_hints),
-        )
-        matched_hints = {
+        question_hints = {
             "".join(hint.casefold().split())
-            for hint in hints
+            for hint in candidate.semantic_hints
             if "".join(hint.casefold().split()) in normalized
         }
+        option_hints = {
+            "".join(hint.casefold().split())
+            for option in candidate.options
+            for hint in option.semantic_hints
+            if "".join(hint.casefold().split()) in normalized
+        }
+        target_kind = candidate.target_kinds[0]
+        target_id = candidate.target_ids[0]
+        target_labels = [target_id]
+        if target_kind == "entity":
+            target_labels.extend(
+                entity.name for entity in capabilities.entities if entity.id == target_id
+            )
+            for entity in player_view.scene.visible_entities:
+                if entity.id == target_id:
+                    target_labels.extend((entity.name, *entity.aliases))
+        elif target_kind == "location":
+            target_labels.extend(
+                location.name for location in capabilities.locations if location.id == target_id
+            )
+            target_labels.extend(
+                location.name
+                for location in player_view.known_locations
+                if location.id == target_id
+            )
+        elif target_kind == "information":
+            target_labels.extend(
+                information.title
+                for information in capabilities.information
+                if information.id == target_id
+            )
+        target_matched = _best_label_overlap(text, tuple(target_labels)) is not None
+        # 方法选项（如技能名）本身不能证明目标；只有同时点明当前唯一目标时，
+        # 才能作为作者语义证据。question hint 则已经表达完整动作声明。
+        matched_hints = question_hints | (option_hints if target_matched else set())
         if matched_hints:
             # 多条作者提示共同命中时证据强于单条方法提示；完全同分仍视为歧义，
             # Fake Host 不替模型猜测玩家意图。
@@ -2901,6 +3109,7 @@ def _match_published_rule_scope(capabilities, text: str):
     candidate = matches[0][2]
     return (
         candidate.action_families[0],
+        candidate.target_interactions[0] if candidate.target_interactions else "other",
         candidate.target_kinds[0],
         candidate.target_ids[0],
     )
@@ -2909,28 +3118,29 @@ def _match_published_rule_scope(capabilities, text: str):
 def _proposal_from_published_rule_scope(
     *,
     capabilities: KeeperCapabilityView | None,
+    player_view: PlayerView,
     semantic_goal: str,
 ) -> SingleActionProposal | None:
     """把唯一公开 Rule 语义范围转换为无授权 Proposal。"""
 
-    published_scope = _match_published_rule_scope(capabilities, semantic_goal)
+    published_scope = _match_published_rule_scope(capabilities, player_view, semantic_goal)
     if published_scope is None:
         return None
-    family, target_kind, target_id = published_scope
+    family, target_interaction, target_kind, target_id = published_scope
     return SingleActionProposal.model_validate(
         {
             "kind": "single_action",
             "schema_version": 2,
             "semantic_goal": semantic_goal,
             "semantic_focus": {"kind": target_kind, "id": target_id},
-            "target_interaction": "other",
+            "target_interaction": target_interaction,
             "method_family": family,
             "method_description": semantic_goal,
             "execution_means": {"kind": "intrinsic"},
             "check_proposal": {"mode": "none", "candidates": []},
             "success_effect_proposals": [],
             "failure_effect_proposals": [],
-            "completion": {"kind": "process", "interaction": "other"},
+            "completion": {"kind": "process", "interaction": target_interaction},
         }
     )
 
@@ -2941,6 +3151,7 @@ __all__ = [
     "DeterministicNarrationModel",
     "DeterministicHostTurnDecisionModel",
     "HostTurnDecisionModel",
+    "PublishedRuleFallbackHostTurnDecisionModel",
     "build_action_plan_turn_application",
 ]
 

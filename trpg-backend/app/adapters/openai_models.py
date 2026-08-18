@@ -119,9 +119,10 @@ kind=clarification。若 completed_steps 已有成功的旅行步骤，但后续
 needs_clarification，才用自然的角色内措辞提出一次最小澄清。claimed_evidence_refs
 只能复制 allowed_evidence_refs 中正文确实使用的值。不得输出 raw plan、裁决效果、
 内部状态、工具结果、模型推理或协议字段。建议动作最多三条且只能来自最终 PlayerView。
-叙事必须明确写出 narration_evidence 中 required_in_narration=true 的每项玩家可见结果；
-应把对应 ref 放入 claimed_evidence_refs，服务端也会按正文中明确出现的公开名称或别名
-确定性记录 required ref。不得以未经证据确认的关键发现替代这些结果。
+叙事必须覆盖 narration_evidence 中 required_in_narration=true 的每项玩家可见结果，
+并把每项对应 ref 放入 claimed_evidence_refs。正文应按事件顺序自然改写成连贯场景，
+不要逐字复述 subject_name 或 description；但结果的主体、先后关系、最终地点、
+最终状态和数值变化必须与证据一致。不得以未经证据确认的关键发现替代这些结果。
 Agenda 证据按权威事件顺序给出。角色状态、时间、地点、NPC 机会、被动检定和资源变化必须
 按该顺序自然连成一段，不得省略中间状态，也不得增加证据中不存在的门、石板、人物或状态变化。
 plot_thread_transition 只提供当前剧情阶段背景，不要逐字朗读抽象流程摘要。

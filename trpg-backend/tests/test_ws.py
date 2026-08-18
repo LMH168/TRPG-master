@@ -246,6 +246,25 @@ class _WsCountingOpening:
         return await self._fake.generate(context)
 
 
+class _WsRepairableOpening:
+    """首次遗漏参与者，第二次返回满足证据边界的 AI 开场候选。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self._fake = FakeOpeningNarrationModel()
+
+    async def generate(self, context: OpeningNarrationContext) -> JsonObject:
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "kind": "narration",
+                "text": "会客室里一片安静。",
+                "claimed_fact_ids": [],
+                "suggested_actions": [],
+            }
+        return await self._fake.generate(context)
+
+
 class _FailOnceNarrator:
     def __init__(self, delegate: Narrator) -> None:
         self.delegate = delegate
@@ -746,6 +765,48 @@ def test_invalid_opening_model_falls_back_after_room_enters_in_game(
     assert "陈探员" in opening["payload"]["text"]
     room_state = next(message for message in progress if message.get("type") == "room.state")
     assert room_state["payload"]["phase"] == "InGame"
+
+
+def test_repaired_model_opening_is_persisted_and_replayed(
+    sync_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """模型首个候选无效时应重试，并只持久化第二个有效 AI 开场。"""
+
+    token = register_and_login(sync_client, "opening_repair_host")
+    room = create_room(sync_client, token)
+    advance_to_building(sync_client, room)
+    complete_character(sync_client, room["roomId"], room["reconnectToken"])
+    opening_model = _WsRepairableOpening()
+    monkeypatch.setattr(
+        ws_controller,
+        "session_view_application",
+        replace(
+            ws_controller.session_view_application,
+            opening_narration_model=opening_model,
+        ),
+    )
+
+    start_game(sync_client, room, token)
+
+    with sync_client.websocket_connect(f"/ws/{room['roomId']}?token={token}") as ws:
+        ws.send_json(
+            {
+                "type": "room.join",
+                "playerId": room["playerId"],
+                "payload": {"reconnectToken": room["reconnectToken"]},
+            }
+        )
+        replayed, _ = receive_until(
+            ws,
+            lambda message: message.get("type") == "narration.push",
+        )
+
+    assert opening_model.calls == 2
+    assert replayed["payload"]["messageId"] == "game-opening"
+    assert "托马斯的会客室" in replayed["payload"]["text"]
+    assert "陈探员" in replayed["payload"]["text"]
+    assert "会客室里一片安静" not in replayed["payload"]["text"]
 
 
 def test_game_start_rejects_non_host(sync_client: TestClient) -> None:
