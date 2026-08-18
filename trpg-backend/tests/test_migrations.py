@@ -9,7 +9,8 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 PREVIOUS_REVISION = "1a02058345ee"
 ENGINE_IDENTITY_PREVIOUS_REVISION = "9c4e7a2b1d6f"
-HEAD_REVISION = "a5b6c7d8e9f0"
+HEAD_REVISION = "b6c7d8e9f0a1"
+MERGED_PARENT_REVISIONS = ("a5b6c7d8e9f0", "d7e8f9a0b1c2")
 
 
 def _run_alembic(database: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -228,6 +229,21 @@ def test_migration_upgrades_empty_sqlite_and_round_trips(tmp_path: Path) -> None
     with sqlite3.connect(database) as connection:
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
     assert revision == (HEAD_REVISION,)
+
+
+def test_merge_head_accepts_both_existing_parent_revisions(tmp_path: Path) -> None:
+    """LMH 或上游任一父 head 的现有数据库都必须能收敛到唯一 merge head。"""
+
+    for parent_revision in MERGED_PARENT_REVISIONS:
+        database = tmp_path / f"merge-from-{parent_revision}.db"
+        _upgrade_or_fail(database, parent_revision)
+        _upgrade_or_fail(database, "head")
+
+        with sqlite3.connect(database) as connection:
+            revisions = connection.execute(
+                "SELECT version_num FROM alembic_version ORDER BY version_num"
+            ).fetchall()
+        assert revisions == [(HEAD_REVISION,)]
 
 
 def test_recent_history_migration_backfills_visibility_conservatively(
