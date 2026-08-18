@@ -609,11 +609,11 @@ class MissingRequiredEvidenceNarrationModel:
         }
 
 
-class ClaimsButOmitsRequiredEvidenceNarrationModel:
+class ParaphrasedRequiredEvidenceNarrationModel:
     async def generate(self, context):
         return {
             "kind": "narration",
-            "text": "你在墓碑附近发现了一些痕迹。",
+            "text": "沿着断续的痕迹，你确认脚下藏着一条通往地下的入口。",
             "claimed_evidence_refs": [context.narration_evidence[0].ref],
             "suggested_actions": [],
         }
@@ -2998,17 +2998,19 @@ async def test_narrator_rejects_missing_required_evidence() -> None:
 
     assert raised.value.reason == "required_evidence_missing"
 
-    with pytest.raises(NarrationValidationError) as claimed_but_omitted:
-        await Narrator(ClaimsButOmitsRequiredEvidenceNarrationModel()).narrate(context)
-
-    assert claimed_but_omitted.value.reason == "required_evidence_missing"
-
-    # A natural narration that clearly names a safe alias is authoritative
-    # enough for the service to record the required public ref itself.
-    alias_output = await Narrator(AliasRequiredEvidenceNarrationModel()).narrate(
+    # 模型用自然措辞改写权威结果时，结构化 claim 是覆盖声明；
+    # 不再要求正文逐字出现固定名称或 Presentation 原句。
+    paraphrased = await Narrator(ParaphrasedRequiredEvidenceNarrationModel()).narrate(
         context
     )
-    assert alias_output.claimed_evidence_refs == (required_ref,)
+    assert paraphrased.claimed_evidence_refs == (required_ref,)
+
+    # 仅在正文提到别名不能代替结构化 claim，否则服务端无法
+    # 区分“提到对象”与“已表达该条提交结果”。
+    with pytest.raises(NarrationValidationError) as alias_without_claim:
+        await Narrator(AliasRequiredEvidenceNarrationModel()).narrate(context)
+
+    assert alias_without_claim.value.reason == "required_evidence_missing"
 
 
 @pytest.mark.asyncio

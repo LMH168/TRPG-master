@@ -319,31 +319,13 @@ class Narrator:
             for item in getattr(step, "narration_evidence", ())
             if item.required_in_narration
         )
-        mentioned_required = tuple(
-            item
-            for item in required
-            if any(
-                label and label in output.text
-                for label in (
-                    item.description
-                    if item.kind == "rule_presentation"
-                    else item.subject_name,
-                    *item.subject_aliases,
-                )
-            )
-        )
-        if len(mentioned_required) != len(required):
+        required_refs = {item.ref for item in required}
+        # claimed_evidence_refs 是模型对“正文已覆盖哪些权威事实”的结构化声明。
+        # 中文自然改写无法通过名称或整句包含关系可靠判断；继续做词面扫描会把
+        # “昏厥后在黄昏醒来”误判为遗漏“失去意识/18点/恢复意识”。权限、
+        # 持久状态和焦点仍由下面的确定性门禁校验，这里只要求必述引用完整。
+        if not required_refs.issubset(output.claimed_evidence_refs):
             raise NarrationValidationError("required_evidence_missing")
-        claimed = tuple(
-            dict.fromkeys(
-                (
-                    *output.claimed_evidence_refs,
-                    *(item.ref for item in mentioned_required),
-                )
-            )
-        )
-        if claimed != output.claimed_evidence_refs:
-            output = output.model_copy(update={"claimed_evidence_refs": claimed})
         rejection_reason = narration_text_rejection_reason(output.text)
         if rejection_reason is not None:
             raise NarrationValidationError(rejection_reason)

@@ -636,6 +636,74 @@ async def test_narration_falls_back_to_required_player_safe_evidence() -> None:
     assert "。。" not in narration.text
 
 
+def test_required_evidence_fallback_groups_generic_multistage_result() -> None:
+    """多阶段规则降级时应保持顺序并连成过程，不按模组名称定制。"""
+
+    evidence = (
+        NarrationEvidence(
+            ref="evt-condition-applied",
+            kind="actor_condition",
+            subject_id="actor-1",
+            subject_name="失去意识",
+            description="你失去了意识。",
+            required_in_narration=True,
+        ),
+        NarrationEvidence(
+            ref="evt-time",
+            kind="world_time",
+            subject_id="evening",
+            subject_name="18点",
+            description="时间推进到第1天18点。",
+            required_in_narration=True,
+        ),
+        NarrationEvidence(
+            ref="evt-condition-expired",
+            kind="actor_condition",
+            subject_id="actor-1",
+            subject_name="恢复意识",
+            description="你恢复了意识。",
+            required_in_narration=True,
+        ),
+        NarrationEvidence(
+            ref="evt-location",
+            kind="location_transition",
+            subject_id="destination",
+            subject_name="目的地",
+            description="你来到目的地。",
+            required_in_narration=True,
+        ),
+        NarrationEvidence(
+            ref="evt-check",
+            kind="passive_check",
+            subject_id="san-check",
+            subject_name="理智检定",
+            description="理智检定失败。",
+            required_in_narration=True,
+        ),
+        NarrationEvidence(
+            ref="evt-resource",
+            kind="actor_resource_change",
+            subject_id="san",
+            subject_name="理智值",
+            description="你的理智值降低了4点。",
+            required_in_narration=True,
+        ),
+    )
+    context = cast(
+        NarrationContext,
+        SimpleNamespace(narration_evidence=evidence),
+    )
+
+    narration = ActionPlanTurnApplication._required_evidence_fallback(context)
+
+    assert narration.text.index("失去了意识") < narration.text.index("恢复了意识")
+    assert "不知过了多久" in narration.text
+    assert "醒来时" in narration.text
+    assert "\n理智检定失败" in narration.text
+    assert "这次冲击之后" in narration.text
+    assert narration.claimed_evidence_refs == tuple(item.ref for item in evidence)
+
+
 @pytest.mark.asyncio
 async def test_blocked_travel_uses_structured_fallback_without_model_claims() -> None:
     """受阻旅行直接复述 Engine 边界，模型不能把抵达入口扩写成已经进入。"""

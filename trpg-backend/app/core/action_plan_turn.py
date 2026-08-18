@@ -106,6 +106,64 @@ logger = structlog.get_logger()
 
 TurnPhaseObserver = Callable[[TurnPhase], Awaitable[None]]
 
+_FALLBACK_NEW_PARAGRAPH_KINDS = frozenset({"passive_check"})
+
+
+def _fallback_evidence_sentence(
+    item: NarrationEvidence,
+    *,
+    previous_kind: str | None,
+) -> str:
+    """将一条玩家安全证据改写为确定性叙事句。
+
+    这里只依赖通用 evidence kind 和已审核的 description，不读取
+    玩家原话、模组 ID 或隐藏规则，因此 fallback 不会补造未提交结果。
+    """
+
+    if item.kind == "entity_discovered":
+        sentence = f"随着调查深入，你很快辨认出{item.subject_name}"
+        if item.description:
+            detail = item.description.rstrip("。！？!?；;，,")
+            sentence = f"{sentence}：{detail}"
+        return sentence + "。"
+
+    description = item.description.rstrip("。！？!?；;，,")
+    if not description:
+        description = f"你注意到{item.subject_name}"
+
+    # 连接词只表达已提交事件的先后顺序，不改变任何状态语义。
+    if item.kind == "world_time":
+        prefix = "不知过了多久，"
+    elif item.kind == "location_transition" and previous_kind == "actor_condition":
+        prefix = "醒来时，"
+    elif item.kind == "entity_moved":
+        prefix = "与此同时，"
+    elif item.kind == "npc_opportunity":
+        prefix = "此时，"
+    elif item.kind == "actor_resource_change" and previous_kind == "passive_check":
+        prefix = "这次冲击之后，"
+    elif previous_kind is not None:
+        prefix = "随后，"
+    else:
+        prefix = ""
+    return prefix + description + "。"
+
+
+def _required_evidence_fallback_text(
+    required: tuple[NarrationEvidence, ...],
+) -> str:
+    """按权威事件顺序组织 fallback，并将检定后果分成独立段落。"""
+
+    paragraphs: list[list[str]] = [[]]
+    previous_kind: str | None = None
+    for item in required:
+        if item.kind in _FALLBACK_NEW_PARAGRAPH_KINDS and paragraphs[-1]:
+            paragraphs.append([])
+            previous_kind = None
+        paragraphs[-1].append(_fallback_evidence_sentence(item, previous_kind=previous_kind))
+        previous_kind = item.kind
+    return "\n".join("".join(paragraph) for paragraph in paragraphs if paragraph)
+
 
 async def _emit_phase(observer: TurnPhaseObserver | None, phase: TurnPhase) -> None:
     if observer is not None:
@@ -2166,7 +2224,15 @@ class ActionPlanTurnApplication:
         # committed_results，但后续持久声明校验会阻止它把检定成功外推为目标完成。
         for attempt in range(2):
             try:
-                return await self._narrator.narrate(context)
+                narration = await self._narrator.narrate(context)
+                logger.info(
+                    "action_plan_narration_completed",
+                    action=context.player_input.client_action_id,
+                    source="model",
+                    attempt=attempt + 1,
+                    claimed_evidence_count=len(narration.claimed_evidence_refs),
+                )
+                return narration
             except NarrationValidationError as exc:
                 # 只记录校验类别和权威结果，不记录模型正文或其他敏感上下文。
                 logger.warning(
@@ -2197,6 +2263,8 @@ class ActionPlanTurnApplication:
                     ):
                         logger.info(
                             "action_plan_narration_required_evidence_fallback",
+                            action=context.player_input.client_action_id,
+                            source="fallback",
                             evidence_refs=[
                                 item.ref
                                 for item in context.narration_evidence
@@ -2262,19 +2330,8 @@ class ActionPlanTurnApplication:
                 "规则结果已保存，但叙事未通过安全校验；请使用原请求重试",
                 retryable=True,
             )
-        sentences: list[str] = []
-        for item in required:
-            if item.kind == "entity_discovered":
-                sentences.append(f"随着调查深入，你很快辨认出{item.subject_name}。")
-                if item.description:
-                    sentences.append(item.description.rstrip("。！？!?；;，,") + "。")
-                continue
-            if item.description:
-                sentences.append(item.description.rstrip("。！？!?；;，,") + "。")
-                continue
-            sentences.append(f"随着调查深入，你很快辨认出{item.subject_name}。")
         return NarrationOutput(
-            text="".join(sentences),
+            text=_required_evidence_fallback_text(required),
             claimed_evidence_refs=tuple(item.ref for item in required),
         )
 
