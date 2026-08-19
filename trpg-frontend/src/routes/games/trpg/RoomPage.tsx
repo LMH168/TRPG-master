@@ -183,6 +183,17 @@ interface Message {
   playerId?: string
 }
 
+interface GmPendingCheck {
+  checkId: string
+  skillId: string
+  targetValue: number
+}
+
+interface GmClarification {
+  question: string
+  options: string[]
+}
+
 const EMPTY_ROOM_PLAYERS: RoomPlayerSummary[] = []
 
 interface MapLocation {
@@ -1282,6 +1293,7 @@ export default function RoomPage() {
   const roomId = useRoomStore((s) => s.roomId)
   const roomCode = useRoomStore((s) => s.roomCode)
   const playerId = useRoomStore((s) => s.playerId)
+  const moduleId = useRoomStore((s) => s.moduleId)
   const characterId = useRoomStore((s) => s.characterId)
   const reconnectToken = useRoomStore((s) => s.reconnectToken)
   const nickname = useAuthStore((s) => s.nickname)
@@ -1290,6 +1302,7 @@ export default function RoomPage() {
   // 「从卡库选卡」就是一条）在准备页看着正常，进游戏这个面板就是空的。
   const { character } = useRoomCharacter()
   const senderName = character?.info.name || nickname || '你'
+  const gmApiAvailable = Boolean((sdk as unknown as { gm?: unknown }).gm)
   const { ruleset } = useRuleset()
   const roomInfo = useRoomPlayers(roomCode)
   const roomPlayers = roomInfo?.players ?? EMPTY_ROOM_PLAYERS
@@ -1351,6 +1364,10 @@ export default function RoomPage() {
   // 单独取稳定方法，避免 effect 依赖每次渲染都会新建的 Hook 返回对象。
   const cancelSpeechInput = speechInput.cancel
   const [typing, setTyping] = useState(false)
+  const [gmReady, setGmReady] = useState(!gmApiAvailable)
+  const [gmPendingCheck, setGmPendingCheck] = useState<GmPendingCheck | null>(null)
+  const [gmClarification, setGmClarification] = useState<GmClarification | null>(null)
+  const gmRevisionRef = useRef(0)
   const [pendingAction, setPendingAction] = useState<{ clientActionId: string; utterance: string } | null>(null)
   const [pendingCheck, setPendingCheck] = useState<CheckRequestPayload | null>(null)
   const [pendingAdjudication, setPendingAdjudication] =
@@ -1986,6 +2003,49 @@ export default function RoomPage() {
     return off
   }, [clearBackendProgress, clearSettledAction, enqueueHostSpeech, handleHostSpeechSettingsUpdated, openDiceForCheck, playerId, roomId, senderName, showBackendPhase])
 
+  useEffect(() => {
+    // 新 GM REST 会话在进入房间后建立；测试替身没有 gm 资源时继续使用旧 WS 流程。
+    const api = (sdk as unknown as {
+      gm?: {
+        createSession: (payload: Record<string, string>, token: string, account: string) => Promise<{
+          projection: { revision: number; checks?: Array<GmPendingCheck & { status: string }> }
+        }>
+        getProjection: (room: string, actor: string, token: string) => Promise<{
+          revision: number
+          checks?: Array<GmPendingCheck & { status: string }>
+          pendingClarification?: GmClarification | null
+        }>
+      }
+    }).gm
+    const accountToken = getAuthToken()
+    if (!api || !roomId || !playerId || !reconnectToken || !accountToken) return
+    setGmReady(false)
+    const selectedModuleId = moduleId?.includes('paper') ? 'paper-chase' : moduleId ?? 'paper-chase'
+    let cancelled = false
+    void api.createSession(
+      {
+        roomId,
+        moduleId: selectedModuleId,
+        actorId: playerId,
+        displayName: senderName,
+      },
+      reconnectToken,
+      accountToken,
+    ).then(async (session) => {
+      if (cancelled) return
+      const projection = await api.getProjection(roomId, playerId, reconnectToken)
+      if (cancelled) return
+      gmRevisionRef.current = projection.revision ?? session.projection.revision
+      const pending = projection.checks?.find((check) => check.status === 'awaiting_roll')
+      setGmPendingCheck(pending ?? null)
+      setGmClarification(projection.pendingClarification ?? null)
+      setGmReady(true)
+    }).catch((error: unknown) => {
+      if (!cancelled) setActionError(friendlyErrorMessage(error, 'AI 主持尚未就绪'))
+    })
+    return () => { cancelled = true }
+  }, [moduleId, playerId, reconnectToken, roomId, senderName])
+
   const submitPlayerAction = (action: { clientActionId: string; utterance: string }) => {
     if (!playerId || suspended) return
     const previousLocator = roomId ? readTurnLocator(roomId, playerId) : null
@@ -2000,9 +2060,73 @@ export default function RoomPage() {
     setTyping(true)
     showBackendPhase('reading_player_view')
     setSecondaryProgressLabel(null)
-    void sdk.roomSocket.submitPlannedAction(playerId, action)
+    const gmApi = (sdk as unknown as {
+      gm?: {
+        submitFreeText: (room: string, payload: Record<string, unknown>, token: string) => Promise<{
+          status: 'clarification' | 'completed' | 'failed'
+          revision: number
+          narration?: string | null
+          clarificationQuestion?: string | null
+          clarificationOptions?: string[]
+          commandResult?: {
+            projection: { revision: number }
+            narrationFacts?: string[]
+            check?: (GmPendingCheck & { status: string }) | null
+          }
+        }>
+      }
+    }).gm
+    const request = gmApi && roomId && reconnectToken
+      ? gmApi.submitFreeText(
+        roomId,
+        {
+          clientRequestId: action.clientActionId,
+          actorId: playerId,
+          expectedRevision: gmRevisionRef.current,
+          input: action.utterance,
+        },
+        reconnectToken,
+      )
+      : sdk.roomSocket.submitPlannedAction(playerId, action)
+    void request
       .then((result) => {
-        setPlayerView(result.player_view)
+        if (gmApi) {
+          const typedResult = result as {
+            status: 'clarification' | 'completed' | 'failed'
+            revision: number
+            narration?: string | null
+            clarificationQuestion?: string | null
+            clarificationOptions?: string[]
+            commandResult?: {
+              projection: { revision: number }
+              narrationFacts?: string[]
+              check?: (GmPendingCheck & { status: string }) | null
+            }
+          }
+          const nextRevision = typedResult.commandResult?.projection.revision ?? typedResult.revision
+          gmRevisionRef.current = nextRevision
+          const check = typedResult.commandResult?.check
+          setGmPendingCheck(check?.status === 'awaiting_roll' ? check : null)
+          if (typedResult.status === 'clarification') {
+            const question = typedResult.clarificationQuestion ?? '请补充你要调查的目标'
+            setGmClarification({ question, options: typedResult.clarificationOptions ?? [] })
+            setActionError(question)
+            setActionErrorIsGuidance(true)
+          } else if (typedResult.narration || typedResult.commandResult?.narrationFacts?.length) {
+            setGmClarification(null)
+            const narration = typedResult.narration ?? typedResult.commandResult?.narrationFacts?.join(' ') ?? ''
+            setMessages((current) => appendLiveMessage(current, {
+              type: 'narr',
+              channel: 'action',
+              messageId: `gm-${action.clientActionId}`,
+              sender: '守秘人',
+              content: narration,
+              time: formatRoomTime(new Date()),
+            }))
+          }
+        } else {
+          setPlayerView((result as { player_view: AgentPlayerView }).player_view)
+        }
         // 这个动作已经拿到权威结果，属于它的检定面板不能再留在页面上。比等
         // narration 更早，也覆盖了叙事走重放而不是逐片推送的情况。
         clearSettledAction(action.clientActionId)
@@ -2052,7 +2176,12 @@ export default function RoomPage() {
   const sendMessage = (e?: FormEvent) => {
     e?.preventDefault()
     const text = input.trim()
-    if (!text || !playerId || suspended) return
+    if (
+      !text ||
+      !playerId ||
+      suspended ||
+      (channel === 'action' && (!gmReady || gmPendingCheck !== null))
+    ) return
     // 发送前先关闭识别结果闸门，防止浏览器稍后返回的文本写入已清空的输入框。
     cancelSpeechInput()
     setInput('')
@@ -2061,6 +2190,56 @@ export default function RoomPage() {
     } else {
       submitPlayerAction({ clientActionId: randomActionId(), utterance: text })
     }
+  }
+
+  const rollGmPendingCheck = () => {
+    // 只发送 checkId；D100 点数由服务端首次处理该检定时生成并持久化。
+
+    if (!gmPendingCheck || !roomId || !playerId || !reconnectToken) return
+    const gmApi = (sdk as unknown as {
+      gm?: {
+        submitCommand: (room: string, payload: Record<string, unknown>, token: string) => Promise<{
+          revision: number
+          check?: { roll?: number | null; success?: boolean | null; skillId: string } | null
+          narrationFacts?: string[]
+        }>
+      }
+    }).gm
+    if (!gmApi) return
+    setTyping(true)
+    const requestId = randomActionId()
+    void gmApi.submitCommand(
+      roomId,
+      {
+        clientRequestId: requestId,
+        expectedRevision: gmRevisionRef.current,
+        actorId: playerId,
+        command: { kind: 'roll_check', checkId: gmPendingCheck.checkId },
+      },
+      reconnectToken,
+    ).then((result) => {
+      gmRevisionRef.current = result.revision
+      setGmPendingCheck(null)
+      setTyping(false)
+      const text = result.narrationFacts?.join(' ') ?? (
+        result.check?.roll != null
+          ? `${result.check.skillId} 检定骰点：${result.check.roll}`
+          : '检定已结算'
+      )
+      setMessages((current) => appendLiveMessage(current, {
+        type: 'dice',
+        channel: 'action',
+        messageId: `gm-check-${requestId}`,
+        sender: senderName,
+        content: text,
+        time: formatRoomTime(new Date()),
+        isSelf: true,
+      }))
+    }).catch((error: unknown) => {
+      setTyping(false)
+      setActionError(friendlyErrorMessage(error, '投骰失败，请重试'))
+      setActionErrorRetryable(true)
+    })
   }
 
   useEffect(() => {
@@ -2413,6 +2592,42 @@ export default function RoomPage() {
 
       {/* Input area */}
       <div className="room-play__composer">
+        {isActionChannel && gmClarification && !suspended && (
+          <div className="mb-2 px-1">
+            <p className="mb-1 text-[11px] text-[#8a642d]">{gmClarification.question}</p>
+            {gmClarification.options.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {gmClarification.options.map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => {
+                      setGmClarification(null)
+                      submitPlayerAction({ clientActionId: randomActionId(), utterance: option })
+                    }}
+                    className="rounded-sm border border-brass bg-white px-2 py-1 text-[11px] text-brass-dark"
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {isActionChannel && gmPendingCheck && !suspended && (
+          <button
+            type="button"
+            onClick={rollGmPendingCheck}
+            className="mb-2 w-full rounded-sm border border-brass bg-white py-2 text-sm font-semibold text-brass-dark"
+          >
+            投掷 D100 · {gmPendingCheck.skillId}（目标值 {gmPendingCheck.targetValue}）
+          </button>
+        )}
+        {isActionChannel && !gmReady && !suspended && (
+          <p className="text-[11px] text-[#9a6a30] text-center pb-1.5">
+            AI 主持正在连接
+          </p>
+        )}
         {suspended && (
           <p className="text-[11px] text-[#9a6a30] text-center pb-1.5">
             游戏已挂起，恢复后才能继续提交行动
@@ -2494,8 +2709,8 @@ export default function RoomPage() {
               e.preventDefault()
               sendMessage()
             }}
-            disabled={suspended}
-            placeholder={suspended ? '游戏已挂起' : '输入行动…'}
+            disabled={suspended || (isActionChannel && (!gmReady || gmPendingCheck !== null))}
+            placeholder={suspended ? '游戏已挂起' : gmPendingCheck && isActionChannel ? '请先完成投骰' : !gmReady && isActionChannel ? 'AI 主持正在连接' : '输入行动…'}
             className="room-play__input"
           />
           {speechInput.status === 'listening' ? (
@@ -2545,7 +2760,7 @@ export default function RoomPage() {
             <button
               type="submit"
               aria-label="发送消息"
-              disabled={suspended || !input.trim()}
+              disabled={suspended || (isActionChannel && (!gmReady || gmPendingCheck !== null)) || !input.trim()}
               className="room-play__composer-button room-play__send-button"
             >
               <SendHorizontal className="w-[18px] h-[18px]" strokeWidth={2.5} />

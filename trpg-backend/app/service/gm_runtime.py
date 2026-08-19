@@ -8,14 +8,18 @@ from typing import Literal, cast
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.dto.gm import (
     CheckRead,
+    ClarificationRead,
     CommandEnvelope,
     CommandResult,
     DomainEventEnvelope,
+    GmTurnRead,
     PendingDecision,
     PlayerProjection,
     SessionRead,
+    TurnInputBody,
 )
 from app.models.content import Scenario
 from app.models.gm import (
@@ -27,12 +31,52 @@ from app.models.gm import (
     OutboxMessage,
     PendingDecisionRecord,
     RuntimeActor,
+    TurnRun,
+)
+from app.service.gm_ai import (
+    AgentsSdkInterpreter,
+    AgentsSdkNarrator,
+    GmModelUnavailable,
+    IntentInterpreter,
+    Narrator,
+    build_context_snapshot,
+    guard_narration,
+    intent_step_to_command,
+    validate_intent,
 )
 from app.service.module_runtime import ModulePackError, load_preset
 
 
 class GmRuntimeError(ValueError):
     """GM 会话或命令无法通过 Kernel 校验。"""
+
+
+_intent_interpreter: IntentInterpreter | None = None
+_narrator: Narrator | None = None
+
+
+def set_agents_for_testing(
+    interpreter: IntentInterpreter | None,
+    narrator: Narrator | None = None,
+) -> None:
+    """仅测试时注入脚本模型，生产路径始终从 Settings 创建真实 provider。"""
+
+    global _intent_interpreter, _narrator
+    _intent_interpreter = interpreter
+    _narrator = narrator
+
+
+def _agents() -> tuple[IntentInterpreter, Narrator]:
+    """获取真实模型 Agent；没有通过配置时让回合进入可恢复失败。"""
+
+    global _intent_interpreter, _narrator
+    if _intent_interpreter is None:
+        settings = get_settings()
+        _intent_interpreter = AgentsSdkInterpreter(settings)
+    if _narrator is None:
+        settings = get_settings()
+        _narrator = AgentsSdkNarrator(settings)
+    return _intent_interpreter, _narrator
 
 
 # Phase 1A 只冻结《追书人》第一条单人调查需要的对象；后续完整 ModulePack
@@ -47,7 +91,7 @@ _TARGETS = {
     "arnoldsburg": {"town_sign", "library", "kimball_house", "cemetery"},
     "library": {"old_newspapers", "bookshelf", "librarian"},
     "kimball_house": {"desk", "empty_shelf"},
-    "cemetery": {"graveyard_gate", "headstone"},
+    "cemetery": {"graveyard_gate", "headstone", "gravekeeper"},
 }
 _SKILLS = {
     "spot-hidden": {"base": 25, "purpose": "发现不明显的物体、痕迹或异常"},
@@ -148,6 +192,7 @@ async def submit_command(
     pending: list[PendingDecision] = []
     event_type: str
     event_payload: dict[str, object]
+    narration_facts: list[str]
     if command.kind == "wait_until":
         target_time = command.target_time
         if target_time <= current_time:
@@ -163,6 +208,9 @@ async def submit_command(
             "to": effective_time.isoformat(),
             "interrupted": bool(interrupted),
         }
+        narration_facts = [
+            f"时间从 {current_time.isoformat()} 推进到 {effective_time.isoformat()}。"
+        ]
         if interrupted:
             state["next_interrupt_at"] = None
     elif command.kind == "move_actor":
@@ -173,11 +221,13 @@ async def submit_command(
         actor.location_id = command.target_id
         event_type = "actor_moved"
         event_payload = {"from": previous_location, "to": command.target_id}
+        narration_facts = [f"你从 {previous_location} 来到了 {command.target_id}。"]
     elif command.kind == "inspect_target" or command.kind == "talk_to_npc":
         if command.target_id not in _TARGETS.get(actor.location_id, set()):
             raise GmRuntimeError("目标不在当前地点的可见对象中")
         event_type = "target_inspected" if command.kind == "inspect_target" else "npc_contacted"
         event_payload = {"target_id": command.target_id, "topic": getattr(command, "topic", "")}
+        narration_facts = [f"你完成了对 {command.target_id} 的行动。"]
     elif command.kind == "start_check":
         skill = _SKILLS.get(command.skill_id)
         if skill is None:
@@ -212,6 +262,7 @@ async def submit_command(
             "skill_id": command.skill_id,
             "goal": command.goal,
         }
+        narration_facts = [f"你准备对 {command.goal} 使用 {command.skill_id} 检定。"]
         pending = [_pending_read(decision)]
         check = _check_read(run)
     elif command.kind == "roll_check":
@@ -243,6 +294,9 @@ async def submit_command(
             "target_value": target_value,
             "success": run.success,
         }
+        narration_facts = [
+            f"{run.skill_id} 检定结果为 {'成功' if run.success else '失败'}，骰点 {roll}。"
+        ]
     else:
         raise GmRuntimeError("不支持的 Kernel 命令")
     session.state_json = state
@@ -264,7 +318,12 @@ async def submit_command(
             payload=event.payload,
         )
     )
-    projection = _projection(session, actor)
+    projection = _projection(session, actor).model_copy(
+        update={
+            "pending_decisions": pending,
+            "checks": [check] if check is not None else [],
+        }
+    )
     result = CommandResult(
         client_request_id=envelope.client_request_id,
         revision=new_revision,
@@ -272,6 +331,7 @@ async def submit_command(
         projection=projection,
         pending_decisions=pending,
         check=check,
+        narration_facts=narration_facts,
     )
     result_json = result.model_dump(mode="json")
     db.add(
@@ -341,4 +401,164 @@ def _projection(session: GameSession, actor: RuntimeActor) -> PlayerProjection:
         world_time=datetime.fromisoformat(session.state_json["world_time"]),
         location_id=actor.location_id,
         visible_facts=list(session.state_json.get("visible_facts", [])),
+    )
+
+
+async def submit_free_text(
+    db: AsyncSession,
+    *,
+    room_id: str,
+    payload: TurnInputBody,
+) -> GmTurnRead:
+    """解释一回合自然语言并把首个合法动作交给 Kernel。"""
+
+    previous = await db.scalar(
+        select(TurnRun).where(TurnRun.client_request_id == payload.client_request_id)
+    )
+    if previous is not None and previous.room_id != room_id:
+        raise GmRuntimeError("重复请求 ID 已属于其他房间")
+    if previous is not None and previous.result_json is not None and previous.status != "failed":
+        return GmTurnRead.model_validate(previous.result_json)
+    turn = previous or TurnRun(
+        room_id=room_id,
+        client_request_id=payload.client_request_id,
+        status="understanding",
+        expected_revision=payload.expected_revision,
+        actor_id=payload.actor_id,
+        input_text=payload.input,
+    )
+    if previous is None:
+        db.add(turn)
+        await db.commit()
+    else:
+        # 失败回合只恢复模型调用，不重放已经提交的 Kernel 命令。
+        turn.status = "understanding"
+        turn.result_json = None
+        turn.expected_revision = payload.expected_revision
+        turn.actor_id = payload.actor_id
+        turn.input_text = payload.input
+        await db.commit()
+    try:
+        open_decision = await db.scalar(
+            select(PendingDecisionRecord).where(
+                PendingDecisionRecord.room_id == room_id,
+                PendingDecisionRecord.actor_id == payload.actor_id,
+                PendingDecisionRecord.status == "open",
+            )
+        )
+        if open_decision is not None:
+            raise GmRuntimeError("请先完成当前待投骰检定")
+        snapshot = await build_context_snapshot(db, room_id=room_id, actor_id=payload.actor_id)
+        interpreter, narrator = _agents()
+        intent = validate_intent(snapshot, await interpreter.interpret(snapshot, payload.input))
+        if intent.kind == "clarification":
+            result = GmTurnRead(
+                client_request_id=payload.client_request_id,
+                status="clarification",
+                revision=snapshot.revision,
+                clarification_question=intent.clarification_question,
+                clarification_options=intent.clarification_options,
+            )
+            turn.status = "awaiting_clarification"
+            turn.result_json = result.model_dump(mode="json")
+            await db.commit()
+            return result
+        command = intent_step_to_command(
+            intent.steps[0],
+            client_request_id=payload.client_request_id,
+            expected_revision=payload.expected_revision,
+            actor_id=payload.actor_id,
+        )
+        command_result = await submit_command(db, room_id=room_id, envelope=command)
+        narration: str | None = None
+        try:
+            refreshed = await build_context_snapshot(db, room_id=room_id, actor_id=payload.actor_id)
+            draft = await narrator.narrate(
+                refreshed,
+                [event.event_id for event in command_result.events],
+                command_result.narration_facts,
+            )
+            narration = guard_narration(
+                draft,
+                committed_event_ids=[event.event_id for event in command_result.events],
+                visible_facts=command_result.narration_facts,
+            ).text
+        except (GmModelUnavailable, ValueError):
+            # Kernel 已提交时不能回滚或伪造主持；前端仍可展示 CommandResult 的确定性事实。
+            narration = None
+        result = GmTurnRead(
+            client_request_id=payload.client_request_id,
+            status="completed",
+            revision=command_result.revision,
+            narration=narration,
+            command_result=command_result,
+        )
+        turn.status = "completed"
+        turn.result_json = result.model_dump(mode="json")
+        await db.commit()
+        return result
+    except (GmModelUnavailable, ValueError, GmRuntimeError) as exc:
+        result = GmTurnRead(
+            client_request_id=payload.client_request_id,
+            status="failed",
+            revision=payload.expected_revision,
+        )
+        turn.status = "failed"
+        turn.result_json = result.model_dump(mode="json")
+        await db.commit()
+        message = "gm_unavailable" if isinstance(exc, GmModelUnavailable) else str(exc)
+        raise GmRuntimeError(message) from exc
+
+
+async def read_projection(
+    db: AsyncSession,
+    *,
+    room_id: str,
+    actor_id: str,
+) -> PlayerProjection:
+    """读取重连所需的当前玩家投影，不触发模型或规则执行。"""
+
+    session = await db.get(GameSession, room_id)
+    actor = await db.get(RuntimeActor, actor_id)
+    if session is None or actor is None or actor.room_id != room_id:
+        raise GmRuntimeError("GM 会话或调查员不存在")
+    decisions = list(
+        await db.scalars(
+            select(PendingDecisionRecord).where(
+                PendingDecisionRecord.room_id == room_id,
+                PendingDecisionRecord.actor_id == actor_id,
+                PendingDecisionRecord.status == "open",
+            )
+        )
+    )
+    checks: list[CheckRun] = []
+    for decision in decisions:
+        run = await db.get(CheckRun, decision.check_id)
+        if run is not None:
+            checks.append(run)
+    clarification_record = await db.scalar(
+        select(TurnRun)
+        .where(
+            TurnRun.room_id == room_id,
+            TurnRun.actor_id == actor_id,
+            TurnRun.status == "awaiting_clarification",
+        )
+        .order_by(TurnRun.created_at.desc())
+        .limit(1)
+    )
+    clarification: ClarificationRead | None = None
+    if clarification_record is not None and clarification_record.result_json is not None:
+        turn_result = GmTurnRead.model_validate(clarification_record.result_json)
+        if turn_result.clarification_question:
+            clarification = ClarificationRead(
+                client_request_id=turn_result.client_request_id,
+                question=turn_result.clarification_question,
+                options=turn_result.clarification_options,
+            )
+    return _projection(session, actor).model_copy(
+        update={
+            "pending_decisions": [_pending_read(decision) for decision in decisions],
+            "checks": [_check_read(run) for run in checks],
+            "pending_clarification": clarification,
+        }
     )

@@ -78,6 +78,8 @@ class TurnRun(Base):
         Uuid(as_uuid=False), ForeignKey("game_sessions.room_id"), nullable=False
     )
     client_request_id: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    actor_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    input_text: Mapped[str] = mapped_column(String(4000), nullable=False)
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="collecting")
     expected_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
     result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)

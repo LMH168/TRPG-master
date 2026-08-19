@@ -3,6 +3,8 @@
 模型只能生成这些候选命令，真正的状态变化仍由 Kernel 校验并提交。
 """
 
+from __future__ import annotations
+
 from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field, TypeAdapter
@@ -100,6 +102,9 @@ class PlayerProjection(StrictCamelModel):
     location_id: str
     visible_facts: list[str]
     pending_command_id: str | None = None
+    pending_decisions: list[PendingDecision] = Field(default_factory=list)
+    checks: list[CheckRead] = Field(default_factory=list)
+    pending_clarification: ClarificationRead | None = None
 
 
 class PendingDecision(StrictCamelModel):
@@ -133,6 +138,7 @@ class CommandResult(StrictCamelModel):
     projection: PlayerProjection
     pending_decisions: list[PendingDecision] = Field(default_factory=list)
     check: CheckRead | None = None
+    narration_facts: list[str] = Field(default_factory=list)
 
 
 class SessionCreateBody(StrictCamelModel):
@@ -169,8 +175,83 @@ class TurnState(StrictCamelModel):
     ]
 
 
+class ClarificationRead(StrictCamelModel):
+    """刷新后可恢复的意图澄清问题和候选答案。"""
+
+    client_request_id: str
+    question: str
+    options: list[str] = Field(default_factory=list)
+
+
 class NarrationDraft(StrictCamelModel):
     """Narrator 生成的候选文本，必须引用已提交事件。"""
 
     text: str = Field(min_length=1, max_length=5000)
     evidence_event_ids: list[str] = Field(min_length=1)
+
+
+class ActionCandidate(StrictCamelModel):
+    """当前玩家可以安全尝试的动作候选；不包含成功后的隐藏结果。"""
+
+    action: Literal["move_actor", "inspect_target", "talk_to_npc", "wait_until", "start_check"]
+    target_id: str | None = None
+    label: str = Field(min_length=1, max_length=200)
+    aliases: list[str] = Field(default_factory=list)
+
+
+class ContextSnapshot(StrictCamelModel):
+    """一次模型调用的不可变安全快照，记录模型实际被允许看到的内容。"""
+
+    snapshot_id: str
+    session_id: str
+    actor_id: str
+    audience: str
+    revision: int = Field(ge=0)
+    world_time: UtcDatetime
+    location_id: str
+    visible_facts: list[str] = Field(default_factory=list)
+    action_candidates: list[ActionCandidate] = Field(default_factory=list)
+    recent_event_ids: list[str] = Field(default_factory=list)
+
+
+class IntentStep(StrictCamelModel):
+    """意图解释器提出的单个有限动作，不是可直接执行的脚本。"""
+
+    action: Literal["move_actor", "inspect_target", "talk_to_npc", "wait_until", "start_check"]
+    target_id: str | None = None
+    skill_id: str | None = None
+    goal: str | None = None
+    topic: str | None = None
+    target_time: UtcDatetime | None = None
+
+
+class IntentResult(StrictCamelModel):
+    """模型对玩家自然语言的结构化理解，必须再经过确定性校验。"""
+
+    kind: Literal["proposal", "clarification"]
+    summary: str = Field(min_length=1, max_length=500)
+    steps: list[IntentStep] = Field(default_factory=list, max_length=4)
+    clarification_question: str | None = None
+    clarification_options: list[str] = Field(default_factory=list)
+    source_revision: int = Field(ge=0)
+
+
+class TurnInputBody(StrictCamelModel):
+    """浏览器提交的一回合自然语言输入；服务端从认证会话取得玩家身份。"""
+
+    client_request_id: str = Field(min_length=1, max_length=200)
+    actor_id: str = Field(min_length=1, max_length=100)
+    expected_revision: int = Field(ge=0)
+    input: str = Field(min_length=1, max_length=4000)
+
+
+class GmTurnRead(StrictCamelModel):
+    """AI 主持回合的公开结果，包含澄清、Kernel 回执或安全叙事。"""
+
+    client_request_id: str
+    status: Literal["clarification", "completed", "failed"]
+    revision: int = Field(ge=0)
+    clarification_question: str | None = None
+    clarification_options: list[str] = Field(default_factory=list)
+    narration: str | None = None
+    command_result: CommandResult | None = None

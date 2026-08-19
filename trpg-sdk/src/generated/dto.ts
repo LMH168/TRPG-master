@@ -10,6 +10,16 @@
  */
 
 /**
+ * 当前玩家可以安全尝试的动作候选；不包含成功后的隐藏结果。
+ */
+export interface ActionCandidate {
+  action: "move_actor" | "inspect_target" | "talk_to_npc" | "wait_until" | "start_check";
+  targetId?: string | null;
+  label: string;
+  aliases?: string[];
+}
+
+/**
  * 保留前端提交形状；新 GM Agent 接入前由服务端明确拒绝。
  */
 export interface ActionSubmitPayload {
@@ -269,6 +279,15 @@ export interface CheckRead {
 }
 
 /**
+ * 刷新后可恢复的意图澄清问题和候选答案。
+ */
+export interface ClarificationRead {
+  clientRequestId: string;
+  question: string;
+  options?: string[];
+}
+
+/**
  * 客户端或 Intent Interpreter 提交的幂等命令信封。
  */
 export interface CommandEnvelope {
@@ -290,6 +309,23 @@ export interface CommandResult {
   projection: PlayerProjection;
   pendingDecisions?: PendingDecision[];
   check?: CheckRead | null;
+  narrationFacts?: string[];
+}
+
+/**
+ * 一次模型调用的不可变安全快照，记录模型实际被允许看到的内容。
+ */
+export interface ContextSnapshot {
+  snapshotId: string;
+  sessionId: string;
+  actorId: string;
+  audience: string;
+  revision: number;
+  worldTime: string;
+  locationId: string;
+  visibleFacts?: string[];
+  actionCandidates?: ActionCandidate[];
+  recentEventIds?: string[];
 }
 
 /**
@@ -413,11 +449,56 @@ export interface GameSystemRead {
 }
 
 /**
+ * AI 主持回合的公开结果，包含澄清、Kernel 回执或安全叙事。
+ */
+export interface GmTurnRead {
+  clientRequestId: string;
+  status: "clarification" | "completed" | "failed";
+  revision: number;
+  clarificationQuestion?: string | null;
+  clarificationOptions?: string[];
+  narration?: string | null;
+  commandResult?: CommandResult | null;
+}
+
+/**
  * 请求调查当前可见的地点或对象。
  */
 export interface InspectTarget {
   kind: "inspect_target";
   targetId: string;
+}
+
+/**
+ * 模型对玩家自然语言的结构化理解，必须再经过确定性校验。
+ */
+export interface IntentResult {
+  kind: "proposal" | "clarification";
+  summary: string;
+  /**
+   * @maxItems 4
+   */
+  steps?:
+    | []
+    | [IntentStep]
+    | [IntentStep, IntentStep]
+    | [IntentStep, IntentStep, IntentStep]
+    | [IntentStep, IntentStep, IntentStep, IntentStep];
+  clarificationQuestion?: string | null;
+  clarificationOptions?: string[];
+  sourceRevision: number;
+}
+
+/**
+ * 意图解释器提出的单个有限动作，不是可直接执行的脚本。
+ */
+export interface IntentStep {
+  action: "move_actor" | "inspect_target" | "talk_to_npc" | "wait_until" | "start_check";
+  targetId?: string | null;
+  skillId?: string | null;
+  goal?: string | null;
+  topic?: string | null;
+  targetTime?: string | null;
 }
 
 /**
@@ -602,6 +683,9 @@ export interface PlayerProjection {
   locationId: string;
   visibleFacts: string[];
   pendingCommandId?: string | null;
+  pendingDecisions?: PendingDecision[];
+  checks?: CheckRead[];
+  pendingClarification?: ClarificationRead | null;
 }
 
 /**
@@ -914,6 +998,16 @@ export interface TalkToNpc {
   kind: "talk_to_npc";
   targetId: string;
   topic?: string;
+}
+
+/**
+ * 浏览器提交的一回合自然语言输入；服务端从认证会话取得玩家身份。
+ */
+export interface TurnInputBody {
+  clientRequestId: string;
+  actorId: string;
+  expectedRevision: number;
+  input: string;
 }
 
 /**
