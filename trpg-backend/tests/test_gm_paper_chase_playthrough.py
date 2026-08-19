@@ -3,7 +3,10 @@
 from datetime import timedelta
 from typing import Any
 
+from sqlalchemy import func, select
+
 from app.dto.gm import CommandEnvelope
+from app.models.gm import GameEvent, OutboxMessage
 from app.models.room import Room
 from app.service.gm_runtime import create_session, read_projection, submit_command
 
@@ -260,3 +263,148 @@ async def test_night_watch_interrupt_and_failed_sanity_reach_asylum(db_session) 
     )
     # 无论随机结果如何，失败前进规则保留可达结局；成功则仍停留在冲突场景。
     assert resolved.projection.ending_id in {None, "asylum"}
+
+
+async def test_house_surveillance_break_in_interrupts_into_chase(db_session) -> None:
+    """监视并锁窗后，破窗中断会进入追逐，追踪结果仍回到可调查地点。"""
+
+    room_id, actor_id = "00000000-0000-0000-0000-000000000205", "actor-205"
+    await _room(db_session, room_id, actor_id)
+    moved = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        0,
+        "house-205",
+        {"kind": "move_actor", "target_id": "kimball_house"},
+    )
+    watched = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        moved.revision,
+        "window-205",
+        {"kind": "inspect_target", "target_id": "lock_window"},
+    )
+    interrupted = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        watched.revision,
+        "wait-205",
+        {"kind": "wait_until", "target_time": watched.projection.world_time + timedelta(hours=2)},
+    )
+    assert interrupted.projection.scene_id == "chase"
+    chased = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        interrupted.revision,
+        "chase-205",
+        {"kind": "inspect_target", "target_id": "chase_thief"},
+    )
+    assert chased.projection.location_id == "cemetery"
+    assert "tunnel_hint" in chased.projection.clues
+
+
+async def test_killing_douglas_exposes_ghoul_encounter_state(db_session) -> None:
+    """攻击道格拉斯后必须留下食尸鬼遭遇状态，随后才完成该场景。"""
+
+    room_id, actor_id = "00000000-0000-0000-0000-000000000206", "actor-206"
+    await _room(db_session, room_id, actor_id)
+    moved = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        0,
+        "cemetery-206",
+        {"kind": "move_actor", "target_id": "cemetery"},
+    )
+    killed = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        moved.revision,
+        "kill-206",
+        {"kind": "inspect_target", "target_id": "attack_douglas"},
+    )
+    assert killed.projection.ending_id == "douglas_killed"
+    faced = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        killed.revision,
+        "ghouls-206",
+        {"kind": "inspect_target", "target_id": "fight_ghouls"},
+    )
+    assert faced.projection.ending_id == "douglas_killed"
+
+
+async def test_repeated_failed_checks_still_reach_recovery_route(db_session, monkeypatch) -> None:
+    """连续失败的关键检定仍授予替代线索，不把调查锁死在单一路径。"""
+
+    monkeypatch.setattr("app.service.gm_runtime.secrets.randbelow", lambda _limit: 99)
+    room_id, actor_id = "00000000-0000-0000-0000-000000000207", "actor-207"
+    await _room(db_session, room_id, actor_id)
+    moved = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        0,
+        "library-207",
+        {"kind": "move_actor", "target_id": "library"},
+    )
+    started = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        moved.revision,
+        "library-check-207",
+        {
+            "kind": "start_check",
+            "check_id": "library-check-207",
+            "skill_id": "library-use",
+            "goal": "查阅图书馆旧报纸",
+        },
+    )
+    failed = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        started.revision,
+        "library-roll-207",
+        {"kind": "roll_check", "check_id": "library-check-207"},
+    )
+    assert failed.check is not None and failed.check.success is False
+    assert "old_report" in failed.projection.clues
+    moved_back = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        failed.revision,
+        "back-207",
+        {"kind": "move_actor", "target_id": "arnoldsburg"},
+    )
+    assert moved_back.projection.location_id == "arnoldsburg"
+
+
+async def test_fault_point_retries_do_not_duplicate_events_or_outbox(db_session) -> None:
+    """重放同一故障点请求只读取回执，不新增权威事件或 Outbox。"""
+
+    room_id, actor_id = "00000000-0000-0000-0000-000000000208", "actor-208"
+    await _room(db_session, room_id, actor_id)
+    command = {
+        "kind": "move_actor",
+        "target_id": "cemetery",
+    }
+    first = await _command(db_session, room_id, actor_id, 0, "retry-208", command)
+    replay = await _command(db_session, room_id, actor_id, 0, "retry-208", command)
+    assert replay.revision == first.revision == 1
+    event_count = await db_session.scalar(
+        select(func.count()).select_from(GameEvent).where(GameEvent.room_id == room_id)
+    )
+    outbox_count = await db_session.scalar(
+        select(func.count()).select_from(OutboxMessage).where(OutboxMessage.room_id == room_id)
+    )
+    assert event_count == 1
+    assert outbox_count == 1

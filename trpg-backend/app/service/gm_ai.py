@@ -287,7 +287,13 @@ def _candidates_for(location_id: str) -> list[ActionCandidate]:
             ("newspaper_archive", "申请查阅报社档案"),
             ("hilda", "询问未刊证词"),
         ],
-        "kimball_house": [("desk", "检查书桌"), ("empty_shelf", "检查空书架")],
+        "kimball_house": [
+            ("desk", "检查书桌"),
+            ("empty_shelf", "检查空书架"),
+            ("surveillance", "监视金博尔宅"),
+            ("lock_window", "锁上窗户"),
+            ("chase_thief", "追踪破窗后的身影"),
+        ],
         "cemetery": [
             ("graveyard_gate", "观察墓园入口"),
             ("headstone", "检查墓碑"),
@@ -298,7 +304,9 @@ def _candidates_for(location_id: str) -> list[ActionCandidate]:
             ("call_douglas", "呼喊道格拉斯的名字"),
             ("attack_douglas", "攻击墓地的人影"),
             ("open_crypt", "移开墓穴入口石板"),
+            ("fight_ghouls", "面对食尸鬼群"),
         ],
+        "chase": [("chase_thief", "追踪破窗后的身影")],
         "crypt": [
             ("talk_douglas", "与道格拉斯交谈"),
             ("follow_douglas", "跟随道格拉斯进入地下"),

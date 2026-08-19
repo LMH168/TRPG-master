@@ -21,9 +21,10 @@
     {"id": "neighbors", "location_id": "arnoldsburg", "label": "朋友和邻居", "targets": ["ask_neighbors"]},
     {"id": "library", "location_id": "library", "label": "当地图书馆", "targets": ["library_research"]},
     {"id": "newspaper", "location_id": "newspaper", "label": "报社档案室", "targets": ["newspaper_archive"]},
-    {"id": "kimball_house", "location_id": "kimball_house", "label": "金博尔宅书房", "targets": ["search_study", "read_diary", "surveillance"]},
+    {"id": "kimball_house", "location_id": "kimball_house", "label": "金博尔宅书房", "targets": ["search_study", "read_diary", "surveillance", "lock_window"]},
     {"id": "cemetery", "location_id": "cemetery", "label": "公共墓地", "targets": ["gravekeeper", "track_grave", "night_watch"]},
     {"id": "confrontation", "location_id": "cemetery", "label": "墓地的人影", "targets": ["call_douglas", "attack_douglas", "leave"]},
+    {"id": "chase", "location_id": "kimball_house", "label": "破窗追逐", "targets": ["chase_thief"]},
     {"id": "crypt", "location_id": "crypt", "label": "地穴入口", "targets": ["open_crypt", "follow_douglas"]},
     {"id": "douglas", "location_id": "crypt", "label": "与道格拉斯对话", "targets": ["talk_douglas", "follow_douglas", "leave"]}
   ],
