@@ -485,7 +485,7 @@ export interface InspectTarget {
  */
 export interface IntentResult {
   kind: "proposal" | "clarification";
-  summary: string;
+  summary?: string | null;
   /**
    * @maxItems 4
    */
