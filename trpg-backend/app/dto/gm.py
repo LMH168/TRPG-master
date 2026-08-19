@@ -270,7 +270,8 @@ class IntentResult(StrictCamelModel):
     """模型对玩家自然语言的结构化理解，必须再经过确定性校验。"""
 
     kind: Literal["proposal", "clarification"]
-    summary: str = Field(min_length=1, max_length=500)
+    # summary 只用于调试，不参与权威执行；兼容模型在澄清时输出 null。
+    summary: str | None = Field(default=None, min_length=1, max_length=500)
     steps: list[IntentStep] = Field(default_factory=list, max_length=4)
     clarification_question: str | None = None
     clarification_options: list[str] = Field(default_factory=list)

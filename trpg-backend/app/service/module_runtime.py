@@ -114,6 +114,18 @@ def _validate_runtime(runtime: dict[str, Any]) -> None:
             value = action.get(field, [])
             if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
                 raise ModulePackError(f"运行包 action.{field} 必须是字符串数组")
+        outcome = action.get("outcome")
+        if outcome is not None:
+            if not isinstance(outcome, dict):
+                raise ModulePackError("运行包 action.outcome 必须是对象")
+            for field in ("clues", "facts"):
+                value = outcome.get(field, [])
+                if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                    raise ModulePackError(f"运行包 action.outcome.{field} 必须是字符串数组")
+            for field in ("scene_id", "location_id", "ending_id"):
+                value = outcome.get(field)
+                if value is not None and not isinstance(value, str):
+                    raise ModulePackError(f"运行包 action.outcome.{field} 必须是字符串")
     # 披露门禁属于模组语义，不写死在主持代码中；未配置的旧运行包保持兼容。
     for guard in runtime.get("disclosure_guards", []):
         if not isinstance(guard, dict) or not isinstance(guard.get("term"), str):
@@ -132,6 +144,16 @@ def _validate_runtime(runtime: dict[str, Any]) -> None:
             value = checkpoint.get(field, [])
             if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
                 raise ModulePackError(f"运行包 checkpoint.{field} 必须是字符串数组")
+        available_hours = checkpoint.get("available_hours")
+        if available_hours is not None and (
+            not isinstance(available_hours, dict)
+            or any(
+                not isinstance(available_hours.get(field), int)
+                or not 0 <= available_hours[field] <= 23
+                for field in ("start", "end")
+            )
+        ):
+            raise ModulePackError("运行包 checkpoint.available_hours 必须包含 0-23 的 start/end")
         # 检定后果留在模组运行包中，Kernel 只解释通用的线索、场景和时间字段。
         for field in ("success_outcome", "failure_outcome"):
             outcome = checkpoint.get(field)

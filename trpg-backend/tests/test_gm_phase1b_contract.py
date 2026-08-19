@@ -19,13 +19,17 @@ from app.dto.gm import (
 from app.models.gm import GameEvent, RuntimeActor, TurnRun
 from app.models.room import Character, Player, Room
 from app.service.gm_ai import (
+    GmModelUnavailable,
     ScriptedIntentInterpreter,
     build_context_snapshot,
+    guard_clarification,
     guard_narration,
+    intent_step_to_command,
     validate_intent,
 )
 from app.service.gm_runtime import (
     GmRuntimeError,
+    _time_narration_forbidden_terms,
     create_session,
     read_projection,
     set_agents_for_testing,
@@ -83,6 +87,18 @@ class _CountingNarrator(_ScriptedNarrator):
         return NarrationDraft(text="你从痕迹中得到了新的判断。", evidence_event_ids=list(event_ids))
 
 
+class _RetryNarrator(_CountingNarrator):
+    """首次失败、第二次成功，用于验证只重试无副作用续写。"""
+
+    async def narrate(self, snapshot, event_ids, facts):  # noqa: ANN001
+        """模拟一次临时的结构化输出失败。"""
+
+        self.calls += 1
+        if self.calls == 1:
+            raise GmModelUnavailable("临时失败")
+        return NarrationDraft(text="你从痕迹中得到了新的判断。", evidence_event_ids=list(event_ids))
+
+
 def _snapshot() -> ContextSnapshot:
     """构造只包含墓园公开候选的最小玩家快照。"""
 
@@ -132,6 +148,64 @@ def test_ambiguous_intent_must_ask_for_target() -> None:
     assert validate_intent(_snapshot(), clarification).kind == "clarification"
 
 
+def test_clarification_guard_replaces_spoilers_and_internal_ids() -> None:
+    """澄清模型不能把未来剧情或候选内部 ID 直接展示给玩家。"""
+
+    leaked = IntentResult(
+        kind="clarification",
+        source_revision=3,
+        clarification_question="请从行动列表选择 talk_douglas，或者前往地穴。",
+        clarification_options=["talk_douglas", "进入地穴"],
+    )
+    guarded = guard_clarification(
+        leaked,
+        forbidden_terms=["talk_douglas", "地穴"],
+    )
+    assert guarded.clarification_question == (
+        "我还不能确定你现在想做什么，请换一种方式描述当前行动。"
+    )
+    assert guarded.clarification_options == []
+
+
+def test_clarification_guard_keeps_safe_host_question() -> None:
+    """正常的主持人澄清保持原样，不把安全门禁变成机械固定回复。"""
+
+    clarification = IntentResult(
+        kind="clarification",
+        source_revision=3,
+        clarification_question="你想观察墓碑，还是与守墓人交谈？",
+        clarification_options=["观察墓碑", "与守墓人交谈"],
+    )
+    assert guard_clarification(clarification) == clarification
+
+
+def test_unique_npc_question_keeps_topic_when_bound_to_command() -> None:
+    """明确向唯一 NPC 提问时保留具体话题，不再退化成二次确认。"""
+
+    result = validate_intent(
+        _snapshot(),
+        IntentResult(
+            kind="proposal",
+            source_revision=3,
+            steps=[
+                IntentStep(
+                    action="talk_to_npc",
+                    target_id="gravekeeper",
+                    topic="平静地问他这一年去了哪里",
+                )
+            ],
+        ),
+    )
+    envelope = intent_step_to_command(
+        result.steps[0],
+        client_request_id="talk-topic",
+        expected_revision=3,
+        actor_id="actor-1",
+    )
+    assert envelope.command.kind == "talk_to_npc"
+    assert envelope.command.topic == "平静地问他这一年去了哪里"
+
+
 def test_narration_guard_rejects_uncommitted_event_and_secret_claim() -> None:
     """叙事不能引用未提交事件，也不能借文学表达泄露 keeper 信息。"""
 
@@ -176,6 +250,31 @@ def test_narration_guard_rejects_the_real_candidate_list_leak() -> None:
             committed_event_ids=["event-1"],
             visible_facts=["你从阿诺兹堡来到了公共墓地。"],
             forbidden_terms=["地穴", "人影", "食尸鬼"],
+        )
+    with pytest.raises(ValueError, match="未完成"):
+        guard_narration(
+            NarrationDraft(text="你听见对方的回应：", evidence_event_ids=["event-1"]),
+            committed_event_ids=["event-1"],
+            visible_facts=["人影停下脚步。"],
+        )
+
+
+def test_narration_guard_rejects_afternoon_claim_at_half_past_five() -> None:
+    """17:30 已属傍晚，不得再输出真实回放中的“时值午后”。"""
+
+    forbidden_terms = _time_narration_forbidden_terms(
+        datetime.fromisoformat("1920-09-15T17:30:00-04:00")
+    )
+    assert "午后" in forbidden_terms
+    with pytest.raises(ValueError, match="尚未公开"):
+        guard_narration(
+            NarrationDraft(
+                text="时值午后，秋天的余晖将墓园染成暗金色。",
+                evidence_event_ids=["event-1"],
+            ),
+            committed_event_ids=["event-1"],
+            visible_facts=["你从阿诺兹堡来到了公共墓地。"],
+            forbidden_terms=forbidden_terms,
         )
 
 
@@ -530,11 +629,11 @@ async def test_roll_narration_is_saved_in_idempotent_receipt(db_session, monkeyp
                 "kind": "start_check",
                 "check_id": "check-210",
                 "skill_id": "spot-hidden",
-                "goal": "search_study",
+                "goal": "观察当前场景",
             },
         ),
     )
-    narrator = _CountingNarrator()
+    narrator = _RetryNarrator()
     set_agents_for_testing(ScriptedIntentInterpreter([]), narrator)
     envelope = CommandEnvelope(
         client_request_id="roll-check-210",
@@ -560,7 +659,7 @@ async def test_roll_narration_is_saved_in_idempotent_receipt(db_session, monkeyp
 
     assert resolved.narration == "你从痕迹中得到了新的判断。"
     assert replayed.narration == resolved.narration
-    assert narrator.calls == 1
+    assert narrator.calls == 2
 
 
 async def test_session_actor_uses_completed_character_values(db_session) -> None:
@@ -610,11 +709,12 @@ async def test_session_actor_uses_completed_character_values(db_session) -> None
                 "kind": "start_check",
                 "check_id": "luck-check-212",
                 "skill_id": "luck",
-                "goal": "night_watch",
+                "goal": "测试角色幸运值",
             },
         ),
     )
     assert luck_check.check is not None and luck_check.check.target_value == 45
+    assert "幸运（判断不受调查员能力控制的偶然机会）" in luck_check.narration_facts[0]
 
 
 async def test_module_checkpoint_forces_dice_before_applying_clues(db_session, monkeypatch) -> None:

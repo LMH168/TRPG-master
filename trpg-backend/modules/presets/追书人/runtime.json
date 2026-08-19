@@ -59,7 +59,8 @@
     {"term": "地穴", "requires_any_clues": ["tunnel_hint"]},
     {"term": "食尸鬼", "requires_any_clues": ["hilda_statement", "douglas_truth"]},
     {"term": "腐土生物", "requires_any_clues": ["hilda_statement"]},
-    {"term": "地下群体", "requires_any_clues": ["douglas_truth", "ghouls_leaving"]}
+    {"term": "地下群体", "requires_any_clues": ["douglas_truth", "ghouls_leaving"]},
+    {"term": "耳机", "requires_any_clues": []}
   ],
   "checkpoints": [
     {"id": "ask_neighbors", "scene_id": "neighbors", "targets": ["neighbors"], "label": "向朋友和邻居打听道格拉斯", "aliases": ["询问邻居", "向邻居打听"], "skill": "charm", "success_clues": ["douglas_cemetery"], "failure_clues": ["douglas_cemetery"]},
@@ -69,13 +70,13 @@
     {"id": "read_diary", "scene_id": "kimball_house", "targets": ["read_diary"], "label": "研读道格拉斯的日记", "aliases": ["阅读日记", "调查日记"], "skill": "library-use", "success_clues": ["tunnel_hint", "diary_choice"], "failure_clues": ["tunnel_hint"]},
     {"id": "gravekeeper", "scene_id": "cemetery", "targets": ["gravekeeper"], "label": "与守墓人交谈并打听道格拉斯", "aliases": ["询问守墓人", "和守墓人交流"], "skill": "charm", "success_clues": ["favorite_grave", "night_silhouette"], "failure_clues": ["favorite_grave"]},
     {"id": "track_grave", "scene_id": "cemetery", "targets": ["headstone", "track_grave"], "requires_clues": ["favorite_grave"], "label": "检查道格拉斯常去的墓碑及周围痕迹", "aliases": ["检查墓碑", "侦察墓碑", "追踪墓碑附近的足迹"], "skill": "track", "success_clues": ["tunnel_hint"], "failure_clues": ["favorite_grave"]},
-    {"id": "night_watch", "scene_id": "cemetery", "targets": ["night_watch"], "label": "在夜间守候并观察墓地", "aliases": ["夜间监视墓地", "在墓地守候"], "skill": "luck", "success_outcome": {"clues": ["night_silhouette"], "scene_id": "confrontation", "advance_minutes": 60, "facts": ["你在墓地守候了一小时，看见道格拉斯常去的墓碑旁出现了一个人影。"]}, "failure_outcome": {"clues": ["night_silhouette"], "scene_id": "confrontation", "advance_minutes": 60, "facts": ["你在墓地守候了一小时。虽然夜色遮住了细节，你仍看见道格拉斯常去的墓碑旁出现了一个人影。"]}}
+    {"id": "night_watch", "scene_id": "cemetery", "targets": ["night_watch"], "label": "在夜间守候并观察墓地", "aliases": ["夜间监视墓地", "在墓地守候"], "skill": "luck", "available_hours": {"start": 20, "end": 6}, "success_outcome": {"clues": ["night_silhouette"], "scene_id": "confrontation", "advance_minutes": 60, "facts": ["你在墓地守候了一小时，看见道格拉斯常去的墓碑旁出现了一个人影。"]}, "failure_outcome": {"clues": ["night_silhouette"], "scene_id": "confrontation", "advance_minutes": 60, "facts": ["你在墓地守候了一小时。虽然夜色遮住了细节，你仍看见道格拉斯常去的墓碑旁出现了一个人影。"]}}
   ],
   "actions": [
-    {"scene_id": "confrontation", "action": "inspect_target", "target_id": "call_douglas", "label": "呼喊墓碑旁的人影", "aliases": ["呼喊道格拉斯", "叫住人影"], "requires_clues": ["night_silhouette"]},
+    {"scene_id": "confrontation", "action": "inspect_target", "target_id": "call_douglas", "label": "呼喊墓碑旁的人影", "aliases": ["呼喊道格拉斯", "叫住人影"], "requires_clues": ["night_silhouette"], "outcome": {"clues": ["tunnel_hint"], "scene_id": "douglas", "facts": ["墓碑旁的人影停下脚步并转过身来。借着月光，你认出他就是失踪的道格拉斯。"]}},
     {"scene_id": "confrontation", "action": "inspect_target", "target_id": "attack_douglas", "label": "攻击墓碑旁的人影", "aliases": ["攻击人影"], "requires_clues": ["night_silhouette"]},
-    {"scene_id": "douglas", "action": "talk_to_npc", "target_id": "talk_douglas", "label": "与道格拉斯交谈", "aliases": ["和道格拉斯说话", "询问道格拉斯"], "requires_clues": ["night_silhouette"]},
-    {"scene_id": "douglas", "action": "choose_option", "target_id": "peaceful_resolution", "label": "礼貌交谈后离开", "aliases": ["接受道格拉斯的选择并离开"], "requires_clues": ["douglas_truth"]}
+    {"scene_id": "douglas", "action": "talk_to_npc", "target_id": "talk_douglas", "label": "与道格拉斯交谈", "aliases": ["和道格拉斯说话", "询问道格拉斯"], "requires_clues": ["night_silhouette"], "outcome": {"clues": ["douglas_truth", "ghouls_leaving"], "facts": ["道格拉斯告诉你，他仍然记得过去，并且是自己选择了现在的地下生活。他说地下的同伴很快会关闭入口，他不会再回来。"]}},
+    {"scene_id": "douglas", "action": "choose_option", "target_id": "peaceful_resolution", "label": "礼貌交谈后离开", "aliases": ["接受道格拉斯的选择并离开"], "requires_clues": ["douglas_truth"], "outcome": {"ending_id": "peaceful_resolution", "facts": ["你没有阻拦道格拉斯。他向你告别后回到地下，墓地重新归于寂静。"]}}
   ],
   "endings": [
     {"id": "peaceful_resolution", "label": "礼貌交谈后离开", "outcome": "resolved"},

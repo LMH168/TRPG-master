@@ -44,6 +44,7 @@ from app.service.gm_ai import (
     IntentInterpreter,
     Narrator,
     build_context_snapshot,
+    guard_clarification,
     guard_narration,
     intent_step_to_command,
     validate_intent,
@@ -298,9 +299,7 @@ async def submit_command(
             "to": effective_time.isoformat(),
             "interrupted": bool(interrupted),
         }
-        narration_facts = [
-            f"时间从 {current_time.isoformat()} 推进到 {effective_time.isoformat()}。"
-        ]
+        narration_facts = [_format_time_change(current_time, effective_time)]
         if interrupted:
             state["next_interrupt_at"] = None
             if state.get("flags", {}).get("night_watch"):
@@ -329,12 +328,21 @@ async def submit_command(
             raise GmRuntimeError("目标不在当前地点的可见对象中")
         event_type = "target_inspected" if command.kind == "inspect_target" else "npc_contacted"
         event_payload = {"target_id": command.target_id, "topic": getattr(command, "topic", "")}
-        narration_facts = [f"你完成了对 {command.target_id} 的行动。"]
-        _apply_module_target(state, actor, command.target_id, getattr(command, "topic", ""))
+        runtime_facts = _apply_runtime_action_outcome(state, actor, command.kind, command.target_id)
+        if runtime_facts is None:
+            narration_facts = [f"你完成了对 {command.target_id} 的行动。"]
+            _apply_module_target(state, actor, command.target_id, getattr(command, "topic", ""))
+        else:
+            narration_facts = runtime_facts
     elif command.kind == "start_check":
         skill = _skill_definition(state, command.skill_id)
         if skill is None:
             raise GmRuntimeError("技能未在当前规则切片中实现")
+        checkpoint = _checkpoint_definition(state, command.goal)
+        if checkpoint is not None and not _checkpoint_is_available(state, checkpoint):
+            raise GmRuntimeError("该检定在当前场景或时间不可用")
+        if checkpoint is not None and checkpoint.get("skill") != command.skill_id:
+            raise GmRuntimeError("检定技能与模组声明不一致")
         if await db.get(CheckRun, command.check_id) is not None:
             raise GmRuntimeError("check_id 已存在")
         target_value = _actor_check_value(actor, command.skill_id, int(skill["base"]))
@@ -367,7 +375,7 @@ async def submit_command(
         }
         narration_facts = [
             f"你准备进行「{_checkpoint_label(state, command.goal)}」的"
-            f"{_skill_label(state, command.skill_id)}检定。"
+            f"{_skill_fact_label(state, command.skill_id)}检定。"
         ]
         pending = [_pending_read(decision)]
         check = _check_read(run, state)
@@ -401,17 +409,23 @@ async def submit_command(
             "success": run.success,
         }
         narration_facts = [
-            f"{_skill_label(state, run.skill_id)}检定{'成功' if run.success else '失败'}，"
+            f"{_skill_fact_label(state, run.skill_id)}检定"
+            f"{'成功' if run.success else '失败'}，"
             f"骰点为 {roll}，目标值为 {target_value}。"
         ]
         narration_facts.extend(_apply_check_outcome(state, actor, run.goal, bool(run.success)))
     elif command.kind == "choose_option":
-        _apply_module_target(state, actor, command.option_id, command.option_id)
+        runtime_facts = _apply_runtime_action_outcome(state, actor, command.kind, command.option_id)
+        if runtime_facts is None:
+            _apply_module_target(state, actor, command.option_id, command.option_id)
+            narration_facts = []
+        else:
+            narration_facts = runtime_facts
         if state.get("ending_id") is None:
             raise GmRuntimeError("该剧情选择当前不可用")
         event_type = "ending_committed"
         event_payload = {"ending_id": state["ending_id"]}
-        narration_facts = [f"结局已确定：{state['ending_id']}。"]
+        narration_facts = narration_facts or [f"结局已确定：{state['ending_id']}。"]
     else:
         raise GmRuntimeError("不支持的 Kernel 命令")
     session.state_json = state
@@ -487,27 +501,33 @@ async def _narrate_committed_result(
 ) -> CommandResult:
     """检定已提交后生成玩家可见续写，失败时保留确定性事实。"""
 
-    try:
-        snapshot = await build_context_snapshot(db, room_id=room_id, actor_id=actor_id)
-        session = await db.get(GameSession, room_id)
-        if session is None:
-            return result
-        _interpreter, narrator = _agents()
-        draft = await narrator.narrate(
-            snapshot.model_copy(update={"action_candidates": []}),
-            [event.event_id for event in result.events],
-            result.narration_facts,
-        )
-        narration = guard_narration(
-            draft,
-            committed_event_ids=[event.event_id for event in result.events],
-            visible_facts=result.narration_facts,
-            forbidden_terms=[
-                *_forbidden_narration_terms(session.state_json),
-                *_time_narration_forbidden_terms(snapshot.world_time),
-            ],
-        ).text
-    except (GmModelUnavailable, ValueError):
+    snapshot = await build_context_snapshot(db, room_id=room_id, actor_id=actor_id)
+    session = await db.get(GameSession, room_id)
+    if session is None:
+        return result
+    _interpreter, narrator = _agents()
+    narration: str | None = None
+    # 只重试无副作用的叙事生成；权威检定、事件和回执已经提交，绝不重复执行。
+    for _attempt in range(2):
+        try:
+            draft = await narrator.narrate(
+                snapshot.model_copy(update={"action_candidates": []}),
+                [event.event_id for event in result.events],
+                result.narration_facts,
+            )
+            narration = guard_narration(
+                draft,
+                committed_event_ids=[event.event_id for event in result.events],
+                visible_facts=result.narration_facts,
+                forbidden_terms=[
+                    *_forbidden_narration_terms(session.state_json),
+                    *_time_narration_forbidden_terms(snapshot.world_time),
+                ],
+            ).text
+            break
+        except (GmModelUnavailable, ValueError):
+            continue
+    if narration is None:
         # 模型失败或被安全门禁拒绝时，仍用已提交的公开后果继续对话；
         # 不重新投骰，也不把未验证的模型文本发给玩家。
         public_outcome = result.narration_facts[1:]
@@ -628,10 +648,12 @@ def _time_narration_forbidden_terms(world_time: datetime) -> tuple[str, ...]:
     """按权威当地小时禁止明显冲突的时段描述。"""
 
     if world_time.hour >= 20 or world_time.hour < 6:
-        return ("黄昏", "暮色", "傍晚", "夕阳", "午后", "阳光")
-    if 7 <= world_time.hour < 17:
-        return ("夜幕", "深夜", "月光")
-    return ()
+        return ("黄昏", "暮色", "傍晚", "夕阳", "午后", "上午", "阳光")
+    if 17 <= world_time.hour < 20:
+        return ("午后", "上午", "正午", "深夜", "月光")
+    if 12 <= world_time.hour < 17:
+        return ("黄昏", "暮色", "傍晚", "夕阳", "上午", "夜幕", "深夜", "月光")
+    return ("黄昏", "暮色", "傍晚", "夕阳", "午后", "夜幕", "深夜", "月光")
 
 
 def _skill_definition(state: dict[str, Any], skill_id: str) -> dict[str, Any] | None:
@@ -653,11 +675,37 @@ def _location_label(state: dict[str, Any], location_id: str) -> str:
     return str(labels.get(location_id, location_id)) if isinstance(labels, dict) else location_id
 
 
+def _format_world_time(value: datetime) -> str:
+    """把权威时间转换为面向玩家的简洁中文格式，不暴露存储用 ISO 字符串。"""
+
+    return f"{value.month}月{value.day}日{value.hour:02d}:{value.minute:02d}"
+
+
+def _format_time_change(start: datetime, end: datetime) -> str:
+    """描述时间推进；同一天不重复日期，跨日时保留两端日期。"""
+
+    end_text = (
+        f"{end.hour:02d}:{end.minute:02d}"
+        if start.date() == end.date()
+        else _format_world_time(end)
+    )
+    return f"时间从{_format_world_time(start)}推进到{end_text}。"
+
+
 def _skill_label(state: dict[str, Any], skill_id: str) -> str:
     """把稳定技能 ID 转换为玩家可读名称。"""
 
     skill = _skill_definition(state, skill_id)
     return str(skill.get("name", skill_id)) if skill is not None else skill_id
+
+
+def _skill_fact_label(state: dict[str, Any], skill_id: str) -> str:
+    """为 Narrator 补充模组声明的技能语义，避免只按名称臆测。"""
+
+    skill = _skill_definition(state, skill_id)
+    label = _skill_label(state, skill_id)
+    purpose = skill.get("purpose") if skill is not None else None
+    return f"{label}（{purpose}）" if isinstance(purpose, str) and purpose else label
 
 
 def _actor_check_value(actor: RuntimeActor, skill_id: str, fallback: int) -> int:
@@ -692,6 +740,49 @@ def _target_is_available(
     )
 
 
+def _apply_runtime_action_outcome(
+    state: dict[str, Any], actor: RuntimeActor, action: str, target_id: str
+) -> list[str] | None:
+    """应用运行包声明的普通动作后果，不从目标名称推断剧情。"""
+
+    runtime = state.get("_runtime", {})
+    if not isinstance(runtime, dict):
+        return None
+    owned_clues = set(state.get("clues", []))
+    definition = next(
+        (
+            item
+            for item in runtime.get("actions", [])
+            if isinstance(item, dict)
+            and item.get("scene_id") == state.get("scene_id")
+            and item.get("action") == action
+            and item.get("target_id") == target_id
+            and set(item.get("requires_clues", [])) <= owned_clues
+        ),
+        None,
+    )
+    if definition is None:
+        return None
+    outcome = definition.get("outcome", {})
+    if not isinstance(outcome, dict):
+        return []
+    _add_clues(state, [str(clue) for clue in outcome.get("clues", [])])
+    scene_id = outcome.get("scene_id")
+    if isinstance(scene_id, str):
+        state["scene_id"] = scene_id
+    location_id = outcome.get("location_id")
+    if isinstance(location_id, str):
+        actor.location_id = location_id
+        state["location_id"] = location_id
+        known_locations = state.setdefault("known_locations", [])
+        if isinstance(known_locations, list) and location_id not in known_locations:
+            known_locations.append(location_id)
+    ending_id = outcome.get("ending_id")
+    if isinstance(ending_id, str):
+        state["ending_id"] = ending_id
+    return [str(fact) for fact in outcome.get("facts", [])]
+
+
 def _checkpoint_label(state: dict[str, Any], checkpoint_id: str) -> str:
     """把检定节点 ID 转换为模组声明的玩家可读目标。"""
 
@@ -701,6 +792,35 @@ def _checkpoint_label(state: dict[str, Any], checkpoint_id: str) -> str:
             if isinstance(checkpoint, dict) and checkpoint.get("id") == checkpoint_id:
                 return str(checkpoint.get("label", checkpoint_id))
     return checkpoint_id
+
+
+def _checkpoint_definition(state: dict[str, Any], checkpoint_id: str) -> dict[str, Any] | None:
+    """读取会话冻结的检定声明。"""
+
+    runtime = state.get("_runtime", {})
+    if isinstance(runtime, dict):
+        for checkpoint in runtime.get("checkpoints", []):
+            if isinstance(checkpoint, dict) and checkpoint.get("id") == checkpoint_id:
+                return cast(dict[str, Any], checkpoint)
+    return None
+
+
+def _checkpoint_is_available(state: dict[str, Any], checkpoint: dict[str, Any]) -> bool:
+    """在 Engine 内重新校验场景、线索与时段，不信任模型候选。"""
+
+    if checkpoint.get("scene_id") != state.get("scene_id"):
+        return False
+    if not set(checkpoint.get("requires_clues", [])) <= set(state.get("clues", [])):
+        return False
+    window = checkpoint.get("available_hours")
+    if not isinstance(window, dict):
+        return True
+    start = window.get("start")
+    end = window.get("end")
+    if not isinstance(start, int) or not isinstance(end, int):
+        return False
+    hour = datetime.fromisoformat(str(state["world_time"])).hour
+    return start <= hour < end if start < end else hour >= start or hour < end
 
 
 def _scene_for_location(state: dict[str, Any], location_id: str) -> str:
@@ -908,6 +1028,18 @@ async def submit_free_text(
         interpreter, narrator = _agents()
         intent = validate_intent(snapshot, await interpreter.interpret(snapshot, payload.input))
         if intent.kind == "clarification":
+            session = await db.get(GameSession, room_id)
+            hidden_terms = (
+                _forbidden_narration_terms(session.state_json) if session is not None else []
+            )
+            # 澄清同样直接面向玩家；除未解锁剧情外，也禁止回显模型看到的内部目标 ID。
+            intent = guard_clarification(
+                intent,
+                forbidden_terms=[
+                    *hidden_terms,
+                    *(candidate.target_id or "" for candidate in snapshot.action_candidates),
+                ],
+            )
             result = GmTurnRead(
                 client_request_id=payload.client_request_id,
                 status="clarification",

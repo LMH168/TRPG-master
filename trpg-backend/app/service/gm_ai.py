@@ -127,6 +127,11 @@ class AgentsSdkInterpreter:
                 "若玩家要求按顺序完成多个动作、中间休息或等到某时再去别处，不得"
                 "只挑一步、重排步骤或假装整体完成；必须返回 clarification，请玩家确认"
                 "当前先执行的一个有意义边界。"
+                "若玩家明确说‘等到/等待到某个具体时间’，必须直接选择 wait_until，"
+                "默认玩家留在 snapshot.location_id，不得追问是否移动到其他地点。"
+                "若当前只有一个可匹配的 talk_to_npc 候选，玩家已经明确在向该人物说话、"
+                "提问或交谈，则必须直接返回 talk_to_npc proposal；语气和具体问题原样概括到"
+                "topic，不得因为问题内容不是独立 action 而要求玩家再次确认是否交谈。"
                 "不要创建名为 proposal 的嵌套对象。唯一允许的顶层字段是 "
                 "kind、summary、steps、clarification_question、clarification_options、"
                 "source_revision。唯一目标示例："
@@ -143,21 +148,29 @@ class AgentsSdkInterpreter:
     async def interpret(self, snapshot: ContextSnapshot, player_input: str) -> IntentResult:
         """调用模型并把输出限制为 IntentResult；失败统一转为可恢复模型错误。"""
 
-        try:
-            result = await Runner.run(
-                self._agent,
-                json.dumps(
-                    {"snapshot": snapshot.model_dump(mode="json"), "player_input": player_input},
-                    ensure_ascii=False,
-                ),
-            )
-            if not isinstance(result.final_output, IntentResult):
-                raise GmModelUnavailable("意图模型输出类型不正确")
-            return result.final_output
-        except GmModelUnavailable:
-            raise
-        except Exception as exc:  # noqa: BLE001 - 不把供应商细节泄露给玩家。
-            raise GmModelUnavailable("意图模型调用失败") from exc
+        last_error: Exception | None = None
+        # 意图生成无副作用；结构化输出偶发不合法时最多重试一次。
+        for _attempt in range(2):
+            try:
+                result = await Runner.run(
+                    self._agent,
+                    json.dumps(
+                        {
+                            # 事件 ID 对语义匹配没有作用，不交给模型可减少内部标识泄露面。
+                            "snapshot": snapshot.model_copy(
+                                update={"recent_event_ids": []}
+                            ).model_dump(mode="json"),
+                            "player_input": player_input,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+                if not isinstance(result.final_output, IntentResult):
+                    raise GmModelUnavailable("意图模型输出类型不正确")
+                return result.final_output
+            except Exception as exc:  # noqa: BLE001 - 不把供应商细节泄露给玩家。
+                last_error = exc
+        raise GmModelUnavailable("意图模型调用失败") from last_error
 
 
 class AgentsSdkNarrator:
@@ -197,8 +210,11 @@ class AgentsSdkNarrator:
                 "自行断言人物、生物、物品、足迹、入口或线索的存在或不存在，不得补写"
                 "NPC 行动、对话、秘密、数值变化或复活。若事实是等待投骰，只承接玩家的"
                 "尝试，不得提前宣布成败。使用一至三个简洁完整句，只输出 NarrationDraft。"
-                "snapshot.world_time 是权威当地时间；20:00 至次日 05:59 必须按夜间描述，"
-                "不得写黄昏、暮色、傍晚或夕阳。"
+                "技能名称只是规则标签，必须按括号中的 purpose 解释；除非 visible_facts "
+                "明确声明超自然效果，不得把检定写成法术、灵性力量或身体异常。"
+                "snapshot.world_time 是权威当地时间；06:00-11:59 是上午，"
+                "12:00-16:59 是午后，17:00-19:59 是傍晚，20:00-05:59 是夜间，"
+                "不得使用与该时段矛盾的天色描述。"
             ),
             model=model,
             model_settings=_agent_model_settings(provider),
@@ -218,7 +234,10 @@ class AgentsSdkNarrator:
                 self._agent,
                 json.dumps(
                     {
-                        "snapshot": snapshot.model_dump(mode="json"),
+                        # Narrator 只需要当前公开状态和本回合证据，不需要历史内部事件 ID。
+                        "snapshot": snapshot.model_copy(update={"recent_event_ids": []}).model_dump(
+                            mode="json"
+                        ),
                         "committed_event_ids": list(event_ids),
                         "visible_facts": list(facts),
                     },
@@ -284,6 +303,7 @@ def _candidates_for(state: dict[str, Any], location_id: str) -> list[ActionCandi
             if isinstance(item, dict)
             and item.get("scene_id") == scene_id
             and set(item.get("requires_clues", [])) <= set(state.get("clues", []))
+            and _checkpoint_time_available(item, state)
         ]
         if isinstance(runtime, dict)
         else []
@@ -394,6 +414,21 @@ def _candidates_for(state: dict[str, Any], location_id: str) -> list[ActionCandi
     return candidates
 
 
+def _checkpoint_time_available(checkpoint: dict[str, Any], state: dict[str, Any]) -> bool:
+    """按会话权威时间判断检定是否可用，支持跨夜时段。"""
+
+    window = checkpoint.get("available_hours")
+    if not isinstance(window, dict):
+        return True
+    start = window.get("start")
+    end = window.get("end")
+    world_time = state.get("world_time")
+    if not isinstance(start, int) or not isinstance(end, int) or not isinstance(world_time, str):
+        return False
+    hour = datetime.fromisoformat(world_time).hour
+    return start <= hour < end if start < end else hour >= start or hour < end
+
+
 def validate_intent(snapshot: ContextSnapshot, result: IntentResult) -> IntentResult:
     """确定性检查模型提案的修订号、目标和动作白名单，拒绝越权输出。"""
 
@@ -496,6 +531,8 @@ def guard_narration(
     # 正常回合被约束为一至三个短句；异常长文通常意味着模型开始扩写场景或复述候选。
     if len(draft.text) > 360:
         raise ValueError("叙事超出玩家安全长度")
+    if draft.text.rstrip().endswith(("：", ":")):
+        raise ValueError("叙事是未完成句段")
     # 具体禁词由冻结模组按线索解锁关系提供，主持代码不认识任何剧情专名。
     if any(term and term in draft.text for term in forbidden_terms):
         raise ValueError("叙事包含尚未公开的模组信息")
@@ -507,6 +544,44 @@ def guard_narration(
     return draft
 
 
+def guard_clarification(
+    result: IntentResult,
+    *,
+    forbidden_terms: Sequence[str] = (),
+) -> IntentResult:
+    """阻止意图模型借澄清问题向玩家泄露内部标识或未公开剧情。"""
+
+    if result.kind != "clarification" or not result.clarification_question:
+        return result
+    text = " ".join([result.clarification_question, *result.clarification_options])
+    protected = (
+        "keeper",
+        "action_candidates",
+        "target_id",
+        "scene_id",
+        "checkpoint",
+        "行动列表",
+        "只能选择列表",
+        "不能自行创建新行动",
+    )
+    unsafe = (
+        len(result.clarification_question) > 240
+        or len(result.clarification_options) > 4
+        or any(len(option) > 80 for option in result.clarification_options)
+        or any(term in text.lower() for term in protected)
+        or any(term and term in text for term in forbidden_terms)
+    )
+    if not unsafe:
+        return result
+    # 模型澄清越界时不回显任何候选或模组内容，只保留一个可继续游玩的安全问题。
+    return result.model_copy(
+        update={
+            "clarification_question": "我还不能确定你现在想做什么，请换一种方式描述当前行动。",
+            "clarification_options": [],
+        }
+    )
+
+
 __all__ = [
     "AgentsSdkInterpreter",
     "AgentsSdkNarrator",
@@ -515,6 +590,7 @@ __all__ = [
     "Narrator",
     "ScriptedIntentInterpreter",
     "build_context_snapshot",
+    "guard_clarification",
     "guard_narration",
     "intent_step_to_command",
     "validate_intent",
