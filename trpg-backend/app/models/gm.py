@@ -144,3 +144,46 @@ class OutboxMessage(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
+
+
+class CheckRun(Base):
+    """服务端权威检定记录；同一 check_id 只允许有一个骰点结果。"""
+
+    __tablename__ = "gm_check_runs"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    room_id: Mapped[str] = mapped_column(
+        Uuid(as_uuid=False), ForeignKey("game_sessions.room_id"), nullable=False
+    )
+    actor_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    client_request_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    skill_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    goal: Mapped[str] = mapped_column(String(500), nullable=False)
+    difficulty: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    roll: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_value: Mapped[int] = mapped_column(Integer, nullable=False)
+    success: Mapped[bool | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PendingDecisionRecord(Base):
+    """持久化待玩家处理的检定决策，支持刷新和进程恢复。"""
+
+    __tablename__ = "gm_pending_decisions"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    room_id: Mapped[str] = mapped_column(
+        Uuid(as_uuid=False), ForeignKey("game_sessions.room_id"), nullable=False
+    )
+    actor_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    check_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    options: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )

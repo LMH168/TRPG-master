@@ -45,7 +45,27 @@ class WaitUntil(StrictCamelModel):
     target_time: UtcDatetime
 
 
-Command = Annotated[MoveActor | InspectTarget | TalkToNpc | WaitUntil, Field(discriminator="kind")]
+class StartCheck(StrictCamelModel):
+    """请求建立一次服务端检定；客户端只能提供目标技能和难度，不能提供骰点。"""
+
+    kind: Literal["start_check"]
+    check_id: str = Field(min_length=1, max_length=100)
+    skill_id: str = Field(min_length=1, max_length=100)
+    goal: str = Field(min_length=1, max_length=500)
+    difficulty: Literal["regular", "hard", "extreme"] = "regular"
+
+
+class RollCheck(StrictCamelModel):
+    """请求结算已建立的检定；骰点始终由 Kernel 生成。"""
+
+    kind: Literal["roll_check"]
+    check_id: str = Field(min_length=1, max_length=100)
+
+
+Command = Annotated[
+    MoveActor | InspectTarget | TalkToNpc | WaitUntil | StartCheck | RollCheck,
+    Field(discriminator="kind"),
+]
 CommandAdapter = TypeAdapter(Command)
 
 
@@ -82,6 +102,27 @@ class PlayerProjection(StrictCamelModel):
     pending_command_id: str | None = None
 
 
+class PendingDecision(StrictCamelModel):
+    """玩家必须完成的 Kernel 决策点，例如投骰。"""
+
+    decision_id: str
+    kind: Literal["roll_check"]
+    check_id: str
+    options: list[str]
+
+
+class CheckRead(StrictCamelModel):
+    """对玩家公开的检定状态，不包含 keeper 过程数据。"""
+
+    check_id: str
+    skill_id: str
+    difficulty: Literal["regular", "hard", "extreme"]
+    status: Literal["awaiting_roll", "resolved"]
+    roll: int | None = Field(default=None, ge=1, le=100)
+    target_value: int = Field(ge=1, le=100)
+    success: bool | None = None
+
+
 class CommandResult(StrictCamelModel):
     """一次命令提交的确定性结果和最新玩家投影。"""
 
@@ -90,6 +131,8 @@ class CommandResult(StrictCamelModel):
     revision: int = Field(ge=0)
     events: list[DomainEventEnvelope]
     projection: PlayerProjection
+    pending_decisions: list[PendingDecision] = Field(default_factory=list)
+    check: CheckRead | None = None
 
 
 class SessionCreateBody(StrictCamelModel):

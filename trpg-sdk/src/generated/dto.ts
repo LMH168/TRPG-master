@@ -256,6 +256,19 @@ export interface ChatSendPayload {
 }
 
 /**
+ * 对玩家公开的检定状态，不包含 keeper 过程数据。
+ */
+export interface CheckRead {
+  checkId: string;
+  skillId: string;
+  difficulty: "regular" | "hard" | "extreme";
+  status: "awaiting_roll" | "resolved";
+  roll?: number | null;
+  targetValue: number;
+  success?: boolean | null;
+}
+
+/**
  * 客户端或 Intent Interpreter 提交的幂等命令信封。
  */
 export interface CommandEnvelope {
@@ -263,7 +276,7 @@ export interface CommandEnvelope {
   clientRequestId: string;
   expectedRevision: number;
   actorId: string;
-  command: MoveActor | InspectTarget | TalkToNpc | WaitUntil;
+  command: MoveActor | InspectTarget | TalkToNpc | WaitUntil | StartCheck | RollCheck;
 }
 
 /**
@@ -275,6 +288,8 @@ export interface CommandResult {
   revision: number;
   events: DomainEventEnvelope[];
   projection: PlayerProjection;
+  pendingDecisions?: PendingDecision[];
+  check?: CheckRead | null;
 }
 
 /**
@@ -567,6 +582,16 @@ export interface OccupationSpec {
 }
 
 /**
+ * 玩家必须完成的 Kernel 决策点，例如投骰。
+ */
+export interface PendingDecision {
+  decisionId: string;
+  kind: "roll_check";
+  checkId: string;
+  options: string[];
+}
+
+/**
  * 只包含当前玩家可见的稳定投影，不允许出现 keeper 字段。
  */
 export interface PlayerProjection {
@@ -654,6 +679,14 @@ export interface RollAttributesResult {
   derivedStats: {
     [k: string]: number;
   };
+}
+
+/**
+ * 请求结算已建立的检定；骰点始终由 Kernel 生成。
+ */
+export interface RollCheck {
+  kind: "roll_check";
+  checkId: string;
 }
 
 /**
@@ -843,6 +876,17 @@ export interface SkillSpec {
   base: number | string;
   category: string;
   relatedAttr?: string | null;
+}
+
+/**
+ * 请求建立一次服务端检定；客户端只能提供目标技能和难度，不能提供骰点。
+ */
+export interface StartCheck {
+  kind: "start_check";
+  checkId: string;
+  skillId: string;
+  goal: string;
+  difficulty?: "regular" | "hard" | "extreme";
 }
 
 /**
