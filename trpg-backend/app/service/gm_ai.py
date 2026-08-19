@@ -530,6 +530,54 @@ def guard_intent_coverage(
     )
 
 
+def guard_move_target(
+    snapshot: ContextSnapshot,
+    result: IntentResult,
+    player_input: str,
+) -> IntentResult:
+    """防止模型把玩家明确要去的地点替换成另一处可达地点。"""
+
+    if result.kind != "proposal" or len(result.steps) != 1:
+        return result
+    step = result.steps[0]
+    if step.action != "move_actor":
+        return result
+    movement = [
+        candidate for candidate in snapshot.action_candidates if candidate.action == "move_actor"
+    ]
+    selected = next(
+        (candidate for candidate in movement if candidate.target_id == step.target_id),
+        None,
+    )
+    if selected is None:
+        return result
+    text = player_input.strip()
+    # “回去/回镇”没有具体地点时，可以使用当前唯一出口；具体地点必须逐字命中
+    # 当前候选的玩家可读标签或别名，不能由模型自行把目标改成中间节点。
+    return_cues = ("回去", "返回", "回镇", "回到镇上")
+    selected_phrases = [selected.label, *selected.aliases]
+    selected_matches = any(phrase and phrase in text for phrase in selected_phrases)
+    mentioned_other = any(
+        any(phrase and phrase in text for phrase in (candidate.label, *candidate.aliases))
+        and candidate.target_id != selected.target_id
+        for candidate in movement
+    )
+    if selected_matches or (not mentioned_other and any(cue in text for cue in return_cues)):
+        return result
+    if mentioned_other or any(verb in text for verb in ("前往", "去", "到", "进入")):
+        available = "、".join(candidate.label for candidate in movement)
+        return IntentResult(
+            kind="clarification",
+            summary="地点目标需要确认",
+            clarification_question=(
+                f"我还不能确认你要前往哪个当前可达地点。请明确描述；目前可前往：{available}。"
+            ),
+            clarification_options=[candidate.label for candidate in movement[:4]],
+            source_revision=result.source_revision,
+        )
+    return result
+
+
 def intent_step_to_command(
     step: IntentStep,
     *,
@@ -711,6 +759,7 @@ __all__ = [
     "build_context_snapshot",
     "guard_clarification",
     "guard_intent_coverage",
+    "guard_move_target",
     "guard_narration",
     "intent_step_to_command",
     "validate_intent",

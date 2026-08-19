@@ -24,6 +24,7 @@ from app.service.gm_ai import (
     build_context_snapshot,
     guard_clarification,
     guard_intent_coverage,
+    guard_move_target,
     guard_narration,
     intent_step_to_command,
     validate_intent,
@@ -230,6 +231,33 @@ def test_single_move_cannot_silently_drop_followup_action() -> None:
     assert guarded.kind == "clarification"
     assert "到达后的行动" in (guarded.clarification_question or "")
     assert guard_intent_coverage(snapshot, proposal, "我前往图书馆") == proposal
+
+
+def test_move_target_cannot_be_replaced_by_another_reachable_location() -> None:
+    """玩家明确说图书馆时，模型不能把移动目标改成阿卡姆中转点。"""
+
+    snapshot = _snapshot().model_copy(
+        update={
+            "action_candidates": [
+                ActionCandidate(action="move_actor", target_id="town", label="回到阿卡姆"),
+                ActionCandidate(action="move_actor", target_id="library", label="前往图书馆"),
+            ]
+        }
+    )
+    proposal = IntentResult(
+        kind="proposal",
+        source_revision=3,
+        steps=[IntentStep(action="move_actor", target_id="town")],
+    )
+    guarded = guard_move_target(snapshot, proposal, "前往图书馆")
+    assert guarded.kind == "clarification"
+    assert guarded.source_revision == 3
+    assert guard_move_target(snapshot, proposal, "回去") == proposal
+
+    library_proposal = proposal.model_copy(
+        update={"steps": [IntentStep(action="move_actor", target_id="library")]}
+    )
+    assert guard_move_target(snapshot, library_proposal, "前往图书馆") == library_proposal
 
 
 def test_narration_guard_rejects_uncommitted_event_and_secret_claim() -> None:

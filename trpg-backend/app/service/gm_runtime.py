@@ -46,6 +46,7 @@ from app.service.gm_ai import (
     build_context_snapshot,
     guard_clarification,
     guard_intent_coverage,
+    guard_move_target,
     guard_narration,
     intent_step_to_command,
     validate_intent,
@@ -1029,6 +1030,7 @@ async def submit_free_text(
         interpreter, narrator = _agents()
         intent = validate_intent(snapshot, await interpreter.interpret(snapshot, payload.input))
         intent = guard_intent_coverage(snapshot, intent, payload.input)
+        intent = guard_move_target(snapshot, intent, payload.input)
         if intent.kind == "clarification":
             session = await db.get(GameSession, room_id)
             hidden_terms = (
