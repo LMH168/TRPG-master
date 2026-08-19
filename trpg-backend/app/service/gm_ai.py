@@ -561,7 +561,7 @@ def guard_move_target(
         """去掉移动动词和标点，只比较玩家与候选的地点主体。"""
 
         normalized = re.sub(
-            r"^[\s，,。.!！?？]*(?:前往|去往|前去|去|到|进入|回到|返回|回)",
+            r"^[\s，,。.!！?？]*?(?:前往|去往|前去|去|到|进入|回到|返回|回)",
             "",
             value,
         )
@@ -582,8 +582,28 @@ def guard_move_target(
             len(normalized_phrase), len(normalized_text)
         )
 
-    selected_phrases = [selected.label, *selected.aliases]
-    selected_matches = any(phrase_matches(phrase) for phrase in selected_phrases if phrase)
+    candidate_matches = {
+        candidate.target_id
+        for candidate in movement
+        if any(
+            phrase_matches(phrase)
+            for phrase in (
+                candidate.label,
+                *candidate.aliases,
+                (known_location_labels or {}).get(candidate.target_id, ""),
+            )
+            if phrase
+        )
+    }
+    # 模型选错地点时，按玩家唯一明确说出的地点重绑定；多个匹配仍必须澄清。
+    if len(candidate_matches) == 1:
+        target_id = next(iter(candidate_matches))
+        if target_id != selected.target_id:
+            return result.model_copy(
+                update={"steps": [step.model_copy(update={"target_id": target_id})]}
+            )
+        return result
+    selected_matches = selected.target_id in candidate_matches
     mentioned_other = any(
         any(phrase_matches(phrase) for phrase in (candidate.label, *candidate.aliases) if phrase)
         and candidate.target_id != selected.target_id
@@ -594,8 +614,6 @@ def guard_move_target(
         for target_id, label in (known_location_labels or {}).items()
         if phrase_matches(label)
     }
-    if known_mentions and selected.target_id in known_mentions:
-        selected_matches = True
     if selected_matches or (not mentioned_other and any(cue in text for cue in return_cues)):
         return result
     if (

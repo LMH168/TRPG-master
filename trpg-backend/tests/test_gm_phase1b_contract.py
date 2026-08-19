@@ -250,7 +250,7 @@ def test_move_target_cannot_be_replaced_by_another_reachable_location() -> None:
         steps=[IntentStep(action="move_actor", target_id="town")],
     )
     guarded = guard_move_target(snapshot, proposal, "前往图书馆")
-    assert guarded.kind == "clarification"
+    assert guarded.steps[0].target_id == "library"
     assert guarded.source_revision == 3
     assert guard_move_target(snapshot, proposal, "回去") == proposal
 
@@ -260,7 +260,14 @@ def test_move_target_cannot_be_replaced_by_another_reachable_location() -> None:
     assert guard_move_target(snapshot, library_proposal, "前往图书馆") == library_proposal
 
     cemetery = ActionCandidate(action="move_actor", target_id="cemetery", label="前往墓园")
-    cemetery_snapshot = snapshot.model_copy(update={"action_candidates": [cemetery]})
+    cemetery_snapshot = snapshot.model_copy(
+        update={
+            "action_candidates": [
+                ActionCandidate(action="move_actor", target_id="town", label="回到阿卡姆"),
+                cemetery,
+            ]
+        }
+    )
     cemetery_proposal = proposal.model_copy(
         update={"steps": [IntentStep(action="move_actor", target_id="cemetery")]}
     )
@@ -273,6 +280,17 @@ def test_move_target_cannot_be_replaced_by_another_reachable_location() -> None:
             {"cemetery": "公共墓地"},
         )
         == cemetery_proposal
+    )
+    assert (
+        guard_move_target(
+            cemetery_snapshot,
+            proposal,
+            "我想去墓地",
+            {"cemetery": "公共墓地"},
+        )
+        .steps[0]
+        .target_id
+        == "cemetery"
     )
 
 
