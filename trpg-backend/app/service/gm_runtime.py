@@ -1030,9 +1030,11 @@ async def submit_free_text(
         interpreter, narrator = _agents()
         intent = validate_intent(snapshot, await interpreter.interpret(snapshot, payload.input))
         intent = guard_intent_coverage(snapshot, intent, payload.input)
-        intent = guard_move_target(snapshot, intent, payload.input)
+        session = await db.get(GameSession, room_id)
+        runtime = session.state_json.get("_runtime", {}) if session is not None else {}
+        location_labels = runtime.get("location_labels", {}) if isinstance(runtime, dict) else {}
+        intent = guard_move_target(snapshot, intent, payload.input, location_labels)
         if intent.kind == "clarification":
-            session = await db.get(GameSession, room_id)
             hidden_terms = (
                 _forbidden_narration_terms(session.state_json) if session is not None else []
             )

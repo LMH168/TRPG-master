@@ -259,6 +259,22 @@ def test_move_target_cannot_be_replaced_by_another_reachable_location() -> None:
     )
     assert guard_move_target(snapshot, library_proposal, "前往图书馆") == library_proposal
 
+    cemetery = ActionCandidate(action="move_actor", target_id="cemetery", label="前往墓园")
+    cemetery_snapshot = snapshot.model_copy(update={"action_candidates": [cemetery]})
+    cemetery_proposal = proposal.model_copy(
+        update={"steps": [IntentStep(action="move_actor", target_id="cemetery")]}
+    )
+    assert guard_move_target(cemetery_snapshot, cemetery_proposal, "去墓园") == cemetery_proposal
+    assert (
+        guard_move_target(
+            cemetery_snapshot,
+            cemetery_proposal,
+            "去墓地",
+            {"cemetery": "公共墓地"},
+        )
+        == cemetery_proposal
+    )
+
 
 def test_narration_guard_rejects_uncommitted_event_and_secret_claim() -> None:
     """叙事不能引用未提交事件，也不能借文学表达泄露 keeper 信息。"""

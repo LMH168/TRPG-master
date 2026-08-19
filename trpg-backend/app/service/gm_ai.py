@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -534,6 +534,7 @@ def guard_move_target(
     snapshot: ContextSnapshot,
     result: IntentResult,
     player_input: str,
+    known_location_labels: Mapping[str, str] | None = None,
 ) -> IntentResult:
     """防止模型把玩家明确要去的地点替换成另一处可达地点。"""
 
@@ -552,19 +553,56 @@ def guard_move_target(
     if selected is None:
         return result
     text = player_input.strip()
-    # “回去/回镇”没有具体地点时，可以使用当前唯一出口；具体地点必须逐字命中
-    # 当前候选的玩家可读标签或别名，不能由模型自行把目标改成中间节点。
+    # “回去/回镇”没有具体地点时，可以使用当前唯一出口；具体地点必须命中
+    # 当前候选的玩家可读标签、别名或运行包提供的公开地点名称，不能由模型改目标。
     return_cues = ("回去", "返回", "回镇", "回到镇上")
+
+    def normalize_phrase(value: str) -> str:
+        """去掉移动动词和标点，只比较玩家与候选的地点主体。"""
+
+        normalized = re.sub(
+            r"^[\s，,。.!！?？]*(?:前往|去往|前去|去|到|进入|回到|返回|回)",
+            "",
+            value,
+        )
+        return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", normalized)
+
+    normalized_text = normalize_phrase(text)
+
+    def phrase_matches(phrase: str) -> bool:
+        """匹配地点主体，允许“墓园/墓地”这类词形差异但不扩大到任意目标。"""
+
+        normalized_phrase = normalize_phrase(phrase)
+        if not normalized_phrase:
+            return False
+        if normalized_phrase in normalized_text or normalized_text in normalized_phrase:
+            return True
+        shared = len(set(normalized_phrase) & set(normalized_text))
+        return min(len(normalized_phrase), len(normalized_text)) >= 2 and shared * 2 >= min(
+            len(normalized_phrase), len(normalized_text)
+        )
+
     selected_phrases = [selected.label, *selected.aliases]
-    selected_matches = any(phrase and phrase in text for phrase in selected_phrases)
+    selected_matches = any(phrase_matches(phrase) for phrase in selected_phrases if phrase)
     mentioned_other = any(
-        any(phrase and phrase in text for phrase in (candidate.label, *candidate.aliases))
+        any(phrase_matches(phrase) for phrase in (candidate.label, *candidate.aliases) if phrase)
         and candidate.target_id != selected.target_id
         for candidate in movement
     )
+    known_mentions = {
+        target_id
+        for target_id, label in (known_location_labels or {}).items()
+        if phrase_matches(label)
+    }
+    if known_mentions and selected.target_id in known_mentions:
+        selected_matches = True
     if selected_matches or (not mentioned_other and any(cue in text for cue in return_cues)):
         return result
-    if mentioned_other or any(verb in text for verb in ("前往", "去", "到", "进入")):
+    if (
+        known_mentions
+        or mentioned_other
+        or any(verb in text for verb in ("前往", "去", "到", "进入"))
+    ):
         available = "、".join(candidate.label for candidate in movement)
         return IntentResult(
             kind="clarification",
