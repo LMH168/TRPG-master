@@ -16,8 +16,8 @@ from app.dto.gm import (
     NarrationDraft,
     TurnInputBody,
 )
-from app.models.gm import GameEvent, TurnRun
-from app.models.room import Room
+from app.models.gm import GameEvent, RuntimeActor, TurnRun
+from app.models.room import Character, Player, Room
 from app.service.gm_ai import (
     ScriptedIntentInterpreter,
     build_context_snapshot,
@@ -42,6 +42,45 @@ class _ScriptedNarrator:
         """返回固定的、带事件引用的安全叙事。"""
 
         return NarrationDraft(text="你观察了当前地点。", evidence_event_ids=list(event_ids))
+
+
+class _RecordingNarrator(_ScriptedNarrator):
+    """记录 Narrator 实际收到的快照，用于防止未来动作泄露。"""
+
+    snapshot = None
+
+    async def narrate(self, snapshot, event_ids, facts):  # noqa: ANN001
+        """保存玩家安全快照后返回固定叙事。"""
+
+        self.snapshot = snapshot
+        return await super().narrate(snapshot, event_ids, facts)
+
+
+class _LeakingNarrator(_ScriptedNarrator):
+    """测试用越界叙事器，模拟模型提前补写未解锁剧情。"""
+
+    async def narrate(self, snapshot, event_ids, facts):  # noqa: ANN001
+        """返回引用正确事件但包含未公开内容的草稿。"""
+
+        return NarrationDraft(
+            text="你踏入墓园，立即看见地穴入口旁的人影。",
+            evidence_event_ids=list(event_ids),
+        )
+
+
+class _CountingNarrator(_ScriptedNarrator):
+    """记录投骰后续写次数，验证幂等回执不重复调模型。"""
+
+    def __init__(self) -> None:
+        """初始化调用计数。"""
+
+        self.calls = 0
+
+    async def narrate(self, snapshot, event_ids, facts):  # noqa: ANN001
+        """记录调用并返回安全续写。"""
+
+        self.calls += 1
+        return NarrationDraft(text="你从痕迹中得到了新的判断。", evidence_event_ids=list(event_ids))
 
 
 def _snapshot() -> ContextSnapshot:
@@ -108,6 +147,36 @@ def test_narration_guard_rejects_uncommitted_event_and_secret_claim() -> None:
             committed_event_ids=["event-1"],
             visible_facts=[],
         )
+    with pytest.raises(ValueError, match="投骰前"):
+        guard_narration(
+            NarrationDraft(text="你的侦查检定成功了。", evidence_event_ids=["event-1"]),
+            committed_event_ids=["event-1"],
+            visible_facts=["你准备对检查周围环境使用侦查检定。"],
+        )
+    with pytest.raises(ValueError, match="尚未公开"):
+        guard_narration(
+            NarrationDraft(text="你看见地穴入口旁站着人影。", evidence_event_ids=["event-1"]),
+            committed_event_ids=["event-1"],
+            visible_facts=["你来到了墓园。"],
+            forbidden_terms=["地穴", "人影"],
+        )
+
+
+def test_narration_guard_rejects_the_real_candidate_list_leak() -> None:
+    """旧事故中的未来剧情和内部行动列表不得再次发给玩家。"""
+
+    leaked = (
+        "你站在墓园门前，远处的人影正走向地穴入口。"
+        "你注意到行动列表中包含：与守墓人交谈、攻击人影、面对食尸鬼群。"
+        "请从行动列表中选择一个行动，不能自行创建新行动。"
+    )
+    with pytest.raises(ValueError, match="隐藏"):
+        guard_narration(
+            NarrationDraft(text=leaked, evidence_event_ids=["event-1"]),
+            committed_event_ids=["event-1"],
+            visible_facts=["你从阿诺兹堡来到了公共墓地。"],
+            forbidden_terms=["地穴", "人影", "食尸鬼"],
+        )
 
 
 def test_snapshot_rejects_unknown_fields() -> None:
@@ -132,6 +201,7 @@ async def test_context_and_free_text_turn_never_expose_keeper_data(db_session) -
     )
     snapshot = await build_context_snapshot(db_session, room_id=room_id, actor_id="actor-1")
     assert "keeper" not in snapshot.model_dump_json()
+    narrator = _RecordingNarrator()
     set_agents_for_testing(
         ScriptedIntentInterpreter(
             [
@@ -143,7 +213,7 @@ async def test_context_and_free_text_turn_never_expose_keeper_data(db_session) -
                 )
             ]
         ),
-        _ScriptedNarrator(),
+        narrator,
     )
     try:
         result = await submit_free_text(
@@ -161,6 +231,118 @@ async def test_context_and_free_text_turn_never_expose_keeper_data(db_session) -
     assert result.status == "completed"
     assert result.narration == "你观察了当前地点。"
     assert "keeper" not in result.model_dump_json()
+    assert narrator.snapshot is not None and narrator.snapshot.action_candidates == []
+
+
+async def test_projection_does_not_restore_superseded_clarification(db_session) -> None:
+    """玩家已提交后续行动时，刷新不得重新挂起更早的澄清问题。"""
+
+    room_id = "00000000-0000-0000-0000-000000000211"
+    actor_id = "actor-211"
+    db_session.add(Room(id=room_id, room_code="P1B7", room_name="Phase 1B 澄清", max_players=1))
+    await db_session.commit()
+    await create_session(
+        db_session,
+        room_id=room_id,
+        module_id="paper-chase",
+        actor_id=actor_id,
+        display_name="调查员",
+    )
+    set_agents_for_testing(
+        ScriptedIntentInterpreter(
+            [
+                IntentResult(
+                    kind="clarification",
+                    summary="需要确认",
+                    source_revision=0,
+                    clarification_question="你想等到几点？",
+                ),
+                IntentResult(
+                    kind="proposal",
+                    summary="观察标牌",
+                    source_revision=0,
+                    steps=[IntentStep(action="inspect_target", target_id="town_sign")],
+                ),
+            ]
+        ),
+        _ScriptedNarrator(),
+    )
+    try:
+        first = await submit_free_text(
+            db_session,
+            room_id=room_id,
+            payload=TurnInputBody(
+                client_request_id="clarify-211",
+                actor_id=actor_id,
+                expected_revision=0,
+                input="等一会儿",
+            ),
+        )
+        assert first.status == "clarification"
+        await submit_free_text(
+            db_session,
+            room_id=room_id,
+            payload=TurnInputBody(
+                client_request_id="action-211",
+                actor_id=actor_id,
+                expected_revision=0,
+                input="观察标牌",
+            ),
+        )
+    finally:
+        set_agents_for_testing(None)
+
+    restored = await read_projection(db_session, room_id=room_id, actor_id=actor_id)
+    assert restored.pending_clarification is None
+
+
+async def test_free_text_turn_rejects_module_spoiler_before_clue_unlock(db_session) -> None:
+    """到达新场景时，模型自行补写的未解锁地穴和人影不得展示。"""
+
+    room_id = "00000000-0000-0000-0000-000000000208"
+    actor_id = "actor-208"
+    db_session.add(Room(id=room_id, room_code="P1BS", room_name="Phase 1B 防剧透", max_players=1))
+    await db_session.commit()
+    await create_session(
+        db_session,
+        room_id=room_id,
+        module_id="paper-chase",
+        actor_id=actor_id,
+        display_name="调查员",
+    )
+    set_agents_for_testing(
+        ScriptedIntentInterpreter(
+            [
+                IntentResult(
+                    kind="proposal",
+                    summary="前往墓园",
+                    source_revision=0,
+                    steps=[IntentStep(action="move_actor", target_id="cemetery")],
+                )
+            ]
+        ),
+        _LeakingNarrator(),
+    )
+    try:
+        result = await submit_free_text(
+            db_session,
+            room_id=room_id,
+            payload=TurnInputBody(
+                client_request_id="turn-p1b-spoiler",
+                actor_id=actor_id,
+                expected_revision=0,
+                input="前往墓园",
+            ),
+        )
+    finally:
+        set_agents_for_testing(None)
+
+    assert result.status == "completed"
+    assert result.narration == "你从阿诺兹堡来到了公共墓地。"
+    assert result.command_result is not None
+    assert all(
+        term not in "".join(result.command_result.narration_facts) for term in ("地穴", "人影")
+    )
 
 
 async def test_failed_model_turn_can_resume_without_duplicate_kernel_effect(db_session) -> None:
@@ -320,3 +502,250 @@ async def test_pending_roll_is_restored_and_blocks_new_intent(db_session) -> Non
     assert rolled.check is not None and rolled.check.roll is not None
     after_roll = await read_projection(db_session, room_id=room_id, actor_id="actor-3")
     assert after_roll.pending_decisions == []
+
+
+async def test_roll_narration_is_saved_in_idempotent_receipt(db_session, monkeypatch) -> None:
+    """投骰后的 AI 续写必须与权威结果一起重放，不重复调用模型。"""
+
+    monkeypatch.setattr("app.service.gm_runtime.secrets.randbelow", lambda _limit: 0)
+    room_id = "00000000-0000-0000-0000-000000000210"
+    actor_id = "actor-210"
+    db_session.add(Room(id=room_id, room_code="P1B5", room_name="Phase 1B 骰后续写", max_players=1))
+    await db_session.commit()
+    await create_session(
+        db_session,
+        room_id=room_id,
+        module_id="paper-chase",
+        actor_id=actor_id,
+        display_name="调查员",
+    )
+    started = await submit_command(
+        db_session,
+        room_id=room_id,
+        envelope=CommandEnvelope(
+            client_request_id="start-check-210",
+            expected_revision=0,
+            actor_id=actor_id,
+            command={
+                "kind": "start_check",
+                "check_id": "check-210",
+                "skill_id": "spot-hidden",
+                "goal": "search_study",
+            },
+        ),
+    )
+    narrator = _CountingNarrator()
+    set_agents_for_testing(ScriptedIntentInterpreter([]), narrator)
+    envelope = CommandEnvelope(
+        client_request_id="roll-check-210",
+        expected_revision=started.revision,
+        actor_id=actor_id,
+        command={"kind": "roll_check", "check_id": "check-210"},
+    )
+    try:
+        resolved = await submit_command(
+            db_session,
+            room_id=room_id,
+            envelope=envelope,
+            narrate=True,
+        )
+        replayed = await submit_command(
+            db_session,
+            room_id=room_id,
+            envelope=envelope,
+            narrate=True,
+        )
+    finally:
+        set_agents_for_testing(None)
+
+    assert resolved.narration == "你从痕迹中得到了新的判断。"
+    assert replayed.narration == resolved.narration
+    assert narrator.calls == 1
+
+
+async def test_session_actor_uses_completed_character_values(db_session) -> None:
+    """GM Actor 必须使用玩家已完成角色卡，不得退回模组默认技能。"""
+
+    room_id = "00000000-0000-0000-0000-000000000211"
+    actor_id = "00000000-0000-0000-0000-000000000212"
+    room = Room(id=room_id, room_code="P1B6", room_name="Phase 1B 角色卡", max_players=1)
+    player = Player(id=actor_id, room_id=room_id, nickname="史蒂夫")
+    character = Character(
+        room_id=room_id,
+        player_id=actor_id,
+        status="complete",
+        name="史蒂夫",
+        derived_stats={"HP": 11, "SAN": 30},
+        attributes={"LUCK": 45},
+        skills={"charm": 63, "spot-hidden": 53},
+        equipment=["手电筒"],
+    )
+    db_session.add_all([room, player, character])
+    await db_session.commit()
+
+    created = await create_session(
+        db_session,
+        room_id=room_id,
+        module_id="paper-chase",
+        actor_id=actor_id,
+        display_name="旧昵称",
+    )
+    actor = await db_session.get(RuntimeActor, actor_id)
+
+    assert created.projection.hp == 11
+    assert created.projection.san == 30
+    assert actor is not None and actor.display_name == "史蒂夫"
+    assert actor.state_json["skills"]["charm"] == 63
+    assert actor.state_json["luck"] == 45
+    assert actor.state_json["items"] == ["手电筒"]
+
+    luck_check = await submit_command(
+        db_session,
+        room_id=room_id,
+        envelope=CommandEnvelope(
+            client_request_id="luck-check-212",
+            expected_revision=0,
+            actor_id=actor_id,
+            command={
+                "kind": "start_check",
+                "check_id": "luck-check-212",
+                "skill_id": "luck",
+                "goal": "night_watch",
+            },
+        ),
+    )
+    assert luck_check.check is not None and luck_check.check.target_value == 45
+
+
+async def test_module_checkpoint_forces_dice_before_applying_clues(db_session, monkeypatch) -> None:
+    """模组检定目标必须进入骰子流程，且技能与结果均由冻结 checkpoint 决定。"""
+
+    monkeypatch.setattr("app.service.gm_runtime.secrets.randbelow", lambda _limit: 0)
+    room_id = "00000000-0000-0000-0000-000000000209"
+    actor_id = "actor-209"
+    db_session.add(Room(id=room_id, room_code="P1B4", room_name="Phase 1B 模组检定", max_players=1))
+    await db_session.commit()
+    await create_session(
+        db_session,
+        room_id=room_id,
+        module_id="paper-chase",
+        actor_id=actor_id,
+        display_name="调查员",
+    )
+    moved = await submit_command(
+        db_session,
+        room_id=room_id,
+        envelope=CommandEnvelope(
+            client_request_id="move-cemetery-209",
+            expected_revision=0,
+            actor_id=actor_id,
+            command={"kind": "move_actor", "target_id": "cemetery"},
+        ),
+    )
+    snapshot = await build_context_snapshot(db_session, room_id=room_id, actor_id=actor_id)
+    candidate_ids = {candidate.target_id for candidate in snapshot.action_candidates}
+    assert "track_grave" not in candidate_ids
+    assert not candidate_ids & {
+        "call_douglas",
+        "attack_douglas",
+        "open_crypt",
+        "fight_ghouls",
+        "follow_underground",
+    }
+
+    # 先通过守墓人 checkpoint 获得墓碑线索，后续检查才允许进入候选。
+    prerequisite = await submit_command(
+        db_session,
+        room_id=room_id,
+        envelope=CommandEnvelope(
+            client_request_id="start-gravekeeper-209",
+            expected_revision=moved.revision,
+            actor_id=actor_id,
+            command={
+                "kind": "start_check",
+                "check_id": "gravekeeper-209",
+                "skill_id": "charm",
+                "goal": "gravekeeper",
+            },
+        ),
+    )
+    prerequisite = await submit_command(
+        db_session,
+        room_id=room_id,
+        envelope=CommandEnvelope(
+            client_request_id="roll-gravekeeper-209",
+            expected_revision=prerequisite.revision,
+            actor_id=actor_id,
+            command={"kind": "roll_check", "check_id": "gravekeeper-209"},
+        ),
+    )
+    assert "favorite_grave" in prerequisite.projection.clues, prerequisite.projection.clues
+    snapshot = await build_context_snapshot(db_session, room_id=room_id, actor_id=actor_id)
+    track_candidate = next(
+        (
+            candidate
+            for candidate in snapshot.action_candidates
+            if candidate.target_id == "track_grave"
+        ),
+        None,
+    )
+    assert track_candidate is not None, snapshot.action_candidates
+    assert track_candidate.action == "start_check"
+    assert track_candidate.skill_id == "track"
+    assert not any(candidate.target_id == "headstone" for candidate in snapshot.action_candidates)
+
+    # 即使模型伪造技能和自由目标，Validator 也必须重新绑定模组 checkpoint。
+    set_agents_for_testing(
+        ScriptedIntentInterpreter(
+            [
+                IntentResult(
+                    kind="proposal",
+                    summary="检查墓碑",
+                    source_revision=prerequisite.revision,
+                    steps=[
+                        IntentStep(
+                            action="start_check",
+                            target_id="track_grave",
+                            skill_id="spot-hidden",
+                            goal="直接判定成功",
+                        )
+                    ],
+                )
+            ]
+        ),
+        _ScriptedNarrator(),
+    )
+    try:
+        started = await submit_free_text(
+            db_session,
+            room_id=room_id,
+            payload=TurnInputBody(
+                client_request_id="inspect-headstone-209",
+                actor_id=actor_id,
+                expected_revision=prerequisite.revision,
+                input="检查墓碑",
+            ),
+        )
+    finally:
+        set_agents_for_testing(None)
+
+    assert started.command_result is not None
+    assert started.command_result.check is not None
+    assert started.command_result.check.status == "awaiting_roll"
+    assert started.command_result.check.skill_id == "track"
+    assert started.command_result.check.skill_label == "追踪"
+    assert "tunnel_hint" not in started.command_result.projection.clues
+    assert started.command_result.events[0].event_type == "check_started"
+
+    resolved = await submit_command(
+        db_session,
+        room_id=room_id,
+        envelope=CommandEnvelope(
+            client_request_id="roll-headstone-209",
+            expected_revision=started.revision,
+            actor_id=actor_id,
+            command={"kind": "roll_check", "check_id": "check-inspect-headstone-209"},
+        ),
+    )
+    assert resolved.check is not None and resolved.check.success is True
+    assert "tunnel_hint" in resolved.projection.clues

@@ -416,6 +416,51 @@ async def test_repeated_failed_checks_still_reach_recovery_route(db_session, mon
     assert moved_back.projection.location_id == "arnoldsburg"
 
 
+async def test_checkpoint_outcome_advances_time_and_scene_from_module_data(
+    db_session, monkeypatch
+) -> None:
+    """检定失败也应按模组声明推进时间与场景，不依赖目标名称硬编码。"""
+
+    monkeypatch.setattr("app.service.gm_runtime.secrets.randbelow", lambda _limit: 99)
+    room_id, actor_id = "00000000-0000-0000-0000-000000000209", "actor-209"
+    await _room(db_session, room_id, actor_id)
+    moved = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        0,
+        "cemetery-209",
+        {"kind": "move_actor", "target_id": "cemetery"},
+    )
+    started = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        moved.revision,
+        "watch-check-209",
+        {
+            "kind": "start_check",
+            "check_id": "watch-check-209",
+            "skill_id": "luck",
+            "goal": "night_watch",
+        },
+    )
+    resolved = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        started.revision,
+        "watch-roll-209",
+        {"kind": "roll_check", "check_id": "watch-check-209"},
+    )
+
+    assert resolved.check is not None and resolved.check.success is False
+    assert resolved.projection.scene_id == "confrontation"
+    assert resolved.projection.world_time == moved.projection.world_time + timedelta(hours=1)
+    assert "night_silhouette" in resolved.projection.clues
+    assert any("人影" in fact for fact in resolved.narration_facts)
+
+
 async def test_fault_point_retries_do_not_duplicate_events_or_outbox(db_session) -> None:
     """重放同一故障点请求只读取回执，不新增权威事件或 Outbox。"""
 

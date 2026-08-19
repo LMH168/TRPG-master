@@ -17,6 +17,7 @@ export interface ActionCandidate {
   targetId?: string | null;
   label: string;
   aliases?: string[];
+  skillId?: string | null;
 }
 
 /**
@@ -271,6 +272,7 @@ export interface ChatSendPayload {
 export interface CheckRead {
   checkId: string;
   skillId: string;
+  skillLabel?: string | null;
   difficulty: "regular" | "hard" | "extreme";
   status: "awaiting_roll" | "resolved";
   roll?: number | null;
@@ -318,6 +320,7 @@ export interface CommandResult {
   pendingDecisions?: PendingDecision[];
   check?: CheckRead | null;
   narrationFacts?: string[];
+  narration?: string | null;
 }
 
 /**
@@ -517,6 +520,15 @@ export interface JoinRoomBody {
 }
 
 /**
+ * 玩家已经知道的地点，不包含未解锁路线或守秘信息。
+ */
+export interface KnownLocationRead {
+  id: string;
+  label: string;
+  visited?: boolean;
+}
+
+/**
  * POST /api/v1/auth/login 请求体
  */
 export interface LoginBody {
@@ -696,6 +708,7 @@ export interface PlayerProjection {
   pendingClarification?: ClarificationRead | null;
   sceneId?: string | null;
   sceneLabel?: string | null;
+  knownLocations?: KnownLocationRead[];
   clues?: string[];
   hp?: number | null;
   san?: number | null;
@@ -790,12 +803,12 @@ export interface RollCheck {
 /**
  * GET /api/v1/rooms/{roomId}/conversation 返回项。
  *
- * 当前只承载讨论区消息；行动频道将在新 GM Agent 协议中重新定义。
+ * 讨论区来自 ChatMessage，GM 行动频道由 TurnRun 和 CommandReceipt 投影。
  */
 export interface RoomConversationEventRead {
   id: string;
-  type: "chat.message";
-  channel: "discussion";
+  type: "chat.message" | "action.broadcast" | "narration.push" | "check.result";
+  channel: "discussion" | "action";
   payload: {
     [k: string]: unknown;
   };

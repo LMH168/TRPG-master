@@ -8,11 +8,11 @@ from app.dto.common import CamelModel, UtcDatetime
 class RoomConversationEventRead(CamelModel):
     """GET /api/v1/rooms/{roomId}/conversation 返回项。
 
-    当前只承载讨论区消息；行动频道将在新 GM Agent 协议中重新定义。
+    讨论区来自 ChatMessage，GM 行动频道由 TurnRun 和 CommandReceipt 投影。
     """
 
     id: str
-    type: Literal["chat.message"]
-    channel: Literal["discussion"]
+    type: Literal["chat.message", "action.broadcast", "narration.push", "check.result"]
+    channel: Literal["discussion", "action"]
     payload: dict
     created_at: UtcDatetime

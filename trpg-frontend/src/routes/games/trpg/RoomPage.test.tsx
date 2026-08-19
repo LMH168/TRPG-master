@@ -490,6 +490,7 @@ describe('RoomPage conversation history', () => {
     useRoomStore.getState().reset()
     useAuthStore.getState().logout()
     useCharacterStore.getState().clear()
+    delete (sdk as unknown as { gm?: unknown }).gm
     useRoomStore.getState().setRoomIdentity({
       roomId: 'room-1',
       roomCode: 'ABC123',
@@ -552,6 +553,43 @@ describe('RoomPage conversation history', () => {
     expect(await screen.findByText('你在书架后发现了暗格。')).toBeInTheDocument()
     expect(mockGetTurn).toHaveBeenCalledWith('room-1', 'turn-1', 'reconnect-1')
     expect(sessionStorage.getItem('trpg:pending-turn:room-1:player-1')).toBeNull()
+  })
+
+  it('renders a restored clarification once as a keeper message', async () => {
+    const clarification = '你具体想侦察什么？'
+    const projection = {
+      sessionId: 'room-1',
+      actorId: 'player-1',
+      revision: 2,
+      worldTime: '2026-08-19T12:00:00Z',
+      locationId: 'cemetery',
+      visibleFacts: [],
+      sceneId: 'cemetery',
+      sceneLabel: '公共墓地',
+      clues: [],
+      pendingDecisions: [],
+      checks: [],
+      pendingClarification: {
+        clientRequestId: 'clarification-1',
+        question: clarification,
+        options: ['观察墓园入口', '检查墓碑'],
+      },
+    }
+    ;(sdk as unknown as { gm: unknown }).gm = {
+      createSession: vi.fn().mockResolvedValue({ projection, openingNarration: null }),
+      getProjection: vi.fn().mockResolvedValue(projection),
+      submitFreeText: vi.fn(),
+    }
+
+    renderRoomPage()
+
+    const question = await screen.findByText(clarification)
+    const message = question.closest('.room-play__message')
+    expect(message).not.toBeNull()
+    expect(within(message as HTMLElement).getByText('守秘人')).toBeInTheDocument()
+    expect(screen.getAllByText(clarification)).toHaveLength(1)
+    expect(screen.queryByText(`守秘人提示：${clarification}`)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '观察墓园入口' })).toBeInTheDocument()
   })
 
   it('clears a terminal failed turn so the same room can accept a new action', async () => {

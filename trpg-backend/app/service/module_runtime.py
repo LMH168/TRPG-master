@@ -100,3 +100,40 @@ def _validate_runtime(runtime: dict[str, Any]) -> None:
     for field in ("scenes", "clues", "checkpoints", "endings"):
         if not isinstance(runtime[field], list):
             raise ModulePackError(f"运行包 {field} 必须是数组")
+    # 披露门禁属于模组语义，不写死在主持代码中；未配置的旧运行包保持兼容。
+    for guard in runtime.get("disclosure_guards", []):
+        if not isinstance(guard, dict) or not isinstance(guard.get("term"), str):
+            raise ModulePackError("运行包 disclosure_guard 必须包含 term")
+        required = guard.get("requires_any_clues", [])
+        if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
+            raise ModulePackError("运行包 disclosure_guard.requires_any_clues 必须是字符串数组")
+    for checkpoint in runtime["checkpoints"]:
+        if not isinstance(checkpoint, dict):
+            raise ModulePackError("运行包 checkpoint 必须是对象")
+        for field in ("id", "scene_id", "skill"):
+            if not isinstance(checkpoint.get(field), str) or not checkpoint[field]:
+                raise ModulePackError(f"运行包 checkpoint 缺少字段：{field}")
+        # targets/aliases 是通用语义绑定；缺失时兼容旧运行包，存在时必须是字符串数组。
+        for field in ("targets", "aliases", "requires_clues"):
+            value = checkpoint.get(field, [])
+            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                raise ModulePackError(f"运行包 checkpoint.{field} 必须是字符串数组")
+        # 检定后果留在模组运行包中，Kernel 只解释通用的线索、场景和时间字段。
+        for field in ("success_outcome", "failure_outcome"):
+            outcome = checkpoint.get(field)
+            if outcome is None:
+                continue
+            if not isinstance(outcome, dict):
+                raise ModulePackError(f"运行包 checkpoint.{field} 必须是对象")
+            for list_field in ("clues", "facts"):
+                value = outcome.get(list_field, [])
+                if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                    raise ModulePackError(
+                        f"运行包 checkpoint.{field}.{list_field} 必须是字符串数组"
+                    )
+            scene_id = outcome.get("scene_id")
+            if scene_id is not None and not isinstance(scene_id, str):
+                raise ModulePackError(f"运行包 checkpoint.{field}.scene_id 必须是字符串")
+            advance_minutes = outcome.get("advance_minutes", 0)
+            if not isinstance(advance_minutes, int) or advance_minutes < 0:
+                raise ModulePackError(f"运行包 checkpoint.{field}.advance_minutes 必须是非负整数")

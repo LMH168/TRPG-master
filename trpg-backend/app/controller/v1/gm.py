@@ -73,7 +73,14 @@ async def submit_gm_command(
         player = await room_service.require_room_member(db, room_id, reconnect_token)
         if player.id != payload.actor_id:
             raise room_service.RoomAuthorizationError("不能替其他玩家提交 GM 命令")
-        result = await gm_runtime.submit_command(db, room_id=room_id, envelope=payload)
+        # 直接命令只有玩家点击投骰时需要 Narrator 续写；其他 Kernel
+        # 调用保持纯确定性，不会意外增加模型请求。
+        result = await gm_runtime.submit_command(
+            db,
+            room_id=room_id,
+            envelope=payload,
+            narrate=payload.command.kind == "roll_check",
+        )
     except room_service.RoomAuthenticationError as exc:
         raise AppException(ErrorCode.UNAUTHORIZED, str(exc), status.HTTP_401_UNAUTHORIZED) from exc
     except room_service.RoomAuthorizationError as exc:

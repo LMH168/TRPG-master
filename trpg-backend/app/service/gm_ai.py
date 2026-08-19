@@ -121,7 +121,13 @@ class AgentsSdkInterpreter:
                 "能够唯一匹配 action_candidates 时必须返回 proposal。proposal 必须有一到四个"
                 "steps，clarification_question 为空且 clarification_options 为空；clarification "
                 "必须令 steps 为空，并给出非空 clarification_question。source_revision 必须原样"
-                "复制快照 revision。不要创建名为 proposal 的嵌套对象。唯一允许的顶层字段是 "
+                "复制快照 revision。遇到 action=start_check 的候选时，只复制该候选的 action 和"
+                "target_id；技能、难度、骰点和成功与否均由服务端决定，不得改成 inspect_target "
+                "绕过检定。候选的 label 和 aliases 都可用于匹配玩家原话。"
+                "若玩家要求按顺序完成多个动作、中间休息或等到某时再去别处，不得"
+                "只挑一步、重排步骤或假装整体完成；必须返回 clarification，请玩家确认"
+                "当前先执行的一个有意义边界。"
+                "不要创建名为 proposal 的嵌套对象。唯一允许的顶层字段是 "
                 "kind、summary、steps、clarification_question、clarification_options、"
                 "source_revision。唯一目标示例："
                 '{"kind":"proposal","summary":"前往图书馆","steps":[{"action":'
@@ -186,8 +192,13 @@ class AgentsSdkNarrator:
         self._agent = Agent(
             name="叙事器",
             instructions=(
-                "你是中文克苏鲁跑团叙事器。只能描述输入中已经提交的事件和当前玩家可见事实，"
-                "不得补写 NPC 行动、秘密、数值变化或复活。只输出 NarrationDraft 结构化结果。"
+                "你是中文克苏鲁跑团叙事器。visible_facts 是本回合唯一且穷尽的"
+                "事实来源，必须表达其中每个结果。可以补充不改变事实的感官氛围，但不得"
+                "自行断言人物、生物、物品、足迹、入口或线索的存在或不存在，不得补写"
+                "NPC 行动、对话、秘密、数值变化或复活。若事实是等待投骰，只承接玩家的"
+                "尝试，不得提前宣布成败。使用一至三个简洁完整句，只输出 NarrationDraft。"
+                "snapshot.world_time 是权威当地时间；20:00 至次日 05:59 必须按夜间描述，"
+                "不得写黄昏、暮色、傍晚或夕阳。"
             ),
             model=model,
             model_settings=_agent_model_settings(provider),
@@ -256,13 +267,31 @@ async def build_context_snapshot(
         world_time=datetime.fromisoformat(session.state_json["world_time"]),
         location_id=actor.location_id,
         visible_facts=list(session.state_json.get("visible_facts", [])),
-        action_candidates=_candidates_for(actor.location_id),
+        action_candidates=_candidates_for(session.state_json, actor.location_id),
         recent_event_ids=list(reversed(event_ids)),
     )
 
 
-def _candidates_for(location_id: str) -> list[ActionCandidate]:
-    """把当前地点的公开出口和对象转成模型可引用的候选 ID。"""
+def _candidates_for(state: dict[str, object], location_id: str) -> list[ActionCandidate]:
+    """按当前场景生成玩家安全候选，并把模组检定绑定为服务端动作。"""
+
+    runtime = state.get("_runtime", {})
+    scene_id = state.get("scene_id")
+    checkpoints = (
+        [
+            item
+            for item in runtime.get("checkpoints", [])
+            if isinstance(item, dict)
+            and item.get("scene_id") == scene_id
+            and set(item.get("requires_clues", [])) <= set(state.get("clues", []))
+        ]
+        if isinstance(runtime, dict)
+        else []
+    )
+    # 同一个模组目标一旦绑定 checkpoint，就不能再以普通检查绕过投骰。
+    checked_targets = {
+        str(target) for checkpoint in checkpoints for target in checkpoint.get("targets", [])
+    }
 
     exits = {
         "arnoldsburg": [
@@ -294,18 +323,7 @@ def _candidates_for(location_id: str) -> list[ActionCandidate]:
             ("lock_window", "锁上窗户"),
             ("chase_thief", "追踪破窗后的身影"),
         ],
-        "cemetery": [
-            ("graveyard_gate", "观察墓园入口"),
-            ("headstone", "检查墓碑"),
-            ("gravekeeper", "与守墓人交谈"),
-            ("neighbors", "回想邻居提供的线索"),
-            ("track_grave", "追踪墓碑附近的足迹"),
-            ("night_watch", "在夜间监视墓地"),
-            ("call_douglas", "呼喊道格拉斯的名字"),
-            ("attack_douglas", "攻击墓地的人影"),
-            ("open_crypt", "移开墓穴入口石板"),
-            ("fight_ghouls", "面对食尸鬼群"),
-        ],
+        "cemetery": [],
         "chase": [("chase_thief", "追踪破窗后的身影")],
         "crypt": [
             ("talk_douglas", "与道格拉斯交谈"),
@@ -326,23 +344,27 @@ def _candidates_for(location_id: str) -> list[ActionCandidate]:
                 label=label,
             )
             for target, label in objects.get(location_id, [])
+            if target not in checked_targets
         ],
         ActionCandidate(action="wait_until", label="等待到指定时间"),
     ]
-    if location_id in {"cemetery", "crypt"}:
-        candidates.extend(
-            [
+    if isinstance(runtime, dict):
+        for checkpoint in checkpoints:
+            checkpoint_id = checkpoint.get("id")
+            skill_id = checkpoint.get("skill")
+            if not isinstance(checkpoint_id, str) or not isinstance(skill_id, str):
+                continue
+            # checkpoint 是模组声明的权威检定边界；候选只公开玩家可见语义，
+            # 成败线索仍留在服务端冻结运行包中。
+            candidates.append(
                 ActionCandidate(
-                    action="choose_option", target_id="peaceful_resolution", label="礼貌交谈后离开"
-                ),
-                ActionCandidate(
-                    action="choose_option",
-                    target_id="follow_underground",
-                    label="跟随道格拉斯进入地下",
-                ),
-                ActionCandidate(action="choose_option", target_id="flee", label="逃离墓地"),
-            ]
-        )
+                    action="start_check",
+                    target_id=checkpoint_id,
+                    label=str(checkpoint.get("label") or checkpoint_id),
+                    aliases=[str(alias) for alias in checkpoint.get("aliases", [])],
+                    skill_id=skill_id,
+                )
+            )
     return candidates
 
 
@@ -357,13 +379,21 @@ def validate_intent(snapshot: ContextSnapshot, result: IntentResult) -> IntentRe
         return result
     if not result.steps or len(result.steps) > 4:
         raise ValueError("意图提案必须包含一到四个动作")
-    candidates = {(item.action, item.target_id) for item in snapshot.action_candidates}
+    candidates = {(item.action, item.target_id): item for item in snapshot.action_candidates}
+    bound_steps: list[IntentStep] = []
     for step in result.steps:
-        if (step.action, step.target_id) not in candidates and step.action not in {"start_check"}:
+        candidate = candidates.get((step.action, step.target_id))
+        if candidate is None:
             raise ValueError("意图目标不在当前玩家可见候选中")
-        if step.action == "start_check" and (not step.skill_id or not step.goal):
-            raise ValueError("检定提案缺少技能或目标")
-    return result
+        if step.action == "start_check":
+            if not candidate.skill_id or not candidate.target_id:
+                raise ValueError("模组检定候选缺少服务端绑定")
+            # 模型只负责选择 checkpoint；技能和结算目标必须由服务端候选覆盖。
+            step = step.model_copy(
+                update={"skill_id": candidate.skill_id, "goal": candidate.target_id}
+            )
+        bound_steps.append(step)
+    return result.model_copy(update={"steps": bound_steps})
 
 
 def intent_step_to_command(
@@ -416,6 +446,7 @@ def guard_narration(
     *,
     committed_event_ids: Sequence[str],
     visible_facts: Sequence[str],
+    forbidden_terms: Sequence[str] = (),
 ) -> NarrationDraft:
     """只接受引用已提交事件且不泄露隐藏事实的叙事草稿。"""
 
@@ -423,9 +454,29 @@ def guard_narration(
     if not draft.evidence_event_ids or not set(draft.evidence_event_ids) <= allowed:
         raise ValueError("叙事引用了未提交事件")
     # 这些词在第一条路径中只可能来自 keeper 真相；文学表达不能越过事实投影。
-    forbidden = ("keeper", "守秘人秘密", "模组真相", "守墓人复活")
+    # Narrator 面向玩家，不得复述解释器候选、内部字段或系统约束。
+    forbidden = (
+        "keeper",
+        "action_candidates",
+        "行动列表",
+        "只能选择列表",
+        "不能自行创建新行动",
+        "守秘人秘密",
+        "模组真相",
+        "守墓人复活",
+    )
     if any(term in draft.text.lower() for term in forbidden):
         raise ValueError("叙事包含受保护的隐藏信息")
+    # 正常回合被约束为一至三个短句；异常长文通常意味着模型开始扩写场景或复述候选。
+    if len(draft.text) > 360:
+        raise ValueError("叙事超出玩家安全长度")
+    # 具体禁词由冻结模组按线索解锁关系提供，主持代码不认识任何剧情专名。
+    if any(term and term in draft.text for term in forbidden_terms):
+        raise ValueError("叙事包含尚未公开的模组信息")
+    # 检定尚未投骰时，Narrator 只能承接动作，不能抢先宣布权威结果。
+    awaiting_roll = any("准备" in fact and "检定" in fact for fact in visible_facts)
+    if awaiting_roll and any(term in draft.text for term in ("成功", "失败", "骰点")):
+        raise ValueError("叙事在投骰前声明了检定结果")
     del visible_facts  # 事实列表由调用方记录；Guard 不允许从文本反推新事实。
     return draft
 
