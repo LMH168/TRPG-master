@@ -1,0 +1,15 @@
+{
+  "module_id": "paper_chase",
+  "title": "追书人",
+  "slug": "paper_chase",
+  "ruleset_id": "coc7",
+  "content_version": "source-1",
+  "content_status": "source_only",
+  "runtime_pack_status": "not_built",
+  "catalog_file": "catalog.json",
+  "authors": [],
+  "source_file": "source/追书人.pdf",
+  "source_sha256": "fb4b38a307d86bbe650c12d64be6633c3aaeedd73793f7b540f1ec8f1336fffb",
+  "license_status": "unconfirmed",
+  "capabilities": ["single_player", "investigation", "time_wait", "basic_check"]
+}

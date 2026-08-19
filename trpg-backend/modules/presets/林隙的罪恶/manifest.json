@@ -1,0 +1,15 @@
+{
+  "module_id": "forest_gap",
+  "title": "林隙的罪恶",
+  "slug": "forest_gap",
+  "ruleset_id": "coc7",
+  "content_version": "source-1",
+  "content_status": "source_only",
+  "runtime_pack_status": "not_built",
+  "catalog_file": "catalog.json",
+  "authors": ["Butterrr"],
+  "source_file": "source/林隙的罪恶-Butterrr.doc",
+  "source_sha256": "3651ecb6c46ea6d38793bb13193369def6ff9487b852ed7c1a99b528dff435f4",
+  "license_status": "unconfirmed",
+  "capabilities": ["multiplayer", "private_information", "sound", "patrol", "combat"]
+}

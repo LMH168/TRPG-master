@@ -14,6 +14,9 @@
 放心重复调用，不会插入重复数据。
 """
 
+import json
+from pathlib import Path
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.coc7_content import build_coc7_ruleset
@@ -24,31 +27,34 @@ BUILTIN_SYSTEM_ID = "00000000-0000-0000-0000-000000000002"
 BUILTIN_SCENARIO_ID = "00000000-0000-0000-0000-000000000003"
 BUILTIN_WORLD_ID = "00000000-0000-0000-0000-000000000004"
 BUILTIN_MODULE_ID = "paper-chase"
-BUILTIN_MODULE_VERSION = "catalog-1"
 BUILTIN_WORLD_REF = "coc7-1920s"
 
-# 这是房间开局前展示给玩家的静态介绍，不包含守秘人秘密或规则执行数据。
-_PAPER_CHASE_STORY_PAGES = [
-    {
-        "title": "调查委托",
-        "content": (
-            "故事发生在禁酒令时期的美国密歇根州阿诺兹堡。托马斯·金博尔请你调查叔叔"
-            "道格拉斯一年前的失踪，以及最近从叔叔旧居被盗的五本珍藏旧书。你需要寻找"
-            "窃贼、尽可能追回书籍，并确认道格拉斯是否尚在人世。"
-        ),
-    },
-    {
-        "title": "调查员准备",
-        "content": (
-            "本模组由一名调查员进行，调查将以走访、资料检索和现场观察为主。擅长交涉、"
-            "侦查或图书馆使用的调查员可能更容易推进调查，但这些能力并非必需。"
-        ),
-    },
-]
+_PAPER_CHASE_CATALOG = (
+    Path(__file__).resolve().parents[2] / "modules" / "presets" / "追书人" / "catalog.json"
+)
+
+
+def _load_paper_chase_catalog() -> dict:
+    """读取预设目录中的公开展示信息，避免把模组内容硬编码在种子代码里。"""
+    try:
+        catalog = json.loads(_PAPER_CHASE_CATALOG.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"无法读取《追书人》目录数据：{_PAPER_CHASE_CATALOG}") from exc
+
+    pages = catalog.get("story_pages")
+    if not isinstance(pages, list) or not all(
+        isinstance(page, dict)
+        and isinstance(page.get("title"), str)
+        and isinstance(page.get("content"), str)
+        for page in pages
+    ):
+        raise RuntimeError("《追书人》目录数据的 story_pages 格式无效")
+    return catalog
 
 
 async def ensure_seed_content(db: AsyncSession) -> None:
     """插入基础规则系统和目录展示数据，不发布任何 AI 主持运行时内容。"""
+    catalog = _load_paper_chase_catalog()
     coc7_ruleset = build_coc7_ruleset().model_dump(mode="json")
 
     game = await db.get(Game, BUILTIN_GAME_ID)
@@ -110,19 +116,19 @@ async def ensure_seed_content(db: AsyncSession) -> None:
             module_id=BUILTIN_MODULE_ID,
             world_id=BUILTIN_WORLD_ID,
             game_system_id=BUILTIN_SYSTEM_ID,
-            title="追书人",
-            version=BUILTIN_MODULE_VERSION,
-            authors=["Chaosium"],
-            players_min=1,
-            players_max=1,
-            difficulty=1,
-            estimated_duration="1-2 小时",
-            synopsis="一项围绕失踪者、旧书与墓地展开的调查。",
+            title=catalog["title"],
+            version=catalog["version"],
+            authors=catalog["authors"],
+            players_min=catalog["players_min"],
+            players_max=catalog["players_max"],
+            difficulty=catalog["difficulty"],
+            estimated_duration=catalog["estimated_duration"],
+            synopsis=catalog["synopsis"],
             status="ready",
-            name_en="Paper Chase",
-            story_label="调查记录",
-            subtitle="旧书与失踪之谜",
-            story_pages=_PAPER_CHASE_STORY_PAGES,
+            name_en=catalog["name_en"],
+            story_label=catalog["story_label"],
+            subtitle=catalog["subtitle"],
+            story_pages=catalog["story_pages"],
         )
         db.add(scenario)
     else:
@@ -130,6 +136,17 @@ async def ensure_seed_content(db: AsyncSession) -> None:
         scenario.world_id = BUILTIN_WORLD_ID
         scenario.status = "ready"
         # 目录展示内容随代码幂等更新，不涉及任何旧主持运行状态。
-        scenario.story_pages = _PAPER_CHASE_STORY_PAGES
+        scenario.title = catalog["title"]
+        scenario.version = catalog["version"]
+        scenario.authors = catalog["authors"]
+        scenario.players_min = catalog["players_min"]
+        scenario.players_max = catalog["players_max"]
+        scenario.difficulty = catalog["difficulty"]
+        scenario.estimated_duration = catalog["estimated_duration"]
+        scenario.synopsis = catalog["synopsis"]
+        scenario.name_en = catalog["name_en"]
+        scenario.story_label = catalog["story_label"]
+        scenario.subtitle = catalog["subtitle"]
+        scenario.story_pages = catalog["story_pages"]
 
     await db.commit()

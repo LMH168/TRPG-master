@@ -4,6 +4,9 @@ dist/
 *.tsbuildinfo
 .DS_Store
 
+# CoC7 规则书仅保留在本机，仓库提交 manifest 和说明，不提交原始 PDF。
+trpg-backend/rulesets/coc7/source/*
+
 .venv/
 __pycache__/
 .pytest_cache/

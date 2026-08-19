@@ -1,0 +1,23 @@
+{
+  "title": "坨子岛",
+  "version": "catalog-1",
+  "authors": [],
+  "players_min": 1,
+  "players_max": 4,
+  "difficulty": 3,
+  "estimated_duration": "8-16 小时",
+  "synopsis": "调查员来到一座拥有多处地点和复杂势力关系的岛屿，在数日时间线、天气变化和不断升级的威胁中寻找失踪者、调查当地秘密，并决定如何完成撤离。",
+  "name_en": "Tuozi Island",
+  "story_label": "多人沙盒",
+  "subtitle": "在岛屿时间线中寻找生路",
+  "story_pages": [
+    {
+      "title": "模组背景",
+      "content": "这是一份面向 1-4 人的长线多人模组。调查员可以分队、合流、交换发现，也可能在调查过程中失联、被捕或需要营救。"
+    },
+    {
+      "title": "多人准备",
+      "content": "游戏围绕多日时间线、地点探索、阵营反应和逐玩家信息展开。玩家的选择会改变威胁时钟、可用路线和最终结局。"
+    }
+  ]
+}

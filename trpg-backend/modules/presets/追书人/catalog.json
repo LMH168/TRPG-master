@@ -1,0 +1,23 @@
+{
+  "title": "追书人",
+  "version": "catalog-1",
+  "authors": ["Chaosium"],
+  "players_min": 1,
+  "players_max": 1,
+  "difficulty": 1,
+  "estimated_duration": "1-2 小时",
+  "synopsis": "一项围绕失踪者、旧书与墓地展开的调查。",
+  "name_en": "Paper Chase",
+  "story_label": "调查记录",
+  "subtitle": "旧书与失踪之谜",
+  "story_pages": [
+    {
+      "title": "调查委托",
+      "content": "故事发生在禁酒令时期的美国密歇根州阿诺兹堡。托马斯·金博尔请你调查叔叔道格拉斯一年前的失踪，以及最近从叔叔旧居被盗的五本珍藏旧书。你需要寻找窃贼、尽可能追回书籍，并确认道格拉斯是否尚在人世。"
+    },
+    {
+      "title": "调查员准备",
+      "content": "本模组由一名调查员进行，调查将以走访、资料检索和现场观察为主。擅长交涉、侦查或图书馆使用的调查员可能更容易推进调查，但这些能力并非必需。"
+    }
+  ]
+}

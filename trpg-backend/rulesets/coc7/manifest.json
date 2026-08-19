@@ -1,0 +1,11 @@
+{
+  "ruleset_id": "coc7",
+  "title": "克苏鲁的呼唤 7e",
+  "version": "source-1",
+  "source_file": "source/克苏鲁的呼唤 守秘人规则书 40周年纪念版.pdf",
+  "source_sha256": "b36465d9127e56ff92fc8863a0119d0ade70c62560d3cf80694069b18f7a298d",
+  "source_status": "local_only",
+  "runtime_rules_status": "not_built",
+  "used_by_modules": ["追书人", "银之锁", "林隙的罪恶", "坨子岛"],
+  "license_status": "internal_reference"
+}

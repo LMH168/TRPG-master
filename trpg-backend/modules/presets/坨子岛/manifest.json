@@ -1,0 +1,15 @@
+{
+  "module_id": "tuozidao",
+  "title": "坨子岛",
+  "slug": "tuozidao",
+  "ruleset_id": "coc7",
+  "content_version": "source-1",
+  "content_status": "source_only",
+  "runtime_pack_status": "not_built",
+  "catalog_file": "catalog.json",
+  "authors": [],
+  "source_file": "source/模组正文.pdf",
+  "source_sha256": "d830f463c921f1b556259a69cc4cb8baaf730eccd6515defa7292a4703f4a881",
+  "license_status": "unconfirmed",
+  "capabilities": ["multiplayer", "sandbox", "timeline", "factions", "capture_and_rescue"]
+}

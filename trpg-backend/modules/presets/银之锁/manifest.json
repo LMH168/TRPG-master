@@ -1,0 +1,15 @@
+{
+  "module_id": "silver_lock",
+  "title": "银之锁",
+  "slug": "silver_lock",
+  "ruleset_id": "coc7",
+  "content_version": "source-1",
+  "content_status": "source_only",
+  "runtime_pack_status": "not_built",
+  "catalog_file": "catalog.json",
+  "authors": ["夕影"],
+  "source_file": "source/银之锁.docx",
+  "source_sha256": "8b44348b338606cb3f0f48b57654bd52d6f61847531c9621178ccda5bccf5f6e",
+  "license_status": "unconfirmed",
+  "capabilities": ["single_player", "puzzle", "inventory", "conditional_ending"]
+}

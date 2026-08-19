@@ -1,0 +1,23 @@
+{
+  "title": "林隙的罪恶",
+  "version": "catalog-1",
+  "authors": ["Butterrr"],
+  "players_min": 1,
+  "players_max": 3,
+  "difficulty": 2,
+  "estimated_duration": "3-6 小时",
+  "synopsis": "1920 年代的傍晚，调查员们收到朋友以扫的来信，前往德克萨斯州沃斯堡荒野的木屋看望这位独居猎人。一场原本平静的拜访，将在夜幕降临后变成关于失踪、梦游与森林危险的调查。",
+  "name_en": "The Sin in the Forest Gap",
+  "story_label": "多人调查",
+  "subtitle": "木屋来信与入夜后的猎杀",
+  "story_pages": [
+    {
+      "title": "模组背景",
+      "content": "调查员需要先认识以扫，并在夜晚前抵达森林木屋。木屋、柴房、森林和地下空间分别提供调查、交谈、制作和风险处理的可能。"
+    },
+    {
+      "title": "多人准备",
+      "content": "推荐 1-3 名调查员。玩家可以分头探索、共享或隐藏发现，并在夜晚到来后面对位置、声音和协作带来的不同后果。"
+    }
+  ]
+}
