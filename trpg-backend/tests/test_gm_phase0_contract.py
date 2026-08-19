@@ -1,5 +1,6 @@
 """Phase 0 DTO 与预设 ModulePack 的最小契约测试。"""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import pytest
 from httpx import AsyncClient
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.dto.gm import CommandEnvelope
 from app.models.gm import CheckRun, PendingDecisionRecord
@@ -88,6 +90,35 @@ async def test_wait_command_is_idempotent(db_session) -> None:
     second = await submit_command(db_session, room_id=room_id, envelope=command)
     assert first.revision == second.revision == 1
     assert first.events[0].event_id == second.events[0].event_id
+
+
+async def test_concurrent_gm_session_creation_reuses_one_snapshot(db_session) -> None:
+    """并发首次进入同一房间时，两个请求必须复用一份会话和 ModuleVersion。"""
+
+    room_id = "00000000-0000-0000-0000-000000000098"
+    db_session.add(
+        Room(
+            id=room_id,
+            room_code="GMRACE",
+            room_name="并发会话",
+            max_players=1,
+        )
+    )
+    await db_session.commit()
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False)
+
+    async def create_once():
+        async with factory() as session:
+            return await create_session(
+                session,
+                room_id=room_id,
+                module_id="paper-chase",
+                actor_id="actor-race",
+                display_name="调查员",
+            )
+
+    results = await asyncio.gather(create_once(), create_once())
+    assert [result.session_id for result in results] == [room_id, room_id]
 
 
 async def test_provider_control_flow_gate_is_deterministic() -> None:

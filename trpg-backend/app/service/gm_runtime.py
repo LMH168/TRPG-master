@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -159,7 +160,7 @@ async def create_session(
 
     module_version = await db.get(ModuleVersion, (scenario.id, pack.version))
     if module_version is None:
-        module_version = ModuleVersion(
+        candidate = ModuleVersion(
             module_id=scenario.id,
             version=pack.version,
             world_ref="coc7",
@@ -167,8 +168,17 @@ async def create_session(
             # 目录用于房间展示，runtime 是同一版本的结构化规则切片。
             content_json={"catalog": pack.catalog, "runtime": pack.runtime},
         )
-        db.add(module_version)
-        await db.flush()
+        try:
+            # React StrictMode 和重试都可能并发进入这里；保存点只回滚这次插入，
+            # 不影响外层请求事务，冲突后重新读取赢家写入的同一份版本快照。
+            async with db.begin_nested():
+                db.add(candidate)
+                await db.flush()
+            module_version = candidate
+        except IntegrityError:
+            module_version = await db.get(ModuleVersion, (scenario.id, pack.version))
+            if module_version is None:
+                raise
     now = datetime.now(UTC)
     runtime = pack.runtime
     initial = dict(runtime.get("initial_state", {}))
@@ -205,7 +215,18 @@ async def create_session(
         },
         created_at=now,
     )
-    db.add_all([session, actor])
+    try:
+        db.add_all([session, actor])
+        await db.flush()
+    except IntegrityError:
+        # 两个首次请求也可能同时创建 GameSession/Actor；回滚本次候选写入后，
+        # 复用已经提交的会话，保证重试只返回同一份权威状态而不产生第二局。
+        await db.rollback()
+        existing = await db.get(GameSession, room_id)
+        existing_actor = await db.get(RuntimeActor, actor_id)
+        if existing is None or existing_actor is None or existing_actor.room_id != room_id:
+            raise
+        return _session_read(existing, existing_actor)
     await db.commit()
     return _session_read(session, actor)
 
