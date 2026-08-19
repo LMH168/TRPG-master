@@ -188,7 +188,7 @@ async def test_kill_then_flee_is_idempotent(db_session) -> None:
         "kill-203",
         {"kind": "inspect_target", "target_id": "attack_douglas"},
     )
-    assert killed.projection.ending_id == "douglas_killed"
+    assert killed.projection.ending_id is None
     flee = await _command(
         db_session,
         room_id,
@@ -328,7 +328,7 @@ async def test_killing_douglas_exposes_ghoul_encounter_state(db_session) -> None
         "kill-206",
         {"kind": "inspect_target", "target_id": "attack_douglas"},
     )
-    assert killed.projection.ending_id == "douglas_killed"
+    assert killed.projection.ending_id is None
     faced = await _command(
         db_session,
         room_id,

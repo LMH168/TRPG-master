@@ -569,7 +569,6 @@ def _apply_module_target(
     elif target_id == "attack_douglas":
         flags["douglas_alive"] = False
         flags["ghouls_active"] = True
-        state["ending_id"] = "douglas_killed"
     elif target_id == "fight_ghouls":
         flags["ghouls_active"] = False
         state["ending_id"] = state.get("ending_id") or "douglas_killed"
