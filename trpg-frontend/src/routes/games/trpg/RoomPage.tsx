@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { RoomSocketServerError, TurnFailedError, type AdjudicationPendingPayload, type AgentPlayerView, type AgentTurnPhase, type CheckRequestPayload, type CheckResultPayload, type EndingDraft, type HostSpeechVoiceRead, type NarrationPushPayload, type RoomConversationEvent, type RoomPlayerSummary, type TurnRead } from 'trpg-sdk'
+import { RoomSocketServerError, TurnFailedError, type AdjudicationPendingPayload, type AgentPlayerView, type AgentTurnPhase, type CheckRequestPayload, type CheckResultPayload, type EndingDraft, type HostSpeechVoiceRead, type NarrationPushPayload, type PlayerProjection, type RoomConversationEvent, type RoomPlayerSummary, type TurnRead } from 'trpg-sdk'
 import { ArrowLeft, Users, Map, MapPin, BookOpen, ScrollText, Star, X, SendHorizontal, Plus, Save, FlagOff, Heart, Brain, Volume2, Pause, Play, Square, RotateCcw, Mic, LoaderCircle } from 'lucide-react'
 import { useCallback, useState, useRef, useEffect, useMemo, type Dispatch, type FormEvent, type SetStateAction } from 'react'
 import { useRoomStore } from '@/stores/room-store'
@@ -218,8 +218,29 @@ const LOCATION_IMAGE_BY_ID: Record<string, string> = {
   kimball_study: '/assets/rooms/play/location-kimball-study.webp',
 }
 
-function mapLocationsFromPlayerView(playerView: AgentPlayerView | null): MapLocation[] {
+const GM_ENDING_LABELS: Record<string, string> = {
+  peaceful_resolution: '和平解决',
+  follow_underground: '跟随道格拉斯进入地下',
+  douglas_killed: '杀死道格拉斯并面对食尸鬼群',
+  asylum: '进入疗养院',
+  flee: '逃离墓地',
+}
+
+function mapLocationsFromPlayerView(
+  playerView: AgentPlayerView | null,
+  gmProjection: PlayerProjection | null = null,
+): MapLocation[] {
   if (!playerView) {
+    if (gmProjection?.sceneLabel || gmProjection?.locationId) {
+      return [{
+        id: gmProjection.sceneId ?? gmProjection.locationId,
+        icon: '📍',
+        name: gmProjection.sceneLabel ?? gmProjection.locationId,
+        desc: '当前所在场景由 GM 规则投影提供',
+        depth: 0,
+        isCurrent: true,
+      }]
+    }
     return [{
       id: 'waiting-for-view',
       icon: '📍',
@@ -1415,6 +1436,7 @@ export default function RoomPage() {
     const cached = sdk.roomSocket.getPlayerView()
     return cached?.room_id === roomId ? cached : null
   })
+  const [gmProjection, setGmProjection] = useState<PlayerProjection | null>(null)
   const [progressLabel, setProgressLabel] = useState<string | null>(null)
   const [secondaryProgressLabel, setSecondaryProgressLabel] = useState<string | null>(null)
   const [streamingNarration, setStreamingNarration] = useState<StreamingNarration | null>(null)
@@ -1456,11 +1478,14 @@ export default function RoomPage() {
   const organizingPhaseStartedAtRef = useRef<number | null>(null)
   const progressClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const suspended = (roomPhase || roomInfo?.phase) === 'Suspended'
-  const mapLocations = mapLocationsFromPlayerView(playerView)
-  const currentLocationImage = playerView ? LOCATION_IMAGE_BY_ID[playerView.scene.id] : undefined
+  const mapLocations = mapLocationsFromPlayerView(playerView, gmProjection)
+  const currentLocationImage = LOCATION_IMAGE_BY_ID[gmProjection?.sceneId ?? gmProjection?.locationId ?? playerView?.scene.id ?? '']
   const liveResources = liveResourcesOf(playerView)
-  const currentHp = resourceValue(playerView, 'hp') ?? character?.derived.hp ?? null
-  const currentSan = resourceValue(playerView, 'san') ?? character?.derived.san ?? null
+  const currentHp = gmProjection?.hp ?? resourceValue(playerView, 'hp') ?? character?.derived.hp ?? null
+  const currentSan = gmProjection?.san ?? resourceValue(playerView, 'san') ?? character?.derived.san ?? null
+  const gmEndingLabel = gmProjection?.endingId
+    ? (GM_ENDING_LABELS[gmProjection.endingId] ?? gmProjection.endingId)
+    : null
   // 权限请求、识别和整理结果期间都占用语音会话。UI 用同一个布尔值切换
   // “发送/取消”按钮，保持移动端输入栏始终只有四列，不挤压输入框。
   const speechInputActive =
@@ -2019,14 +2044,10 @@ export default function RoomPage() {
     const api = (sdk as unknown as {
       gm?: {
         createSession: (payload: Record<string, string>, token: string, account: string) => Promise<{
-        projection: { revision: number; checks?: Array<GmPendingCheck & { status: string }> }
+        projection: PlayerProjection
         openingNarration?: string | null
         }>
-        getProjection: (room: string, actor: string, token: string) => Promise<{
-          revision: number
-          checks?: Array<GmPendingCheck & { status: string }>
-          pendingClarification?: GmClarification | null
-        }>
+        getProjection: (room: string, actor: string, token: string) => Promise<PlayerProjection>
       }
     }).gm
     const accountToken = getAuthToken()
@@ -2045,8 +2066,10 @@ export default function RoomPage() {
       accountToken,
     ).then(async (session) => {
       if (cancelled) return
+      setGmProjection(session.projection)
       const projection = await api.getProjection(roomId, playerId, reconnectToken)
       if (cancelled) return
+      setGmProjection(projection)
       gmRevisionRef.current = projection.revision ?? session.projection.revision
       const openingNarration = session.openingNarration
       if (openingNarration) {
@@ -2062,7 +2085,14 @@ export default function RoomPage() {
       }
       const pending = projection.checks?.find((check) => check.status === 'awaiting_roll')
       setGmPendingCheck(pending ?? null)
-      setGmClarification(projection.pendingClarification ?? null)
+      setGmClarification(
+        projection.pendingClarification
+          ? {
+              question: projection.pendingClarification.question,
+              options: projection.pendingClarification.options ?? [],
+            }
+          : null,
+      )
       setGmReady(true)
     }).catch((error: unknown) => {
       if (!cancelled) setActionError(friendlyErrorMessage(error, 'AI 主持尚未就绪'))
@@ -2093,7 +2123,7 @@ export default function RoomPage() {
           clarificationQuestion?: string | null
           clarificationOptions?: string[]
           commandResult?: {
-            projection: { revision: number }
+            projection: PlayerProjection
             narrationFacts?: string[]
             check?: (GmPendingCheck & { status: string }) | null
           }
@@ -2136,13 +2166,16 @@ export default function RoomPage() {
             clarificationQuestion?: string | null
             clarificationOptions?: string[]
             commandResult?: {
-              projection: { revision: number }
+              projection: PlayerProjection
               narrationFacts?: string[]
               check?: (GmPendingCheck & { status: string }) | null
             }
           }
           const nextRevision = typedResult.commandResult?.projection.revision ?? typedResult.revision
           gmRevisionRef.current = nextRevision
+          if (typedResult.commandResult?.projection) {
+            setGmProjection(typedResult.commandResult.projection)
+          }
           const check = typedResult.commandResult?.check
           setGmPendingCheck(check?.status === 'awaiting_roll' ? check : null)
           if (typedResult.status === 'clarification') {
@@ -2241,6 +2274,7 @@ export default function RoomPage() {
       gm?: {
         submitCommand: (room: string, payload: Record<string, unknown>, token: string) => Promise<{
           revision: number
+          projection: PlayerProjection
           check?: { roll?: number | null; success?: boolean | null; skillId: string } | null
           narrationFacts?: string[]
         }>
@@ -2260,6 +2294,7 @@ export default function RoomPage() {
       reconnectToken,
     ).then((result) => {
       gmRevisionRef.current = result.revision
+      setGmProjection(result.projection)
       setGmPendingCheck(null)
       setTyping(false)
       const text = result.narrationFacts?.join(' ') ?? (
@@ -2392,9 +2427,9 @@ export default function RoomPage() {
         </button>
         <div className="room-play__scene flex-1 min-w-0">
           <div className="room-play__module-title">{roomInfo?.moduleTitle || '当前模组'}</div>
-          <div className="room-play__location" title={playerView?.scene.name || '场景同步中'}>
+          <div className="room-play__location" title={gmProjection?.sceneLabel || playerView?.scene.name || '场景同步中'}>
             <MapPin aria-hidden="true" />
-            <span>{playerView?.scene.name || '场景同步中'}</span>
+            <span>{gmProjection?.sceneLabel || playerView?.scene.name || '场景同步中'}</span>
           </div>
         </div>
         <OnboardingTrigger className="room-play__guide-button" />
@@ -2655,7 +2690,16 @@ export default function RoomPage() {
             )}
           </div>
         )}
-        {isActionChannel && gmPendingCheck && !suspended && (
+        {gmEndingLabel && (
+          <div
+            aria-label="GM 结局"
+            className="mb-2 rounded-md border border-[#c7ad73] bg-[#fffaf0] px-3 py-2 text-center"
+          >
+            <p className="text-xs font-semibold text-brass-dark">结局已达成：{gmEndingLabel}</p>
+            <p className="mt-0.5 text-[11px] text-text-muted">本局调查已经结束，权威状态不会再继续推进。</p>
+          </div>
+        )}
+        {isActionChannel && gmPendingCheck && !suspended && !gmEndingLabel && (
           <button
             type="button"
             onClick={rollGmPendingCheck}
@@ -2750,8 +2794,8 @@ export default function RoomPage() {
               e.preventDefault()
               sendMessage()
             }}
-            disabled={suspended || (isActionChannel && (!gmReady || gmPendingCheck !== null))}
-            placeholder={suspended ? '游戏已挂起' : gmPendingCheck && isActionChannel ? '请先完成投骰' : !gmReady && isActionChannel ? 'AI 主持正在连接' : '输入行动…'}
+            disabled={suspended || (isActionChannel && (!gmReady || gmPendingCheck !== null || gmEndingLabel !== null))}
+            placeholder={suspended ? '游戏已挂起' : gmEndingLabel && isActionChannel ? '本局调查已结束' : gmPendingCheck && isActionChannel ? '请先完成投骰' : !gmReady && isActionChannel ? 'AI 主持正在连接' : '输入行动…'}
             className="room-play__input"
           />
           {speechInput.status === 'listening' ? (
@@ -2943,7 +2987,7 @@ export default function RoomPage() {
           )}
           <div className="room-play__location-caption">
           <span className="text-xs text-text-dim">
-            {playerView?.scene.name || '等待规则引擎同步当前场景'}
+            {gmProjection?.sceneLabel || playerView?.scene.name || '等待规则引擎同步当前场景'}
           </span>
           {playerView?.world && (
             <span className="text-[10px] text-text-dim mt-1">
@@ -2953,20 +2997,20 @@ export default function RoomPage() {
           )}
           </div>
         </div>
-        {playerView?.world && (playerView.world.core_resolved || playerView.world.ending_available) && (
+        {(playerView?.world && (playerView.world.core_resolved || playerView.world.ending_available) || gmEndingLabel) && (
           <div
             aria-label="主线进度"
             className="mb-3.5 rounded-md border border-[#c7ad73] bg-[#fffaf0] px-3 py-2"
           >
             <div className="text-xs font-semibold text-brass-dark">
-              {playerView.world.ending_id
+              {gmEndingLabel || playerView?.world?.ending_id
                 ? '本次调查已经结束'
-                : playerView.world.ending_available
+                : playerView?.world?.ending_available
                   ? '主线已经收束，可以选择如何收尾'
                   : '主线目标已经达成'}
             </div>
             <div className="text-[11px] text-text-muted mt-0.5">
-              {playerView.world.ending_id
+              {gmEndingLabel || playerView?.world?.ending_id
                 ? '你可以回顾已经发生的事，但不能再改变结局。'
                 : '继续扮演或主动收束都可以，由你决定何时结束。'}
             </div>

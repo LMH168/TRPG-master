@@ -13,6 +13,7 @@ import type {
 } from 'trpg-sdk'
 import { RoomSocketServerError } from 'trpg-sdk'
 import RoomPage from './RoomPage'
+import { sdk } from '@/services/api-client'
 import { useAuthStore } from '@/stores/auth-store'
 import { useCharacterStore } from '@/stores/character-store'
 import { useRoomStore } from '@/stores/room-store'
@@ -1176,6 +1177,39 @@ describe('RoomPage conversation history', () => {
       payload: { code: 'NOT_FOUND', message: 'Not Found' },
     }))
     expect(screen.queryByText('Not Found')).not.toBeInTheDocument()
+  })
+
+  it('renders the new GM projection and terminal ending after refresh', async () => {
+    const projection = {
+      sessionId: 'room-1',
+      actorId: 'player-1',
+      revision: 3,
+      worldTime: '2026-08-16T00:00:00Z',
+      locationId: 'cemetery',
+      visibleFacts: [],
+      sceneId: 'douglas',
+      sceneLabel: '与道格拉斯对话',
+      hp: 8,
+      san: 42,
+      endingId: 'peaceful_resolution',
+      checks: [],
+      clues: [],
+    }
+    const sdkWithGm = sdk as unknown as { gm?: Record<string, ReturnType<typeof vi.fn>> }
+    const previousGm = sdkWithGm.gm
+    sdkWithGm.gm = {
+      createSession: vi.fn().mockResolvedValue({ projection, openingNarration: null }),
+      getProjection: vi.fn().mockResolvedValue(projection),
+    }
+    try {
+      renderRoomPage()
+      expect(await screen.findByText('结局已达成：和平解决')).toBeInTheDocument()
+      expect(screen.getByTitle('与道格拉斯对话')).toBeInTheDocument()
+      expect(screen.getByPlaceholderText('本局调查已结束')).toBeDisabled()
+    } finally {
+      if (previousGm) sdkWithGm.gm = previousGm
+      else Reflect.deleteProperty(sdkWithGm, 'gm')
+    }
   })
 
   it('speaks the narration only once the authoritative push has landed', async () => {
