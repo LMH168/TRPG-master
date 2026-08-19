@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 from httpx import AsyncClient
 from pydantic import ValidationError
+from sqlalchemy import select
 
 from app.dto.gm import CommandEnvelope
+from app.models.gm import CheckRun, PendingDecisionRecord
 from app.models.room import Room
 from app.service.gm_runtime import create_session, submit_command
 from app.service.module_runtime import ModulePackError, load_preset
@@ -154,3 +156,116 @@ async def test_gm_command_rejects_another_actor(client: AsyncClient) -> None:
         headers=reconnect(room["reconnectToken"]),
     )
     assert response.status_code == 403
+
+
+async def test_kernel_moves_inspects_and_talks_without_forcing_a_check(db_session) -> None:
+    """低风险移动、调查和交谈直接提交领域事件，不凭空建立检定。"""
+
+    room_id = "00000000-0000-0000-0000-000000000098"
+    db_session.add(Room(id=room_id, room_code="GM1A", room_name="Phase 1A", max_players=1))
+    await db_session.commit()
+    await create_session(
+        db_session,
+        room_id=room_id,
+        module_id="paper-chase",
+        actor_id="actor-1a",
+        display_name="调查员",
+    )
+    commands = [
+        {"kind": "move_actor", "targetId": "library"},
+        {"kind": "inspect_target", "targetId": "old_newspapers"},
+        {"kind": "talk_to_npc", "targetId": "librarian", "topic": "旧书"},
+    ]
+    # 先移动，再调查和交谈；这些低风险动作不应凭空建立检定。
+    moved = await submit_command(
+        db_session,
+        room_id=room_id,
+        envelope=CommandEnvelope(
+            client_request_id="move-1a",
+            expected_revision=0,
+            actor_id="actor-1a",
+            command=commands[0],
+        ),
+    )
+    assert moved.projection.location_id == "library"
+    inspected = await submit_command(
+        db_session,
+        room_id=room_id,
+        envelope=CommandEnvelope(
+            client_request_id="inspect-1a",
+            expected_revision=1,
+            actor_id="actor-1a",
+            command=commands[1],
+        ),
+    )
+    assert inspected.events[0].event_type == "target_inspected"
+    talked = await submit_command(
+        db_session,
+        room_id=room_id,
+        envelope=CommandEnvelope(
+            client_request_id="talk-1a",
+            expected_revision=2,
+            actor_id="actor-1a",
+            command=commands[2],
+        ),
+    )
+    assert talked.events[0].event_type == "npc_contacted"
+
+
+async def test_kernel_check_roll_is_server_owned_and_idempotent(db_session) -> None:
+    """客户端不能提交骰点；同一 roll 请求重放返回相同骰点和 revision。"""
+
+    room_id = "00000000-0000-0000-0000-000000000097"
+    db_session.add(Room(id=room_id, room_code="GM1B", room_name="Phase 1A", max_players=1))
+    await db_session.commit()
+    await create_session(
+        db_session,
+        room_id=room_id,
+        module_id="paper-chase",
+        actor_id="actor-1b",
+        display_name="调查员",
+    )
+    start = await submit_command(
+        db_session,
+        room_id=room_id,
+        envelope=CommandEnvelope(
+            client_request_id="check-start",
+            expected_revision=0,
+            actor_id="actor-1b",
+            command={
+                "kind": "start_check",
+                "checkId": "check-1a",
+                "skillId": "library-use",
+                "goal": "检索旧报纸",
+            },
+        ),
+    )
+    assert start.check and start.check.status == "awaiting_roll"
+    assert start.pending_decisions and start.pending_decisions[0].check_id == "check-1a"
+    with pytest.raises(ValidationError):
+        CommandEnvelope.model_validate(
+            {
+                "clientRequestId": "forged-roll",
+                "expectedRevision": 1,
+                "actorId": "actor-1b",
+                "command": {"kind": "roll_check", "checkId": "check-1a", "roll": 1},
+            }
+        )
+    roll_command = CommandEnvelope(
+        client_request_id="check-roll",
+        expected_revision=1,
+        actor_id="actor-1b",
+        command={"kind": "roll_check", "checkId": "check-1a"},
+    )
+    first = await submit_command(db_session, room_id=room_id, envelope=roll_command)
+    second = await submit_command(db_session, room_id=room_id, envelope=roll_command)
+    assert first.check and second.check
+    assert first.check.roll == second.check.roll
+    assert first.revision == second.revision == 2
+    assert await db_session.scalar(select(CheckRun).where(CheckRun.id == "check-1a")) is not None
+    assert (
+        await db_session.scalar(
+            select(PendingDecisionRecord).where(PendingDecisionRecord.check_id == "check-1a")
+        )
+        is not None
+    )

@@ -1,7 +1,8 @@
-name: PR Preview
+name: PR Preview（已停用）
 
-# CI Preview（issue #200）：PR 开/更新时自动构建 backend+frontend 镜像、部署到
-# 预览服务器、在 PR 上评论访问链接；PR 关闭时自动回收。
+# 当前仓库没有配置预览服务器 SSH，因此不在 pull_request 上构建、部署或回收预览。
+# 保留 workflow 文件和手动入口，未来配置服务器后可恢复，而不会让 PR 因无意义的
+# deploy/teardown 检查失败。
 #
 # 顶层不再用 paths 过滤（跟旧版的关键差异）：paths 过滤器是基于"这个事件
 # 触发时 PR 的完整 diff"判断的——如果 PR 曾经改过 trpg-backend/** 触发了
@@ -13,8 +14,7 @@ name: PR Preview
 # 部署；teardown job 不受路径判断影响，但只回收同仓库 PR——fork PR 本来
 # 就不会部署，也拿不到仓库 Secrets，关闭时继续尝试 SSH 只会产生误报。
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, closed]
+  workflow_dispatch:
 
 # 按 PR 号分组只能防止"同一个 PR 的两次 push 互相打架"，防不了"两个不同
 # PR 算出同一个端口槽位、同时部署互相抢占同一个宿主机端口"（fennoai review

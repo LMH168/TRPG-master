@@ -8,7 +8,7 @@ from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 PRE_CLEANUP_REVISION = "c7d8e9f0a1b2"
-HEAD_REVISION = "ea1b2c3d4f50"
+HEAD_REVISION = "b1c2d3e4f5a6"
 
 # 这些表承载账号、房间、角色、聊天、目录素材和生图，清理后必须继续存在。
 FOUNDATION_TABLES = {
@@ -37,6 +37,8 @@ FOUNDATION_TABLES = {
     "gm_events",
     "gm_command_receipts",
     "gm_outbox_messages",
+    "gm_check_runs",
+    "gm_pending_decisions",
 }
 
 # 旧 AI 主持编排、权威执行和投影数据全部放弃，避免新架构继续背负双写路径。

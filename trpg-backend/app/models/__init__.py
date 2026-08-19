@@ -12,11 +12,13 @@ from app.models.content import (
     World,
 )
 from app.models.gm import (
+    CheckRun,
     CommandReceipt,
     GameEvent,
     GameSession,
     ModuleVersion,
     OutboxMessage,
+    PendingDecisionRecord,
     RuntimeActor,
     TurnRun,
 )
@@ -25,11 +27,13 @@ from app.models.user import User, UserCharacterTemplate, UserCharacterTemplatePo
 
 __all__ = [
     "ChatMessage",
+    "CheckRun",
     "CommandReceipt",
     "GameEvent",
     "GameSession",
     "ModuleVersion",
     "OutboxMessage",
+    "PendingDecisionRecord",
     "RuntimeActor",
     "TurnRun",
     "Character",
