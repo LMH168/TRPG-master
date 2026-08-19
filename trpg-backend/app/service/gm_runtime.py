@@ -45,6 +45,7 @@ from app.service.gm_ai import (
     Narrator,
     build_context_snapshot,
     guard_clarification,
+    guard_intent_coverage,
     guard_narration,
     intent_step_to_command,
     validate_intent,
@@ -518,7 +519,7 @@ async def _narrate_committed_result(
             narration = guard_narration(
                 draft,
                 committed_event_ids=[event.event_id for event in result.events],
-                visible_facts=result.narration_facts,
+                visible_facts=[*snapshot.visible_facts, *result.narration_facts],
                 forbidden_terms=[
                     *_forbidden_narration_terms(session.state_json),
                     *_time_narration_forbidden_terms(snapshot.world_time),
@@ -1027,6 +1028,7 @@ async def submit_free_text(
         snapshot = await build_context_snapshot(db, room_id=room_id, actor_id=payload.actor_id)
         interpreter, narrator = _agents()
         intent = validate_intent(snapshot, await interpreter.interpret(snapshot, payload.input))
+        intent = guard_intent_coverage(snapshot, intent, payload.input)
         if intent.kind == "clarification":
             session = await db.get(GameSession, room_id)
             hidden_terms = (
@@ -1079,7 +1081,7 @@ async def submit_free_text(
             narration = guard_narration(
                 draft,
                 committed_event_ids=[event.event_id for event in command_result.events],
-                visible_facts=command_result.narration_facts,
+                visible_facts=[*refreshed.visible_facts, *command_result.narration_facts],
                 forbidden_terms=forbidden_terms,
             ).text
         except (GmModelUnavailable, ValueError):

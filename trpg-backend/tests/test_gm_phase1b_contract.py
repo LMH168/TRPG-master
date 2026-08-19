@@ -23,6 +23,7 @@ from app.service.gm_ai import (
     ScriptedIntentInterpreter,
     build_context_snapshot,
     guard_clarification,
+    guard_intent_coverage,
     guard_narration,
     intent_step_to_command,
     validate_intent,
@@ -206,6 +207,31 @@ def test_unique_npc_question_keeps_topic_when_bound_to_command() -> None:
     assert envelope.command.topic == "平静地问他这一年去了哪里"
 
 
+def test_single_move_cannot_silently_drop_followup_action() -> None:
+    """移动加调查必须停在明确边界，不能把后半句当作已经处理。"""
+
+    snapshot = _snapshot().model_copy(
+        update={
+            "action_candidates": [
+                ActionCandidate(action="move_actor", target_id="library", label="前往图书馆")
+            ]
+        }
+    )
+    proposal = IntentResult(
+        kind="proposal",
+        source_revision=3,
+        steps=[IntentStep(action="move_actor", target_id="library")],
+    )
+    guarded = guard_intent_coverage(
+        snapshot,
+        proposal,
+        "我先去图书馆，查找关于失踪者的旧资料",
+    )
+    assert guarded.kind == "clarification"
+    assert "到达后的行动" in (guarded.clarification_question or "")
+    assert guard_intent_coverage(snapshot, proposal, "我前往图书馆") == proposal
+
+
 def test_narration_guard_rejects_uncommitted_event_and_secret_claim() -> None:
     """叙事不能引用未提交事件，也不能借文学表达泄露 keeper 信息。"""
 
@@ -259,6 +285,21 @@ def test_narration_guard_rejects_the_real_candidate_list_leak() -> None:
         )
 
 
+def test_narration_guard_rejects_control_text_and_internal_ids() -> None:
+    """控制层话术和运行包标识不能伪装成主持叙事返回。"""
+
+    for text in (
+        "你可以从选项中选择下一步行动：与守墓人交谈。",
+        "当前可执行目标是 talk_douglas。",
+    ):
+        with pytest.raises(ValueError):
+            guard_narration(
+                NarrationDraft(text=text, evidence_event_ids=["event-1"]),
+                committed_event_ids=["event-1"],
+                visible_facts=["你站在墓园中。"],
+            )
+
+
 def test_narration_guard_rejects_afternoon_claim_at_half_past_five() -> None:
     """17:30 已属傍晚，不得再输出真实回放中的“时值午后”。"""
 
@@ -275,6 +316,20 @@ def test_narration_guard_rejects_afternoon_claim_at_half_past_five() -> None:
             committed_event_ids=["event-1"],
             visible_facts=["你从阿诺兹堡来到了公共墓地。"],
             forbidden_terms=forbidden_terms,
+        )
+
+
+def test_narration_guard_rejects_unsupported_duration_claim() -> None:
+    """公开事实为失踪一年时，Narrator 不能擅自改成失踪数日。"""
+
+    with pytest.raises(ValueError, match="时间长度"):
+        guard_narration(
+            NarrationDraft(
+                text="你认出他就是失踪数日的道格拉斯。",
+                evidence_event_ids=["event-1"],
+            ),
+            committed_event_ids=["event-1"],
+            visible_facts=["道格拉斯已经失踪一年。", "你认出他就是道格拉斯。"],
         )
 
 
@@ -300,6 +355,7 @@ async def test_context_and_free_text_turn_never_expose_keeper_data(db_session) -
     )
     snapshot = await build_context_snapshot(db_session, room_id=room_id, actor_id="actor-1")
     assert "keeper" not in snapshot.model_dump_json()
+    assert "道格拉斯已经失踪一年。" in snapshot.visible_facts
     narrator = _RecordingNarrator()
     set_agents_for_testing(
         ScriptedIntentInterpreter(
@@ -393,6 +449,52 @@ async def test_projection_does_not_restore_superseded_clarification(db_session) 
 
     restored = await read_projection(db_session, room_id=room_id, actor_id=actor_id)
     assert restored.pending_clarification is None
+
+
+async def test_free_text_move_with_followup_stops_before_kernel(db_session) -> None:
+    """模型只返回移动时，服务端仍须识别被遗漏的后续调查并保持 revision。"""
+
+    room_id = "00000000-0000-0000-0000-000000000214"
+    actor_id = "actor-214"
+    db_session.add(Room(id=room_id, room_code="P1BC", room_name="复合行动边界", max_players=1))
+    await db_session.commit()
+    await create_session(
+        db_session,
+        room_id=room_id,
+        module_id="paper-chase",
+        actor_id=actor_id,
+        display_name="调查员",
+    )
+    set_agents_for_testing(
+        ScriptedIntentInterpreter(
+            [
+                IntentResult(
+                    kind="proposal",
+                    source_revision=0,
+                    steps=[IntentStep(action="move_actor", target_id="library")],
+                )
+            ]
+        ),
+        _ScriptedNarrator(),
+    )
+    try:
+        result = await submit_free_text(
+            db_session,
+            room_id=room_id,
+            payload=TurnInputBody(
+                client_request_id="composite-214",
+                actor_id=actor_id,
+                expected_revision=0,
+                input="我先去图书馆，查找关于失踪者的旧资料",
+            ),
+        )
+    finally:
+        set_agents_for_testing(None)
+
+    assert result.status == "clarification"
+    assert result.revision == 0
+    assert "到达后的行动" in (result.clarification_question or "")
+    assert await db_session.scalar(select(func.count()).select_from(GameEvent)) == 0
 
 
 async def test_free_text_turn_rejects_module_spoiler_before_clue_unlock(db_session) -> None:

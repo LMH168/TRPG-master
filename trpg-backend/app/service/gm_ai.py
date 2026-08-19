@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from collections.abc import Iterable, Sequence
 from datetime import datetime
@@ -127,6 +128,8 @@ class AgentsSdkInterpreter:
                 "若玩家要求按顺序完成多个动作、中间休息或等到某时再去别处，不得"
                 "只挑一步、重排步骤或假装整体完成；必须返回 clarification，请玩家确认"
                 "当前先执行的一个有意义边界。"
+                "例如‘我先去图书馆，查找关于失踪者的旧资料’包含移动和调查，不能只返回"
+                "move_actor；应返回 clarification，说明先移动、到达后再处理调查。"
                 "若玩家明确说‘等到/等待到某个具体时间’，必须直接选择 wait_until，"
                 "默认玩家留在 snapshot.location_id，不得追问是否移动到其他地点。"
                 "若当前只有一个可匹配的 talk_to_npc 候选，玩家已经明确在向该人物说话、"
@@ -285,7 +288,7 @@ async def build_context_snapshot(
         revision=session.state_version,
         world_time=datetime.fromisoformat(session.state_json["world_time"]),
         location_id=actor.location_id,
-        visible_facts=list(session.state_json.get("visible_facts", [])),
+        visible_facts=_public_facts_for(session.state_json),
         action_candidates=_candidates_for(session.state_json, actor.location_id),
         recent_event_ids=list(reversed(event_ids)),
     )
@@ -429,6 +432,25 @@ def _checkpoint_time_available(checkpoint: dict[str, Any], state: dict[str, Any]
     return start <= hour < end if start < end else hour >= start or hour < end
 
 
+def _public_facts_for(state: dict[str, Any]) -> list[str]:
+    """汇总玩家已经获得的公开事实，不把未发现线索或 keeper 数据交给模型。"""
+
+    facts = [str(fact) for fact in state.get("visible_facts", []) if isinstance(fact, str)]
+    runtime = state.get("_runtime", {})
+    if not isinstance(runtime, dict):
+        return facts
+    owned_clues = set(state.get("clues", []))
+    facts.extend(
+        str(clue["text"])
+        for clue in runtime.get("clues", [])
+        if isinstance(clue, dict)
+        and clue.get("visibility") == "public"
+        and clue.get("id") in owned_clues
+        and isinstance(clue.get("text"), str)
+    )
+    return list(dict.fromkeys(facts))
+
+
 def validate_intent(snapshot: ContextSnapshot, result: IntentResult) -> IntentResult:
     """确定性检查模型提案的修订号、目标和动作白名单，拒绝越权输出。"""
 
@@ -455,6 +477,57 @@ def validate_intent(snapshot: ContextSnapshot, result: IntentResult) -> IntentRe
             )
         bound_steps.append(step)
     return result.model_copy(update={"steps": bound_steps})
+
+
+def guard_intent_coverage(
+    snapshot: ContextSnapshot,
+    result: IntentResult,
+    player_input: str,
+) -> IntentResult:
+    """单步移动不能静默吞掉玩家明确写出的后续行动。"""
+
+    if result.kind != "proposal" or len(result.steps) != 1:
+        return result
+    step = result.steps[0]
+    if step.action != "move_actor":
+        return result
+    # 中文复合行动通常以停顿或顺序词连接；后段出现行动动词时必须先向玩家确认边界。
+    clauses = [part.strip() for part in re.split(r"[，,；;]|然后|随后|之后|再", player_input)]
+    followup_verbs = (
+        "查",
+        "调查",
+        "寻找",
+        "询问",
+        "观察",
+        "检查",
+        "交谈",
+        "休息",
+        "等待",
+        "攻击",
+        "使用",
+    )
+    if len(clauses) < 2 or not any(
+        any(verb in clause for verb in followup_verbs) for clause in clauses[1:]
+    ):
+        return result
+    candidate = next(
+        (
+            item
+            for item in snapshot.action_candidates
+            if item.action == "move_actor" and item.target_id == step.target_id
+        ),
+        None,
+    )
+    destination = candidate.label if candidate is not None else "目标地点"
+    return IntentResult(
+        kind="clarification",
+        summary="复合行动需要分步处理",
+        clarification_question=(
+            f"这包含移动和到达后的行动。现在先执行“{destination}”，到达后再继续吗？"
+        ),
+        clarification_options=[f"先执行“{destination}”", "重新描述当前行动"],
+        source_revision=result.source_revision,
+    )
 
 
 def intent_step_to_command(
@@ -520,6 +593,10 @@ def guard_narration(
         "keeper",
         "action_candidates",
         "行动列表",
+        "可选行动",
+        "下一步行动",
+        "请从选项中选择",
+        "请根据你的角色和处境",
         "只能选择列表",
         "不能自行创建新行动",
         "守秘人秘密",
@@ -528,6 +605,9 @@ def guard_narration(
     )
     if any(term in draft.text.lower() for term in forbidden):
         raise ValueError("叙事包含受保护的隐藏信息")
+    # 下划线标识只属于运行包和内部动作协议；中文主持叙事不应把它们回显给玩家。
+    if re.search(r"(?<![A-Za-z])[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+(?![A-Za-z])", draft.text):
+        raise ValueError("叙事包含内部标识")
     # 正常回合被约束为一至三个短句；异常长文通常意味着模型开始扩写场景或复述候选。
     if len(draft.text) > 360:
         raise ValueError("叙事超出玩家安全长度")
@@ -536,6 +616,16 @@ def guard_narration(
     # 具体禁词由冻结模组按线索解锁关系提供，主持代码不认识任何剧情专名。
     if any(term and term in draft.text for term in forbidden_terms):
         raise ValueError("叙事包含尚未公开的模组信息")
+    # 时长会改变玩家对事件顺序的理解；没有出现在公开事实中的时长不得由模型自行补写。
+    duration_pattern = re.compile(
+        r"(?:\d+|[一二三四五六七八九十百半几数]+)(?:分钟|小时|天|日|周|个月|月|年)"
+    )
+    grounded_durations = {
+        match.group(0) for fact in visible_facts for match in duration_pattern.finditer(fact)
+    }
+    claimed_durations = {match.group(0) for match in duration_pattern.finditer(draft.text)}
+    if not claimed_durations <= grounded_durations:
+        raise ValueError("叙事包含无证据的时间长度")
     # 检定尚未投骰时，Narrator 只能承接动作，不能抢先宣布权威结果。
     awaiting_roll = any("准备" in fact and "检定" in fact for fact in visible_facts)
     if awaiting_roll and any(term in draft.text for term in ("成功", "失败", "骰点")):
@@ -591,6 +681,7 @@ __all__ = [
     "ScriptedIntentInterpreter",
     "build_context_snapshot",
     "guard_clarification",
+    "guard_intent_coverage",
     "guard_narration",
     "intent_step_to_command",
     "validate_intent",
