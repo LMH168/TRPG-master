@@ -11,11 +11,27 @@ from app.models.content import (
     Scenario,
     World,
 )
+from app.models.gm import (
+    CommandReceipt,
+    GameEvent,
+    GameSession,
+    ModuleVersion,
+    OutboxMessage,
+    RuntimeActor,
+    TurnRun,
+)
 from app.models.room import Character, CharacterPortrait, Note, Player, Room
 from app.models.user import User, UserCharacterTemplate, UserCharacterTemplatePortrait, UserSession
 
 __all__ = [
     "ChatMessage",
+    "CommandReceipt",
+    "GameEvent",
+    "GameSession",
+    "ModuleVersion",
+    "OutboxMessage",
+    "RuntimeActor",
+    "TurnRun",
     "Character",
     "CharacterPortrait",
     "Game",

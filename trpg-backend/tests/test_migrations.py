@@ -8,7 +8,7 @@ from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 PRE_CLEANUP_REVISION = "c7d8e9f0a1b2"
-HEAD_REVISION = "d8e9f0a1b2c3"
+HEAD_REVISION = "ea1b2c3d4f50"
 
 # 这些表承载账号、房间、角色、聊天、目录素材和生图，清理后必须继续存在。
 FOUNDATION_TABLES = {
@@ -42,7 +42,6 @@ REMOVED_AI_TABLES = {
     "turn_commit_receipts",
     "events",
     "action_plan_runs",
-    "game_events",
     "turn_records",
     "ending_command_executions",
     "ending_drafts",
@@ -51,10 +50,7 @@ REMOVED_AI_TABLES = {
     "adjudication_command_executions",
     "check_runs",
     "pending_check_decisions",
-    "action_executions",
     "room_action_reservations",
-    "game_sessions",
-    "module_versions",
     "check_results",
     "room_summaries",
     "module_import_jobs",

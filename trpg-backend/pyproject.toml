@@ -25,6 +25,7 @@ dependencies = [
   "pillow>=11.0,<13.0",
   "websockets>=14,<16",
   "cryptography==48.0.1 ; platform_machine == 'x86_64' and sys_platform == 'darwin'",
+  "openai-agents>=0.4,<1.0",
 ]
 
 [tool.hatch.build.targets.wheel]
