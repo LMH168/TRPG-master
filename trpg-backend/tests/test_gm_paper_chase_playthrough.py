@@ -140,11 +140,36 @@ async def test_library_route_failure_still_recovers_to_underground(db_session) -
         "cemetery-202",
         {"kind": "move_actor", "target_id": "arnoldsburg"},
     )
-    moved = await _command(
+    newspaper = await _command(
         db_session,
         room_id,
         actor_id,
         moved.revision,
+        "newspaper-202",
+        {"kind": "move_actor", "target_id": "newspaper"},
+    )
+    researched = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        newspaper.revision,
+        "archive-202",
+        {"kind": "inspect_target", "target_id": "newspaper_archive"},
+    )
+    assert "hilda_statement" in researched.projection.clues
+    back_from_newspaper = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        researched.revision,
+        "back-town-202",
+        {"kind": "move_actor", "target_id": "arnoldsburg"},
+    )
+    moved = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        back_from_newspaper.revision,
         "cemetery-202b",
         {"kind": "move_actor", "target_id": "cemetery"},
     )
@@ -209,9 +234,12 @@ async def test_kill_then_flee_is_idempotent(db_session) -> None:
     assert replay.projection.ending_id == "flee"
 
 
-async def test_night_watch_interrupt_and_failed_sanity_reach_asylum(db_session) -> None:
+async def test_night_watch_interrupt_and_failed_sanity_reach_asylum(
+    db_session, monkeypatch
+) -> None:
     """等待会被夜间人影打断，理智失败进入疗养院结局。"""
 
+    monkeypatch.setattr("app.service.gm_runtime.secrets.randbelow", lambda _limit: 99)
     room_id, actor_id = "00000000-0000-0000-0000-000000000204", "actor-204"
     await _room(db_session, room_id, actor_id)
     moved = await _command(
@@ -261,8 +289,8 @@ async def test_night_watch_interrupt_and_failed_sanity_reach_asylum(db_session) 
         "san-roll-204",
         {"kind": "roll_check", "check_id": "san-204"},
     )
-    # 无论随机结果如何，失败前进规则保留可达结局；成功则仍停留在冲突场景。
-    assert resolved.projection.ending_id in {None, "asylum"}
+    assert resolved.check is not None and resolved.check.success is False
+    assert resolved.projection.ending_id == "asylum"
 
 
 async def test_house_surveillance_break_in_interrupts_into_chase(db_session) -> None:
@@ -400,6 +428,10 @@ async def test_fault_point_retries_do_not_duplicate_events_or_outbox(db_session)
     first = await _command(db_session, room_id, actor_id, 0, "retry-208", command)
     replay = await _command(db_session, room_id, actor_id, 0, "retry-208", command)
     assert replay.revision == first.revision == 1
+    db_session.expire_all()
+    restored = await read_projection(db_session, room_id=room_id, actor_id=actor_id)
+    assert restored.revision == 1
+    assert restored.location_id == "cemetery"
     event_count = await db_session.scalar(
         select(func.count()).select_from(GameEvent).where(GameEvent.room_id == room_id)
     )
