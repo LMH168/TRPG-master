@@ -65,19 +65,9 @@ class Room(Base):
     scenario_id: Mapped[str | None] = mapped_column(
         Uuid(as_uuid=False), ForeignKey("scenarios.id"), nullable=True, default=None
     )
-    # 与 scenario_id 一起固定房间选择的不可变 ModuleVersion。历史房间迁移后
-    # 保持 NULL，由正式开局流程（后续 Issue）负责校验并使用明确版本。
-    module_version: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
     attribute_gen_method: Mapped[str | None] = mapped_column(
         String(20), nullable=True, default=None
     )
-    # 房间统一的主持人音色。NULL 表示跟随部署配置中的默认音色。
-    host_speech_voice_type: Mapped[str | None] = mapped_column(
-        String(200), nullable=True, default=None
-    )
-    # 已探索场景 id 列表（对应 scenario_scenes.id），JSON 数组存起来，本期
-    # 没有任何写入路径（推进场景发现属于规则引擎/编排器范畴），只铺字段。
-    discovered_scene_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)

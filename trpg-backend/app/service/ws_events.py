@@ -2,7 +2,6 @@
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dto.host_speech import HostSpeechSettingsUpdatedPayload
 from app.dto.ws import RoomStatePayload, ServerEnvelope
 from app.service import room as room_service
 from app.service.ws_manager import manager
@@ -22,13 +21,4 @@ async def broadcast_room_state(db: AsyncSession, room_id: str) -> None:
     await manager.broadcast(room_id, envelope.model_dump(by_alias=True))
 
 
-async def broadcast_host_speech_settings(room_id: str, voice_type: str | None) -> None:
-    payload = HostSpeechSettingsUpdatedPayload(voice_type=voice_type)
-    envelope = ServerEnvelope(
-        type="host_speech.settings_updated",
-        payload=payload.model_dump(by_alias=True),
-    )
-    await manager.broadcast(room_id, envelope.model_dump(by_alias=True))
-
-
-__all__ = ["broadcast_host_speech_settings", "broadcast_room_state"]
+__all__ = ["broadcast_room_state"]

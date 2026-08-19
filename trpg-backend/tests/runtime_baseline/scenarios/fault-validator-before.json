@@ -1,9 +1,0 @@
-{
-  "schema_version": 1,
-  "id": "fault.validator-before",
-  "category": "fault-recovery",
-  "description": "Validator 拒绝无效目标时保持零提交，并允许同一输入重新裁决。",
-  "turns": [{"client_action_id": "fault-validator", "utterance": "观察房间"}],
-  "faults": [{"point": "validator", "timing": "before", "occurrence": 1}],
-  "expectation": {"terminal_statuses": ["completed"]}
-}

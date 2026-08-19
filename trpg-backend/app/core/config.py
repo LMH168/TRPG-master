@@ -11,7 +11,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if TYPE_CHECKING:
@@ -22,17 +22,6 @@ def secret_value(value: str | SecretStr) -> str:
     if isinstance(value, str):
         return value
     return getattr(value, "get_secret_value")()  # noqa: B009
-
-
-class HostSpeechVoiceConfig(BaseModel):
-    """部署允许在房间里选择的豆包音色。"""
-
-    # 部署文档沿用豆包 API 的 voiceType；populate_by_name 同时保留 Python
-    # 侧 voice_type，避免业务代码为了环境变量格式到处使用 camelCase。
-    model_config = ConfigDict(populate_by_name=True)
-
-    voice_type: str = Field(alias="voiceType", min_length=1)
-    label: str = Field(min_length=1)
 
 
 class Settings(BaseSettings):
@@ -62,9 +51,6 @@ class Settings(BaseSettings):
     # 本地默认放行 Vite 开发服务器的默认端口 9877。
     cors_origins: list[str] = ["http://localhost:9877", "http://127.0.0.1:9877"]
 
-    # 默认使用确定性的离线 Fake，便于本地启动和测试；显式切到远程 provider
-    # 后，Host/Narrator 才会调用远程模型。
-    host_model_provider: Literal["fake", "openai", "qwen", "deepseek"] = "fake"
     openai_api_key: SecretStr | None = None
     openai_base_url: str = Field(
         default="https://api.openai.com/v1",
@@ -93,28 +79,6 @@ class Settings(BaseSettings):
     # 一键建卡的规则数值始终由本地 COC7 生成器负责；此开关只决定八项背景文字
     # 是否交给 DeepSeek 创作。模型失败时服务层会回退到生成器内置模板。
     character_background_provider: Literal["deterministic", "deepseek"] = "deterministic"
-    host_agent_max_turns: int = Field(default=6, gt=0, le=20)
-    host_agent_max_tool_calls: int = Field(default=8, gt=0, le=50)
-    host_agent_tool_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
-    host_agent_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
-    # 开场优先由模型根据玩家安全 Context 生成沉浸式文本；精确时钟、参与者和
-    # 无证据事实校验不通过时，服务层自动降级到确定性安全模板。
-    opening_narration_mode: Literal["model", "template"] = "model"
-    # 10 秒对真实 provider 太紧：DeepSeek 生成开场稳定在 10s 上下，几乎每局都
-    # 撞上超时、退回确定性模板——玩家看到的就是"开场变死板了"，而日志里是
-    # opening_narration_completed result=fallback failure_category=timeout。
-    # 开场期间前端已经收到 opening.started 并显示生成中，等待是可见的。
-    opening_narration_timeout_seconds: float = Field(default=30.0, gt=0, le=60)
-    recent_history_enabled: bool = True
-    recent_history_max_turns: int = Field(default=6, ge=1, le=24)
-    recent_history_max_chars: int = Field(default=6000, ge=2)
-    action_plan_max_steps: int = Field(default=32, ge=2, le=256)
-    action_plan_max_steps_per_advance: int = Field(default=3, ge=1, le=32)
-    action_plan_max_repair_attempts: int = Field(default=1, ge=0, le=8)
-    # Deterministic cross-process E2E hook. Production and development always
-    # use the Engine's cryptographic dice source; this value is honored only
-    # when APP_ENV=test.
-    test_fixed_dice_roll: int | None = Field(default=None, ge=1, le=100)
 
     # 角色生图是建卡完成后的可选操作，入口默认开启。没有远程 Key 时
     # auto provider 仍然使用离线 mock，不会因为修改默认值而产生费用。
@@ -139,34 +103,9 @@ class Settings(BaseSettings):
     portrait_max_image_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=20 * 1024 * 1024)
     portrait_image_download_timeout_seconds: float = Field(default=15.0, gt=0, le=60)
 
-    # AI 主持人语音：默认关闭，未配置豆包凭证时不影响应用启动或文字游戏流程。
-    host_speech_provider: Literal["disabled", "fake", "doubao"] = "disabled"
-    doubao_tts_api_key: SecretStr | None = None
-    doubao_tts_resource_id: str = "seed-tts-2.0"
-    doubao_tts_voices: list[HostSpeechVoiceConfig] = Field(default_factory=list)
-    doubao_tts_default_voice_type: str | None = None
-    doubao_tts_timeout_seconds: float = Field(default=15.0, gt=0, le=60)
-    host_speech_max_sentence_bytes: int = Field(default=900, ge=100, le=4000)
-    host_speech_cache_ttl_seconds: int = Field(default=3600, ge=0, le=86400)
-    host_speech_cache_max_bytes: int = Field(default=67_108_864, ge=0)
-    host_speech_player_requests_per_minute: int = Field(default=60, ge=1, le=600)
-    host_speech_room_misses_per_minute: int = Field(default=30, ge=1, le=600)
-    host_speech_max_concurrency: int = Field(default=8, ge=1, le=64)
-
     @model_validator(mode="after")
-    def validate_host_model(self) -> Settings:
-        if self.host_model_provider == "openai" and (
-            self.openai_api_key is None or not secret_value(self.openai_api_key).strip()
-        ):
-            raise ValueError("HOST_MODEL_PROVIDER=openai 时必须设置 OPENAI_API_KEY")
-        if self.host_model_provider == "qwen" and (
-            self.qwen_api_key is None or not secret_value(self.qwen_api_key).strip()
-        ):
-            raise ValueError("HOST_MODEL_PROVIDER=qwen 时必须设置 QWEN_API_KEY")
-        if self.host_model_provider == "deepseek" and (
-            self.deepseek_api_key is None or not secret_value(self.deepseek_api_key).strip()
-        ):
-            raise ValueError("HOST_MODEL_PROVIDER=deepseek 时必须设置 DEEPSEEK_API_KEY")
+    def validate_feature_config(self) -> Settings:
+        """校验角色背景与生图所需的外部服务凭据。"""
         if self.character_background_provider == "deepseek" and (
             self.deepseek_api_key is None or not secret_value(self.deepseek_api_key).strip()
         ):
@@ -189,23 +128,6 @@ class Settings(BaseSettings):
             and (self.sufy_api_key is None or not secret_value(self.sufy_api_key).strip())
         ):
             raise ValueError("角色生图使用 Sufy 时必须设置 SUFY_API_KEY")
-        if self.host_speech_provider == "doubao":
-            required = {
-                "DOUBAO_TTS_API_KEY": (
-                    secret_value(self.doubao_tts_api_key)
-                    if self.doubao_tts_api_key is not None
-                    else None
-                ),
-                "DOUBAO_TTS_DEFAULT_VOICE_TYPE": self.doubao_tts_default_voice_type,
-            }
-            missing = [name for name, value in required.items() if not value or not value.strip()]
-            if missing:
-                raise ValueError("HOST_SPEECH_PROVIDER=doubao 时缺少配置：" + ", ".join(missing))
-            allowed = {voice.voice_type for voice in self.doubao_tts_voices}
-            if not allowed:
-                raise ValueError("HOST_SPEECH_PROVIDER=doubao 时必须配置 DOUBAO_TTS_VOICES")
-            if self.doubao_tts_default_voice_type not in allowed:
-                raise ValueError("DOUBAO_TTS_DEFAULT_VOICE_TYPE 必须属于 DOUBAO_TTS_VOICES")
         return self
 
 

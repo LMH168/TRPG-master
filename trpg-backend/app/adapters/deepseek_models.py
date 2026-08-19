@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
-from collaboration_framework.contracts import JsonObject
 
 from app.adapters.openai_models import StructuredJsonClient, _log_structured_usage
 from app.adapters.qwen_models import chat_completion_output_text
@@ -15,6 +15,8 @@ from app.adapters.structured_http import (
     post_structured_json,
     read_structured_payload,
 )
+
+JsonObject = dict[str, Any]
 
 
 class DeepSeekChatCompletionsJsonClient(StructuredJsonClient):

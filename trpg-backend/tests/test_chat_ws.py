@@ -9,8 +9,7 @@
 那两条连接在**不同房间**、从不互相广播）。「同房间双客户端都能收到广播」这类
 断言只有 SDK e2e（真 uvicorn、单事件循环）能做——见
 e2e/tests/discussion-chat.e2e.ts，那边有完整的双客户端覆盖；这里守住的是
-落库、幂等、鉴权和清理这些单连接就能证明的行为。房间活动回合并发控制已由
-数据库 `room_turn_reservations` 覆盖，相关验证位于可靠回合测试中。
+落库、幂等、鉴权和清理这些单连接就能证明的行为。
 """
 
 from collections.abc import Iterator
@@ -27,7 +26,6 @@ from tests.test_ws import (
     create_room,
     receive_until,
     register_and_login,
-    start_game,
 )
 
 
@@ -67,32 +65,6 @@ def _submit_action(ws, player: dict, utterance: str) -> None:
     )
 
 
-class _ConversationCheckIntentModel:
-    async def generate(self, context):  # noqa: ANN001
-        return {
-            "kind": "action",
-            "verb": "investigate",
-            "target": {"matched": True, "id": context.player_view.scene.id},
-            "check": {
-                "route": "default",
-                "proposed_skills": ["library-use", "stealth"],
-            },
-            "summary": context.player_input.utterance,
-        }
-
-
-class _ConversationClarificationIntentModel:
-    async def generate(self, context):  # noqa: ANN001
-        return {
-            "kind": "unknown",
-            "verb": "unknown",
-            "target": {"matched": False, "raw": context.player_input.utterance},
-            "check": {"route": "none"},
-            "summary": "需要澄清",
-            "clarification_question": "你指的是哪一本书？",
-        }
-
-
 # ── 讨论区：落库 + 广播回显 ───────────────────────────
 
 
@@ -106,7 +78,7 @@ def test_chat_send_echoes_broadcast_with_full_payload(sync_client: TestClient) -
     with sync_client.websocket_connect(f"/ws/{room['roomId']}?token={token}") as ws:
         _join_ws(ws, room)
         _send_chat(ws, room, "我们先去图书馆吧", "msg-1")
-        envelope = ws.receive_json()
+        envelope, _ = receive_until(ws, lambda message: message.get("type") == "chat.message")
 
     assert envelope["type"] == "chat.message"
     assert envelope["payload"]["text"] == "我们先去图书馆吧"
@@ -127,9 +99,9 @@ def test_chat_send_is_idempotent_on_duplicate_client_message_id(
     with sync_client.websocket_connect(f"/ws/{room['roomId']}?token={token}") as ws:
         _join_ws(ws, room)
         _send_chat(ws, room, "只发一次的消息", "dup-1")
-        first = ws.receive_json()
+        first, _ = receive_until(ws, lambda message: message.get("type") == "chat.message")
         _send_chat(ws, room, "只发一次的消息", "dup-1")
-        second = ws.receive_json()
+        second, _ = receive_until(ws, lambda message: message.get("type") == "chat.message")
 
     assert first["payload"]["messageId"] == second["payload"]["messageId"]
 
@@ -140,33 +112,23 @@ def test_chat_send_is_idempotent_on_duplicate_client_message_id(
     assert len(history) == 1
 
 
-# ── action.plan.submit：原话广播 + 叙事回复 ───────────
+# ── 旧行动入口：明确停用 ─────────────────────────────
 
 
-def test_action_submit_broadcasts_utterance_then_narration(sync_client: TestClient) -> None:
-    """action.plan.submit 先广播发起者的**原话**（action.broadcast，修"聊天记录像
-    被隔离"的 bug——此前原话只在发送方本地插入），再广播守秘人回复
-    （narration.push）。双客户端的"对方也能看到"断言在 e2e（见文件头说明）。"""
+def test_action_submit_does_not_publish_old_runtime_events(sync_client: TestClient) -> None:
+    """清理期间旧行动入口只返回重建提示，不伪造行动广播或主持叙事。"""
     token = register_and_login(sync_client, "act_host")
     room = create_room(sync_client, token)
-
-    advance_to_building(sync_client, room)
-    complete_character(sync_client, room["roomId"], room["reconnectToken"])
-    start_game(sync_client, room, token)
 
     with sync_client.websocket_connect(f"/ws/{room['roomId']}?token={token}") as ws:
         _join_ws(ws, room)
         _submit_action(ws, room, "我推开吱呀作响的木门")
-        echo, _ = receive_until(ws, lambda message: message.get("type") == "action.broadcast")
-        narration, _ = receive_until(ws, lambda message: message.get("type") == "narration.push")
+        error, seen = receive_until(ws, lambda message: message.get("type") == "error")
 
-    assert echo["type"] == "action.broadcast"
-    assert echo["payload"]["utterance"] == "我推开吱呀作响的木门"
-    assert echo["payload"]["nickname"] == "房主"
-    assert echo["payload"]["characterName"] == "陈探员"
-    assert echo["payload"]["playerId"] == room["playerId"]
-    assert narration["type"] == "narration.push"
-    assert narration["payload"]["text"]
+    assert error["payload"]["code"] == "GM_RUNTIME_UNAVAILABLE"
+    assert not any(
+        message.get("type") in {"action.broadcast", "narration.push"} for message in seen
+    )
 
 
 # ── 可靠回合占用 ─────────────────────────────────────
@@ -182,12 +144,12 @@ def test_pre_turn_validation_failure_allows_explicit_retry(sync_client: TestClie
 
         _submit_action(ws, room, "我尝试翻译古籍")
         failure, _ = receive_until(ws, lambda message: message["type"] == "error")
-        assert failure["payload"]["code"] == "ROOM_RUNTIME_NOT_FOUND"
+        assert failure["payload"]["code"] == "GM_RUNTIME_UNAVAILABLE"
 
         # 立刻重试，确保前置校验错误不会把连接或房间留在不可用状态。
         _submit_action(ws, room, "我再次尝试翻译")
         failure, _ = receive_until(ws, lambda message: message["type"] == "error")
-        assert failure["payload"]["code"] == "ROOM_RUNTIME_NOT_FOUND"
+        assert failure["payload"]["code"] == "GM_RUNTIME_UNAVAILABLE"
 
 
 # ── 历史消息 REST ────────────────────────────────────
@@ -202,7 +164,7 @@ def test_messages_pagination_with_before_cursor(sync_client: TestClient) -> None
         _join_ws(ws, room)
         for i in range(3):
             _send_chat(ws, room, f"第{i + 1}条", f"pg-{i}")
-            ws.receive_json()
+            receive_until(ws, lambda message: message.get("type") == "chat.message")
 
     page1 = sync_client.get(
         f"{ROOMS_BASE}/{room['roomId']}/messages", params={"limit": 2}, headers=headers
@@ -234,9 +196,8 @@ def test_messages_rejects_non_member(sync_client: TestClient) -> None:
 # ── 退房清理 / 复盘纯净 ──────────────────────────────
 
 
-def test_end_game_clears_chat_and_replay_stays_clean(sync_client: TestClient) -> None:
-    """房主结束游戏后聊天记录被清空；聊天从头到尾不出现在 replay 里
-    （issue #107 验收标准：聊天是临时工作记忆，不进复盘）。"""
+def test_end_game_clears_temporary_chat(sync_client: TestClient) -> None:
+    """房主结束游戏后清空临时讨论消息，不保留旧主持回放概念。"""
 
     token = register_and_login(sync_client, "end_host")
     room = create_room(sync_client, token)
@@ -247,9 +208,13 @@ def test_end_game_clears_chat_and_replay_stays_clean(sync_client: TestClient) ->
     with sync_client.websocket_connect(f"/ws/{room['roomId']}?token={token}") as ws:
         _join_ws(ws, room)
         ws.send_json({"type": "game.start", "playerId": room["playerId"], "payload": {}})
-        from tests.test_ws import receive_until
-
-        receive_until(ws, lambda message: message.get("type") == "narration.push")
+        receive_until(
+            ws,
+            lambda message: (
+                message.get("type") == "room.state"
+                and message.get("payload", {}).get("phase") == "InGame"
+            ),
+        )
         _send_chat(ws, room, "这句话不该进复盘", "end-1")
         receive_until(ws, lambda message: message.get("type") == "chat.message")
 
@@ -271,9 +236,3 @@ def test_end_game_clears_chat_and_replay_stays_clean(sync_client: TestClient) ->
         sync_client.get(f"{ROOMS_BASE}/{room['roomId']}/messages", headers=headers).json()["data"]
         == []
     )
-
-    # replay 里从头到尾没有聊天内容
-    replay = sync_client.get(f"{ROOMS_BASE}/{room['roomId']}/replay", headers=headers).json()[
-        "data"
-    ]
-    assert "这句话不该进复盘" not in str(replay)

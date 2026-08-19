@@ -7,38 +7,49 @@
 带上 `app/core/coc7_content.py` 的规则数据（属性/技能/职业目录），供
 `GET /systems/{systemId}/ruleset` 返回。
 
-issue #141 起，``Scenario`` 只保存目录和展示信息。规则引擎消费的完整内容由
-本地追书人加载脚本经过 Validation 后写入不可变的 ``ModuleVersion``；Seed
-不再内嵌或发布简化版 ModuleContent。
+清理旧 AI 主持运行时后，``Scenario`` 只保存目录和展示信息；Seed 不再内嵌、
+解析或发布任何结构化执行内容。
 
 用固定 UUID + 幂等插入（先查是否已存在）：应用启动时、测试 fixture 里都可以
-放心重复调用，不会插入重复数据，也不会改变加载脚本已经发布的版本和 ready 状态。
+放心重复调用，不会插入重复数据。
 """
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.coc7_content import build_coc7_ruleset
 from app.models.content import Game, GameSystem, Scenario, World
-from app.service.paper_chase_loader import (
-    PAPER_CHASE_MODULE_ID,
-    PAPER_CHASE_VERSION,
-    PAPER_CHASE_WORLD_REF,
-    read_paper_chase_presentation,
-)
 
 BUILTIN_GAME_ID = "00000000-0000-0000-0000-000000000001"
 BUILTIN_SYSTEM_ID = "00000000-0000-0000-0000-000000000002"
 BUILTIN_SCENARIO_ID = "00000000-0000-0000-0000-000000000003"
 BUILTIN_WORLD_ID = "00000000-0000-0000-0000-000000000004"
-BUILTIN_MODULE_ID = PAPER_CHASE_MODULE_ID
-BUILTIN_MODULE_VERSION = PAPER_CHASE_VERSION
-BUILTIN_WORLD_REF = PAPER_CHASE_WORLD_REF
+BUILTIN_MODULE_ID = "paper-chase"
+BUILTIN_MODULE_VERSION = "catalog-1"
+BUILTIN_WORLD_REF = "coc7-1920s"
+
+# 这是房间开局前展示给玩家的静态介绍，不包含守秘人秘密或规则执行数据。
+_PAPER_CHASE_STORY_PAGES = [
+    {
+        "title": "调查委托",
+        "content": (
+            "故事发生在禁酒令时期的美国密歇根州阿诺兹堡。托马斯·金博尔请你调查叔叔"
+            "道格拉斯一年前的失踪，以及最近从叔叔旧居被盗的五本珍藏旧书。你需要寻找"
+            "窃贼、尽可能追回书籍，并确认道格拉斯是否尚在人世。"
+        ),
+    },
+    {
+        "title": "调查员准备",
+        "content": (
+            "本模组由一名调查员进行，调查将以走访、资料检索和现场观察为主。擅长交涉、"
+            "侦查或图书馆使用的调查员可能更容易推进调查，但这些能力并非必需。"
+        ),
+    },
+]
 
 
 async def ensure_seed_content(db: AsyncSession) -> None:
-    """插入内置的"克苏鲁的呼唤 / COC7 / 追书人"种子数据（如果还不存在）。"""
+    """插入基础规则系统和目录展示数据，不发布任何 AI 主持运行时内容。"""
     coc7_ruleset = build_coc7_ruleset().model_dump(mode="json")
-    presentation = read_paper_chase_presentation()
 
     game = await db.get(Game, BUILTIN_GAME_ID)
     if game is None:
@@ -99,35 +110,26 @@ async def ensure_seed_content(db: AsyncSession) -> None:
             module_id=BUILTIN_MODULE_ID,
             world_id=BUILTIN_WORLD_ID,
             game_system_id=BUILTIN_SYSTEM_ID,
-            title=presentation.title,
+            title="追书人",
             version=BUILTIN_MODULE_VERSION,
-            authors=list(presentation.authors),
-            players_min=presentation.players_min,
-            players_max=presentation.players_max,
-            difficulty=presentation.difficulty,
-            estimated_duration=presentation.estimated_duration,
-            synopsis=presentation.synopsis,
-            status="wip",
-            name_en=presentation.name_en,
-            story_label=presentation.story_label,
-            subtitle=presentation.subtitle,
-            story_pages=[],
+            authors=["Chaosium"],
+            players_min=1,
+            players_max=1,
+            difficulty=1,
+            estimated_duration="1-2 小时",
+            synopsis="一项围绕失踪者、旧书与墓地展开的调查。",
+            status="ready",
+            name_en="Paper Chase",
+            story_label="调查记录",
+            subtitle="旧书与失踪之谜",
+            story_pages=_PAPER_CHASE_STORY_PAGES,
         )
         db.add(scenario)
     else:
-        # 已发布目录由加载器和不可变 ModuleVersion 更新；Seed 不得把旧 ready
-        # 版本改成与尚未加载的新版本不一致的展示数据。
         scenario.module_id = BUILTIN_MODULE_ID
         scenario.world_id = BUILTIN_WORLD_ID
-        if scenario.status != "ready":
-            scenario.title = presentation.title
-            scenario.name_en = presentation.name_en
-            scenario.players_min = presentation.players_min
-            scenario.players_max = presentation.players_max
-            scenario.difficulty = presentation.difficulty
-            scenario.estimated_duration = presentation.estimated_duration
-            scenario.synopsis = presentation.synopsis
-            scenario.story_label = presentation.story_label
-            scenario.subtitle = presentation.subtitle
+        scenario.status = "ready"
+        # 目录展示内容随代码幂等更新，不涉及任何旧主持运行状态。
+        scenario.story_pages = _PAPER_CHASE_STORY_PAGES
 
     await db.commit()

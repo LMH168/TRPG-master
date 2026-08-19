@@ -1,9 +1,0 @@
-{
-  "schema_version": 1,
-  "id": "fault.host-before",
-  "category": "fault-recovery",
-  "description": "Host 调用前失败时不写入状态，重试后完成同一动作。",
-  "turns": [{"client_action_id": "fault-host", "utterance": "观察房间"}],
-  "faults": [{"point": "host", "timing": "before", "occurrence": 1}],
-  "expectation": {"terminal_statuses": ["completed"]}
-}

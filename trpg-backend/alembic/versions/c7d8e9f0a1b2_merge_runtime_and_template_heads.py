@@ -6,7 +6,6 @@
 
 from collections.abc import Sequence
 
-
 revision: str = "c7d8e9f0a1b2"
 down_revision: str | Sequence[str] | None = (
     "b6c7d8e9f0a1",

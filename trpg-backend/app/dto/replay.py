@@ -1,45 +1,18 @@
-"""复盘摘要 / 事件回放的 pydantic 响应模型（issue #77 §2 新增端点）。
-
-`GET /rooms/{roomId}/summary` 依赖 AI 编排生成复盘内容（归 #48/#68），本期
-固定返回 `NOT_IMPLEMENTED`。`GET /rooms/{roomId}/replay` 则是真实实现——
-读的是 ws.py 在发送 narration.push 时写入的 `events` 表，是服务端
-"真的在写、也真的在读"的完整数据闭环之一。
-"""
+"""房间讨论消息恢复所需的兼容响应模型。"""
 
 from typing import Literal
 
 from app.dto.common import CamelModel, UtcDatetime
 
 
-class RoomSummaryRead(CamelModel):
-    """GET /api/v1/rooms/{roomId}/summary 返回。"""
-
-    room_id: str
-    summary_text: str | None = None
-    highlights: list[str] | None = None
-
-
-class ReplayEventRead(CamelModel):
-    """GET /api/v1/rooms/{roomId}/replay 返回项——对应 `events` 表的一行。"""
-
-    model_config = {"from_attributes": True}
-    id: str
-    player_id: str | None = None
-    event_type: str
-    payload: dict
-    created_at: UtcDatetime
-
-
 class RoomConversationEventRead(CamelModel):
     """GET /api/v1/rooms/{roomId}/conversation 返回项。
 
-    它面向房间页恢复当前对话 UI：讨论区消息继续来自 `chat_messages`，行动频道
-    的玩家原话、主持叙事和检定结果来自 `events`。这不是 replay 的替代品；
-    讨论区仍然不进入 replay，也仍然会在结束游戏时按既有语义清理。
+    当前只承载讨论区消息；行动频道将在新 GM Agent 协议中重新定义。
     """
 
     id: str
-    type: Literal["chat.message", "action.broadcast", "narration.push", "check.result"]
-    channel: Literal["discussion", "action"]
+    type: Literal["chat.message"]
+    channel: Literal["discussion"]
     payload: dict
     created_at: UtcDatetime

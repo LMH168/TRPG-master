@@ -1,7 +1,6 @@
 from typing import Any
 
 import pytest
-from collaboration_framework.contracts import JsonObject
 from pydantic import ValidationError
 
 from app.adapters.character_background import DeepSeekCharacterBackgroundComposer
@@ -11,6 +10,8 @@ from app.service.character_background import (
     CharacterBackgroundService,
     build_character_background_service,
 )
+
+JsonObject = dict[str, Any]
 
 
 class RecordingJsonClient:

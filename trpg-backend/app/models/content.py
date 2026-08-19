@@ -76,8 +76,8 @@ class World(Base):
 class Scenario(Base):
     """模组目录身份与展示信息。
 
-    这里不保存规则引擎的权威内容；经过校验且不可变的完整发布内容保存在
-    ``module_versions``。``version`` 只是目录当前推荐的发布版本。
+    清理旧主持运行时后，这里只保留大厅展示、建房选择和素材关联所需的目录信息；
+    ``version`` 是当前目录资源的展示版本，不再绑定旧结构化规则执行内容。
     """
 
     __tablename__ = "scenarios"
@@ -122,109 +122,6 @@ class Scenario(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
-    )
-
-
-class ScenarioScene(Base):
-    """模组内的分幕/场景，`rooms.discovered_scene_ids` 里存的就是这里的行 id。"""
-
-    __tablename__ = "scenario_scenes"
-
-    id: Mapped[str] = mapped_column(
-        Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
-    scenario_id: Mapped[str] = mapped_column(
-        Uuid(as_uuid=False), ForeignKey("scenarios.id"), nullable=False
-    )
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
-    order_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC)
-    )
-
-
-class Entity(Base):
-    """模组内的实体（NPC / 物品 / 地点等），字段形状随类型变化，用 JSON 兜底。"""
-
-    __tablename__ = "entities"
-
-    id: Mapped[str] = mapped_column(
-        Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
-    scenario_id: Mapped[str] = mapped_column(
-        Uuid(as_uuid=False), ForeignKey("scenarios.id"), nullable=False
-    )
-    entity_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    name: Mapped[str] = mapped_column(String(200), nullable=False)
-    data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC)
-    )
-
-
-class ModuleCheckpoint(Base):
-    """模组内的检定关卡点（规则引擎驱动 check.request 时会读这里，本期不接规则引擎）。"""
-
-    __tablename__ = "module_checkpoints"
-
-    id: Mapped[str] = mapped_column(
-        Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
-    scenario_id: Mapped[str] = mapped_column(
-        Uuid(as_uuid=False), ForeignKey("scenarios.id"), nullable=False
-    )
-    scene_id: Mapped[str | None] = mapped_column(
-        Uuid(as_uuid=False), ForeignKey("scenario_scenes.id"), nullable=True
-    )
-    name: Mapped[str] = mapped_column(String(200), nullable=False)
-    skill: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    difficulty: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC)
-    )
-
-
-class ModuleSanTrigger(Base):
-    """模组内的理智检定触发点。"""
-
-    __tablename__ = "module_san_triggers"
-
-    id: Mapped[str] = mapped_column(
-        Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
-    scenario_id: Mapped[str] = mapped_column(
-        Uuid(as_uuid=False), ForeignKey("scenarios.id"), nullable=False
-    )
-    scene_id: Mapped[str | None] = mapped_column(
-        Uuid(as_uuid=False), ForeignKey("scenario_scenes.id"), nullable=True
-    )
-    trigger_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    san_loss_success: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    san_loss_failure: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC)
-    )
-
-
-class ModuleWinCondition(Base):
-    """模组内的胜利/结局条件。"""
-
-    __tablename__ = "module_win_conditions"
-
-    id: Mapped[str] = mapped_column(
-        Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
-    scenario_id: Mapped[str] = mapped_column(
-        Uuid(as_uuid=False), ForeignKey("scenarios.id"), nullable=False
-    )
-    name: Mapped[str] = mapped_column(String(200), nullable=False)
-    condition_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
 
 

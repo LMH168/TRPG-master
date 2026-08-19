@@ -1,9 +1,0 @@
-{
-  "schema_version": 1,
-  "id": "fault.engine-after",
-  "category": "fault-recovery",
-  "description": "Engine 提交后失败时通过状态对账继续，不重复执行。",
-  "turns": [{"client_action_id": "fault-engine-after", "utterance": "观察房间"}],
-  "faults": [{"point": "engine", "timing": "after", "occurrence": 1}],
-  "expectation": {"terminal_statuses": ["completed"]}
-}

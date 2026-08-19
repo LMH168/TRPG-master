@@ -1,5 +1,5 @@
 """Controller 层：`/api/v1/rooms` 路由 —— 房间 CRUD 和生命周期管理（issue #77
-切换为真实数据库读写 + 补充 roll-attributes / summary / replay 3 个新端点）。
+切换为真实数据库读写，并保留建房、建卡、讨论历史和属性掷骰端点）。
 
 角色卡相关路由（挂在 `/rooms/{roomId}/characters` 下）本期改为调用独立的
 `service/character.py`，不再是 `room_service` 的一部分（issue #77 决策：
@@ -26,7 +26,7 @@ from app.dto.character import (
 )
 from app.dto.chat import ChatMessageRead
 from app.dto.common import ApiResponse
-from app.dto.replay import ReplayEventRead, RoomConversationEventRead, RoomSummaryRead
+from app.dto.replay import RoomConversationEventRead
 from app.dto.room import (
     JoinRoomBody,
     RoomCreate,
@@ -227,32 +227,6 @@ async def resume_game(
         _raise_service_error(exc)
     await broadcast_room_state(db, room_id)
     return ApiResponse.ok(None)
-
-
-@router.get("/{room_id}/summary", response_model=ApiResponse[RoomSummaryRead])
-async def get_room_summary(
-    room_id: str, db: AsyncSession = Depends(get_db)
-) -> ApiResponse[RoomSummaryRead]:
-    """GET /api/v1/rooms/{roomId}/summary —— 复盘摘要（本期未实现）。"""
-    summary = await room_service.get_summary(db, room_id)
-    return ApiResponse.ok(summary)
-
-
-@router.get("/{room_id}/replay", response_model=ApiResponse[list[ReplayEventRead]])
-async def get_room_replay(
-    room_id: str,
-    reconnect_token: str | None = Header(default=None, alias="X-Reconnect-Token"),
-    db: AsyncSession = Depends(get_db),
-) -> ApiResponse[list[ReplayEventRead]]:
-    """GET /api/v1/rooms/{roomId}/replay —— 逐条事件回放（仅本房间成员可查）。"""
-    try:
-        events = await room_service.get_replay(db, room_id, reconnect_token)
-    except (
-        room_service.RoomAuthenticationError,
-        room_service.RoomAuthorizationError,
-    ) as exc:
-        _raise_service_error(exc)
-    return ApiResponse.ok(events)
 
 
 @router.get("/{room_id}/conversation", response_model=ApiResponse[list[RoomConversationEventRead]])

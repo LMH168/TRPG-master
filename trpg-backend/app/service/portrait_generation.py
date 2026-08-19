@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 
 import structlog
-from collaboration_framework.contracts import ModuleContent, ModuleContentV3
 from sqlalchemy import select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -28,8 +27,7 @@ from app.dto.portrait import (
     PortraitPrompt,
     PortraitSkillSnapshot,
 )
-from app.models.content import Scenario
-from app.models.engine import ModuleVersion
+from app.models.content import Scenario, World
 from app.models.room import Character, CharacterPortrait, Player, PortraitGenerationTask, Room
 from app.models.user import UserCharacterTemplate, UserCharacterTemplatePortrait
 from app.service.portrait_reference import PortraitReferenceImage, load_portrait_reference_image
@@ -271,29 +269,18 @@ def build_character_portrait_snapshot(
 
 
 async def _load_module_background(db: AsyncSession, room: Room) -> str:
+    """从独立世界与模组目录拼接公开背景，不依赖旧 AI 主持内容模型。"""
+
     scenario_id = room.scenario_id
-    module_version_name = room.module_version
-    if not scenario_id or not module_version_name:
+    if not scenario_id:
         return ""
 
     scenario = await db.get(Scenario, scenario_id)
     if scenario is None:
         return ""
-    module_version = await db.get(
-        ModuleVersion,
-        (scenario.module_id, module_version_name),
-    )
-    if module_version is None:
-        return ""
-    try:
-        if module_version.content_schema_version == 3:
-            module_v3 = ModuleContentV3.model_validate(module_version.content_json)
-            profile = module_v3.world_profile
-            return "；".join(part for part in (profile.era, profile.region, profile.tone) if part)
-        module = ModuleContent.model_validate(module_version.content_json)
-    except ValueError:
-        return ""
-    return module.background
+    world = await db.get(World, scenario.world_id) if scenario.world_id else None
+    parts = [world.name if world else None, world.description if world else None, scenario.synopsis]
+    return "\n".join(part for part in parts if part)
 
 
 class DeterministicPromptComposer:

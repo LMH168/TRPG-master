@@ -1,9 +1,0 @@
-{
-  "schema_version": 1,
-  "id": "fault.engine-before",
-  "category": "fault-recovery",
-  "description": "Engine 提交前失败时可以安全重试。",
-  "turns": [{"client_action_id": "fault-engine-before", "utterance": "观察房间"}],
-  "faults": [{"point": "engine", "timing": "before", "occurrence": 1}],
-  "expectation": {"terminal_statuses": ["completed"]}
-}

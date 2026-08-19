@@ -20,19 +20,6 @@ git（issue #75 决策 3b）——真正提交的是 trpg-sdk 生成出来的 TS
 import json
 from pathlib import Path
 
-from collaboration_framework.contracts import (
-    ChangeItemCustodyRequest,
-    ChangeItemCustodyResult,
-    ConfirmEndingDraftRequest,
-    ConfirmEndingDraftResult,
-    ConfirmInventoryImportDraftRequest,
-    ConfirmInventoryImportResult,
-    CreateEndingDraftRequest,
-    CreateInventoryImportDraftRequest,
-    EndingDraft,
-    InventoryImportDraft,
-    InventoryView,
-)
 from pydantic import BaseModel
 from pydantic.json_schema import GenerateJsonSchema, models_json_schema
 
@@ -42,12 +29,10 @@ from app.dto import (
     chat,
     common,
     game,
-    host_speech,
     module,
     portrait,
     replay,
     room,
-    turn,
     ws,
 )
 
@@ -59,19 +44,6 @@ from app.dto import (
 # 基础设施类型），见 issue #75 决策 2 的精神——生成的是"数据形状"，不是需要
 # 业务语义/语言特性去表达的东西。
 _MODELS: list[type[BaseModel]] = [
-    # v3 房间背包（issue #212 §9）
-    CreateInventoryImportDraftRequest,
-    InventoryImportDraft,
-    ConfirmInventoryImportDraftRequest,
-    ConfirmInventoryImportResult,
-    ChangeItemCustodyRequest,
-    ChangeItemCustodyResult,
-    InventoryView,
-    # v3 结局草稿（issue #212 §10）
-    CreateEndingDraftRequest,
-    EndingDraft,
-    ConfirmEndingDraftRequest,
-    ConfirmEndingDraftResult,
     # auth（issue #58）
     auth.RegisterBody,
     auth.LoginBody,
@@ -87,9 +59,6 @@ _MODELS: list[type[BaseModel]] = [
     room.ModuleRead,
     room.RoomPreview,
     room.MyRoomSummary,
-    # 可靠回合查询与断线恢复（issue #6）
-    turn.TurnErrorRead,
-    turn.TurnRead,
     # character（issue #59 + issue #77 卡库）
     character.EquipmentItem,
     character.CharacterUpdateBody,
@@ -122,58 +91,20 @@ _MODELS: list[type[BaseModel]] = [
     module.ModuleDetailRead,
     module.ModuleImportRequestBody,
     module.ModuleImportJobRead,
-    # 复盘 / 回放（issue #77 新增）
-    replay.RoomSummaryRead,
-    replay.ReplayEventRead,
     replay.RoomConversationEventRead,
     # 通用响应信封里的错误详情（ApiResponse 本身手写，见上面的说明）
     common.ErrorDetail,
-    # AI 主持人语音 REST + 设置广播（issue #220）
-    host_speech.HostSpeechVoiceRead,
-    host_speech.HostSpeechSettingsRead,
-    host_speech.HostSpeechSettingsUpdate,
-    host_speech.HostSpeechSentenceRead,
-    host_speech.HostSpeechManifestRead,
-    host_speech.HostSpeechSettingsUpdatedPayload,
-    # WebSocket 现有 6 个事件（issue #60/#75）
+    # 基础 WebSocket 事件
     ws.RoomJoinPayload,
     ws.PlayerReadyPayload,
     ws.GameStartPayload,
     ws.ActionSubmitPayload,
     ws.SessionBoundPayload,
-    ws.NarrationPushPayload,
-    ws.NarrationChunkPayload,
-    ws.OpeningStartedPayload,
-    ws.TurnStartedPayload,
-    ws.TurnPhaseChangedPayload,
-    ws.ToolStartedPayload,
-    ws.ToolCompletedPayload,
-    ws.TurnFailedPayload,
-    ws.ViewUpdatedPayload,
-    # WebSocket 新增 14 个事件（issue #77）：C→S 3 个 + S→C 11 个
-    ws.CheckRollPayload,
-    ws.AdjudicationChoicePayload,
-    ws.AdjudicationPostRollPayload,
-    ws.ActionPlanCancelPayload,
-    ws.SanCheckRollPayload,
     ws.RoomStatePayload,
-    ws.PlayerJoinedPayload,
-    ws.TurnBeginPayload,
-    ws.GameEndedPayload,
-    ws.ViewPrivatePayload,
-    ws.CheckSkillOptionPayload,
-    ws.CheckRequestPayload,
-    ws.CheckResultPayload,
-    ws.SanCheckRequestPayload,
-    ws.SanCheckResultPayload,
-    ws.ClueGrantedPayload,
     ws.ErrorPayload,
-    ws.PlanProgressPayload,
-    ws.AdjudicationPendingPayload,
-    # WebSocket 讨论区 + 行动广播（issue #107）：C→S 1 个 + S→C 2 个
+    # 玩家讨论区
     ws.ChatSendPayload,
     ws.ChatMessagePayload,
-    ws.ActionBroadcastPayload,
     # 讨论区历史消息 REST（issue #107）
     chat.ChatMessageRead,
 ]

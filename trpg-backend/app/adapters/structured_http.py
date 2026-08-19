@@ -14,10 +14,12 @@ import ast
 import asyncio
 import json
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 import structlog
-from collaboration_framework.contracts import JsonObject
+
+JsonObject = dict[str, Any]
 
 logger = structlog.get_logger()
 

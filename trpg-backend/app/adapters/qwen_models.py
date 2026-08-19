@@ -11,9 +11,9 @@ validation to the existing Pydantic application boundary.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
-from collaboration_framework.contracts import JsonObject
 
 from app.adapters.openai_models import StructuredJsonClient, _log_structured_usage
 from app.adapters.structured_http import (
@@ -23,6 +23,8 @@ from app.adapters.structured_http import (
     post_structured_json,
     read_structured_payload,
 )
+
+JsonObject = dict[str, Any]
 
 
 class QwenChatCompletionsJsonClient(StructuredJsonClient):

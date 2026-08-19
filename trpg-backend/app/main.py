@@ -26,15 +26,10 @@ from app.core.logging import configure_logging
 from app.core.seed import ensure_seed_content
 from app.dto.common import ApiResponse
 from app.service.character_background import build_character_background_service
-from app.service.host_speech import build_host_speech_service
-from app.service.memory_projection import memory_projection_supervisor
-from app.service.paper_chase_loader import load_paper_chase
 from app.service.portrait_generation import (
     PortraitGenerationService,
     build_portrait_generation_service,
 )
-from app.service.reliable_turn_runtime import turn_runtime_supervisor
-from app.service.rule_agenda_runtime import rule_agenda_supervisor
 
 # 模块被导入时就把 structlog 配好（只需要配一次），后面直接用 structlog.get_logger()。
 configure_logging()
@@ -54,13 +49,10 @@ _HTTP_STATUS_ERROR_CODE: dict[int, ErrorCode] = {
 
 
 async def _load_builtin_content() -> None:
-    """幂等发布代码随附的最新内置模组，再允许运行时恢复已有房间。"""
+    """加载账号、房间、规则目录等基础种子数据。"""
 
     async with async_session_factory() as db:
         await ensure_seed_content(db)
-        # Seed 只维护目录基础数据；完整且不可变的 ModuleVersion 必须由校验
-        # 加载器发布。统一放在 startup 后，本地 uvicorn 与容器不会再出现差异。
-        await load_paper_chase(db)
 
 
 @asynccontextmanager
@@ -73,27 +65,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     迁移场景，本期把 `room_players` 改名成 `players`、给 `rooms` 加了一批
     字段，继续用它会让开发者拿到一个"代码以为字段存在、数据库其实没有"的
     坏状态。建表这一步交给 `alembic upgrade head`（见 README 启动步骤），
-    这里只负责插入基础种子并幂等发布代码随附的最新内置模组。如果表还不
-    存在——也就是忘了跑 alembic——会直接报错而不是静默跳过，这是有意的，
-    避免服务在目录版本与 ModuleVersion 不一致时继续接受新房间。
+    这里只负责插入基础种子和内置模组目录。如果表还不存在——也就是忘了跑
+    alembic——会直接报错而不是静默跳过，这是有意的，避免服务在不完整数据
+    结构上继续接受新房间。
     """
     await _load_builtin_content()
     portrait_service: PortraitGenerationService = app.state.portrait_generation_service
     await portrait_service.recover_interrupted()
-    # 可靠回合是唯一生产入口；启动时恢复租约过期的 Turn，并继续投递已持久化
-    # Outbox。已提交回合只能按原 payload 重投，绝不能退回执行链重做。
-    await turn_runtime_supervisor.start()
-    # Agenda 恢复只能唤醒已有 Turn；必须排在 Turn lease/Outbox 恢复之后。
-    await rule_agenda_supervisor.start()
-    # Memory 是可重建读模型，独立扫描终态 Turn，不进入 Engine/Outbox 提交链。
-    await memory_projection_supervisor.start()
     logger.info("app_started")
     try:
         yield
     finally:
-        await memory_projection_supervisor.shutdown()
-        await rule_agenda_supervisor.shutdown()
-        await turn_runtime_supervisor.shutdown()
         await portrait_service.shutdown()
         logger.info("app_stopped")
 
@@ -120,7 +102,6 @@ def create_app() -> FastAPI:
 
     app.state.character_background_service = build_character_background_service(settings)
     app.state.portrait_generation_service = build_portrait_generation_service(settings)
-    app.state.host_speech = build_host_speech_service(settings)
 
     # 允许配置里列出的前端源发起跨域请求（本地开发场景下 Vite 默认跑在
     # 9877 端口，跟后端的 8000 端口不同源，没有这个中间件浏览器会拦截请求）。
@@ -131,15 +112,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    @app.middleware("http")
-    async def disable_sentence_audio_cache(request: Request, call_next):  # noqa: ANN001
-        # MP3 在服务端已有短期 LRU；浏览器再缓存会绕过房间成员校验，并在房主
-        # 切换音色后继续命中旧音频。成功和 JSON 失败响应都必须明确 no-store。
-        response = await call_next(request)
-        if "/narrations/" in request.url.path and "/speech/sentences/" in request.url.path:
-            response.headers["Cache-Control"] = "no-store"
-        return response
 
     app.include_router(api_router)
     app.include_router(ws_router)
