@@ -119,9 +119,7 @@ npm run build
 cd ../trpg-backend
 uv sync --locked
 uv run alembic upgrade head
-uv run python scripts/load_paper_chase.py
-uv run uvicorn app.main:app --reload \
-  --reload-dir app --reload-dir ../agent-collaboration-framework/collaboration_framework
+uv run uvicorn app.main:app --reload --reload-dir app
 ```
 
 后端默认运行在 <http://127.0.0.1:8000>。模型、角色生图和主持人语音等配置以 [`trpg-backend/.env.example`](trpg-backend/.env.example) 为准；不配置远程模型时默认使用离线 Fake Provider。

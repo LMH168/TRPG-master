@@ -42,7 +42,6 @@ jobs:
               - "trpg-backend/**"
               - "trpg-frontend/**"
               - "trpg-sdk/**"
-              - "agent-collaboration-framework/**"
               - "docker-compose.preview.yml"
               - ".github/workflows/pr-preview.yml"
 

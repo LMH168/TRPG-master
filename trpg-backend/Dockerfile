@@ -1,11 +1,7 @@
 # syntax=docker/dockerfile:1
 #
-# CI Preview 用（issue #200）。构建上下文必须是**仓库根目录**，不是
-# trpg-backend/ 自己——trpg-backend/pyproject.toml 的 [tool.uv.sources] 把
-# agent-collaboration-framework 声明成 `path = "../agent-collaboration-framework"`
-# 的本地依赖（同时 load_paper_chase.py 也要读它的 docs/module-parser/examples/
-# 下的模组草稿数据），两个目录必须以同样的相对布局一起拷进镜像，`uv sync` 才能
-# 解出这个依赖。
+# CI Preview 用（issue #200）。构建上下文是仓库根目录，方便复用统一的镜像
+# 构建脚本；AI 主持框架已经从基础工程移除，Backend 只安装自身依赖。
 FROM python:3.13-slim AS runtime
 
 # uv 官方发布的镜像里已经打包好 uv/uvx 二进制，直接复制过来用，不用另装。
@@ -13,7 +9,6 @@ COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /uvx /usr/local/bin/
 
 WORKDIR /workspace
 
-COPY agent-collaboration-framework/ ./agent-collaboration-framework/
 COPY trpg-backend/ ./trpg-backend/
 
 WORKDIR /workspace/trpg-backend

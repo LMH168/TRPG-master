@@ -63,7 +63,6 @@ const backendEnv = {
   PYTHONPATH: [
     BACKEND_DIR,
     resolve(BACKEND_DIR, 'tests'),
-    resolve(BACKEND_DIR, '../agent-collaboration-framework'),
     process.env.PYTHONPATH,
   ].filter(Boolean).join(delimiter),
   APP_ENV: 'test',
