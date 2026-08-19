@@ -9,7 +9,7 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 PREVIOUS_REVISION = "1a02058345ee"
 ENGINE_IDENTITY_PREVIOUS_REVISION = "9c4e7a2b1d6f"
-HEAD_REVISION = "b6c7d8e9f0a1"
+HEAD_REVISION = "c7d8e9f0a1b2"
 MERGED_PARENT_REVISIONS = ("a5b6c7d8e9f0", "d7e8f9a0b1c2")
 
 
@@ -85,6 +85,7 @@ def test_migration_upgrades_empty_sqlite_and_round_trips(tmp_path: Path) -> None
         "ending_drafts",
         "ending_command_executions",
         "character_portraits",
+        "user_character_template_portraits",
         "portrait_generation_tasks",
         "turn_records",
         "room_turn_reservations",
@@ -162,6 +163,20 @@ def test_migration_upgrades_empty_sqlite_and_round_trips(tmp_path: Path) -> None
         "id",
     ) in _foreign_keys(database, "character_portraits")
     assert {
+        "template_id",
+        "content",
+        "content_type",
+        "size_bytes",
+        "content_hash",
+        "created_at",
+        "updated_at",
+    } == _column_names(database, "user_character_template_portraits")
+    assert (
+        "template_id",
+        "user_character_templates",
+        "id",
+    ) in _foreign_keys(database, "user_character_template_portraits")
+    assert {
         "generation_id",
         "character_id",
         "status",
@@ -223,6 +238,7 @@ def test_migration_upgrades_empty_sqlite_and_round_trips(tmp_path: Path) -> None
     assert "version" not in _column_names(database, "characters")
     assert "occupation_choice_skill_ids" not in _column_names(database, "characters")
     assert "character_portraits" not in _table_names(database)
+    assert "user_character_template_portraits" not in _table_names(database)
     assert "correlation_id" not in _column_names(database, "events")
 
     _upgrade_or_fail(database, "head")

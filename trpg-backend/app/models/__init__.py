@@ -42,7 +42,7 @@ from app.models.turn import (
     TurnCommitReceiptRecord,
     TurnRecordModel,
 )
-from app.models.user import User, UserCharacterTemplate, UserSession
+from app.models.user import User, UserCharacterTemplate, UserCharacterTemplatePortrait, UserSession
 
 __all__ = [
     "ActionExecution",
@@ -85,6 +85,7 @@ __all__ = [
     "ScenarioScene",
     "User",
     "UserCharacterTemplate",
+    "UserCharacterTemplatePortrait",
     "UserSession",
     "TurnCommitReceiptRecord",
     "TurnRecordModel",

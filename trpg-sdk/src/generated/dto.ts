@@ -237,6 +237,7 @@ export interface CharacterPreviewRequest {
 export interface CharacterRead {
   id: string;
   status: string;
+  basedOnTemplateId?: string | null;
   generationMethod: string;
   name?: string | null;
   age?: number | null;
@@ -285,6 +286,8 @@ export interface CharacterTemplateRead {
   data: {
     [k: string]: unknown;
   };
+  hasPortrait?: boolean;
+  portraitVersion?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -560,6 +563,7 @@ export type ErrorCode =
   | "FORBIDDEN"
   | "NOT_FOUND"
   | "CONFLICT"
+  | "CHARACTER_TEMPLATE_DUPLICATE"
   | "INTERNAL_ERROR"
   | "ROOM_NOT_FOUND"
   | "ROOM_FULL"

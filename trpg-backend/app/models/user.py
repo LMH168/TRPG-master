@@ -9,7 +9,17 @@ Issue #121 起，完成房间 Character 会自动写入该表；卡库列表、�
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Uuid
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -67,6 +77,20 @@ class UserCharacterTemplate(Base):
     """
 
     __tablename__ = "user_character_templates"
+    # 同一个玩家在同一规则系统下不能有两张**一模一样**的卡（#337）。判据是内容，
+    # 不是名字：两张真不同的卡完全可以同名，字节相同的才算重复。
+    #
+    # 约束放在数据库层而不是只在 service 里查一遍——那样并发两次保存仍会各自
+    # 查空、各插一条。SQLite 虽然默认不强制外键，但**强制 UNIQUE**，所以这条
+    # 在本地和测试里都真会触发，不是个测不到的保证。
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "system_id",
+            "content_hash",
+            name="uq_user_character_templates_content",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(
         Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
@@ -79,6 +103,9 @@ class UserCharacterTemplate(Base):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # `name` + `data` 的规范化 SHA-256（见 service 层 `_template_content_hash`）。
+    # 服务端算、服务端存；客户端传上来的哈希一律不认。
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
@@ -86,4 +113,35 @@ class UserCharacterTemplate(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
+    )
+
+
+class UserCharacterTemplatePortrait(Base):
+    """角色卡库当前头像；与房间头像分开存储，跨房间复用时复制。"""
+
+    __tablename__ = "user_character_template_portraits"
+    __table_args__ = (
+        CheckConstraint(
+            "size_bytes > 0",
+            name="ck_user_character_template_portraits_size_positive",
+        ),
+    )
+
+    template_id: Mapped[str] = mapped_column(
+        Uuid(as_uuid=False),
+        ForeignKey("user_character_templates.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    content_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
     )
