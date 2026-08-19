@@ -682,7 +682,7 @@ def _checkpoint_label(state: dict[str, Any], checkpoint_id: str) -> str:
     return checkpoint_id
 
 
-def _scene_for_location(state: dict[str, object], location_id: str) -> str:
+def _scene_for_location(state: dict[str, Any], location_id: str) -> str:
     """使用会话冻结运行包映射地点，避免切换模组时修改主持代码。"""
 
     runtime = state.get("_runtime", {})

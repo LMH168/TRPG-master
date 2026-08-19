@@ -9,7 +9,7 @@ import json
 import uuid
 from collections.abc import Iterable, Sequence
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from agents import Agent, ModelSettings, OpenAIChatCompletionsModel, OpenAIResponsesModel, Runner
 from openai import AsyncOpenAI
@@ -272,7 +272,7 @@ async def build_context_snapshot(
     )
 
 
-def _candidates_for(state: dict[str, object], location_id: str) -> list[ActionCandidate]:
+def _candidates_for(state: dict[str, Any], location_id: str) -> list[ActionCandidate]:
     """按当前场景生成玩家安全候选，并把模组检定绑定为服务端动作。"""
 
     runtime = state.get("_runtime", {})
