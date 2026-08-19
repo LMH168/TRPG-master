@@ -16,6 +16,34 @@ def upgrade() -> None:
     """创建新运行时的最小持久化边界。"""
 
     op.create_table(
+        "module_versions",
+        sa.Column("module_id", sa.Uuid(as_uuid=False), nullable=False),
+        sa.Column("version", sa.String(50), nullable=False),
+        sa.Column("world_ref", sa.String(200), nullable=False),
+        sa.Column("content_schema_version", sa.Integer(), nullable=False),
+        sa.Column("content_json", sa.JSON(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(["module_id"], ["scenarios.id"]),
+        sa.PrimaryKeyConstraint("module_id", "version"),
+    )
+    op.create_table(
+        "game_sessions",
+        sa.Column("room_id", sa.Uuid(as_uuid=False), nullable=False),
+        sa.Column("module_id", sa.Uuid(as_uuid=False), nullable=False),
+        sa.Column("module_version", sa.String(50), nullable=False),
+        sa.Column("state_schema_version", sa.Integer(), nullable=False),
+        sa.Column("state_json", sa.JSON(), nullable=False),
+        sa.Column("state_version", sa.BigInteger(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(["room_id"], ["rooms.id"]),
+        sa.ForeignKeyConstraint(
+            ["module_id", "module_version"],
+            ["module_versions.module_id", "module_versions.version"],
+        ),
+        sa.PrimaryKeyConstraint("room_id"),
+    )
+    op.create_table(
         "gm_actors",
         sa.Column("id", sa.String(100), nullable=False),
         sa.Column("room_id", sa.Uuid(as_uuid=False), nullable=False),

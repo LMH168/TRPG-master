@@ -6,6 +6,8 @@
 
 from collections.abc import Sequence
 
+import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "d8e9f0a1b2c3"
@@ -17,42 +19,45 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     """按外键依赖顺序删除旧主持运行时表和房间字段。"""
 
-    # 先删子表再删父表。SQLite 默认不强制外键，旧版本一直没有暴露这个顺序错误；
-    # PostgreSQL 会严格拒绝删除仍被外键引用的父表。
-    for table_name in reversed(
-        (
-            "memory_entries",
-            "memory_projection_runs",
-            "agenda_step_executions",
-            "narration_outbox",
-            "room_turn_reservations",
-            "turn_commit_receipts",
-            "events",
-            "action_plan_runs",
-            "game_events",
-            "turn_records",
-            "ending_command_executions",
-            "ending_drafts",
-            "inventory_command_executions",
-            "inventory_import_drafts",
-            "adjudication_command_executions",
-            "check_runs",
-            "pending_check_decisions",
-            "action_executions",
-            "room_action_reservations",
-            "game_sessions",
-            "module_versions",
-            "check_results",
-            "room_summaries",
-            "module_import_jobs",
-            "module_checkpoints",
-            "module_san_triggers",
-            "module_win_conditions",
-            "entities",
-            "scenario_scenes",
-        )
-    ):
-        op.drop_table(table_name)
+    tables = (
+        "memory_entries",
+        "memory_projection_runs",
+        "agenda_step_executions",
+        "narration_outbox",
+        "room_turn_reservations",
+        "turn_commit_receipts",
+        "events",
+        "action_plan_runs",
+        "game_events",
+        "turn_records",
+        "ending_command_executions",
+        "ending_drafts",
+        "inventory_command_executions",
+        "inventory_import_drafts",
+        "adjudication_command_executions",
+        "check_runs",
+        "pending_check_decisions",
+        "action_executions",
+        "room_action_reservations",
+        "game_sessions",
+        "module_versions",
+        "check_results",
+        "room_summaries",
+        "module_import_jobs",
+        "module_checkpoints",
+        "module_san_triggers",
+        "module_win_conditions",
+        "entities",
+        "scenario_scenes",
+    )
+    if op.get_bind().dialect.name == "postgresql":
+        # 这些表全都属于被放弃的旧运行时，交叉外键没有保留价值。CASCADE 只在
+        # PostgreSQL 清理同一批旧表时使用，不会触及账号、房间或角色卡基础表。
+        for table_name in tables:
+            op.execute(sa.text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
+    else:
+        for table_name in tables:
+            op.drop_table(table_name)
 
     with op.batch_alter_table("rooms") as batch_op:
         batch_op.drop_column("module_version")

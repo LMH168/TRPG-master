@@ -7,4 +7,9 @@ async def test_health_endpoint(client: AsyncClient) -> None:
     response = await client.get("/api/v1/health")
 
     assert response.status_code == 200
-    assert response.json() == {"success": True, "data": {"status": "ok"}, "error": None}
+    body = response.json()
+    assert body["success"] is True
+    assert body["data"]["status"] in {"ok", "degraded"}
+    assert body["data"]["storage"] == "ok"
+    assert body["data"]["model"] in {"configured", "unconfigured"}
+    assert body["data"]["provider"] == "deepseek"

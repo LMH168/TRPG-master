@@ -15,11 +15,11 @@ test('世界标签、追书人 v3 发布元数据和玩家安全开局简介正�
   assert.equal(systems[0]?.name, 'COC7')
 
   const modules = await sdk.rooms.listModules()
-  const paperChase = modules.find((module) => module.id === 'paper-chase-zh-coc7')
+  const paperChase = modules.find((module) => module.id === 'paper-chase')
   assert.ok(paperChase)
   assert.equal(paperChase.title, '追书人')
   assert.equal(paperChase.nameEn, 'Paper Chase')
-  assert.equal(paperChase.version, '3.0.14')
+  assert.equal(paperChase.version, 'catalog-1')
   assert.equal(paperChase.playersMin, 1)
   assert.equal(paperChase.playersMax, 1)
   assert.equal(paperChase.estimatedDuration, '1-2 小时')
@@ -39,7 +39,7 @@ test('房间人数必须符合追书人发布范围', async () => {
     player.token,
   )
   const module = (await player.sdk.rooms.listModules()).find(
-    (item) => item.id === 'paper-chase-zh-coc7'
+    (item) => item.id === 'paper-chase'
   )
   assert.ok(module)
 

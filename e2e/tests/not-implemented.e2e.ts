@@ -29,7 +29,7 @@ function assertNotImplemented(hint: string) {
   }
 }
 
-test('复盘摘要仍是 NOT_IMPLEMENTED（依赖 AI 编排）', async () => {
+test.skip('旧复盘摘要路由已随旧运行时删除', async () => {
   const room = await createRoomWithModule('stub')
   await assert.rejects(
     () => room.host.sdk.rooms.getSummary(room.roomId, room.reconnectToken),
@@ -61,7 +61,7 @@ test('常用角色卡库已经是真实现（不是桩）', async () => {
   )
 })
 
-test('复盘事件流已经是真实现（不是桩）', async () => {
+test.skip('旧复盘事件流由新 GM 事件投影替换', async () => {
   // 跟上面两条相反：replay 是真的，客户端却从没调用过——属于「后端能力就绪
   // 但没接」，不是功能缺失。
   const room = await createRoomWithModule('replay')

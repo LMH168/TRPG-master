@@ -15,6 +15,18 @@ import type {
   MyRoomSummary as GeneratedMyRoomSummary,
 } from './generated/dto';
 
+/** 房间历史兼容事件：旧行动频道与当前讨论消息共用同一展示列表。 */
+export interface RoomConversationEvent {
+  id: string;
+  type: 'chat.message' | 'action.broadcast' | 'check.result' | 'narration.push';
+  channel: 'discussion' | 'action';
+  payload: Record<string, unknown>;
+  createdAt: string;
+  messageId?: string;
+  sender?: string;
+  content?: string;
+}
+
 // 旧房间 UI 仍会读取这些历史事件；它们已不再属于新 GM DTO 导出清单，暂以
 // 不改变运行时的兼容类型承接，待 Phase 1B 新 WebSocket 契约接入后逐项替换。
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -112,7 +124,6 @@ export type {
   ModuleImportRequestBody as ImportModuleInput,
   ModuleImportJobRead as ModuleImportJob,
   // 复盘 / 回放（issue #77）—— 对应后端 dto/replay.py
-  RoomConversationEventRead as RoomConversationEvent,
   // WebSocket 现有 6 个事件（issue #60）—— 对应后端 dto/ws.py
   RoomJoinPayload,
   PlayerReadyPayload,

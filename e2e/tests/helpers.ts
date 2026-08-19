@@ -55,7 +55,7 @@ export async function createRoomWithModule(prefix = 'e2e', maxPlayers = 1): Prom
       module.playersMin <= maxPlayers &&
       maxPlayers <= module.playersMax &&
       (maxPlayers === 1
-        ? module.id === 'paper-chase-zh-coc7'
+        ? module.id === 'paper-chase'
         : module.id === 'e2e-multiplayer-coc7')
   )
   if (!selectedModule) {

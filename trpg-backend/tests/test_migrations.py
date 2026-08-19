@@ -30,6 +30,13 @@ FOUNDATION_TABLES = {
     "portrait_generation_tasks",
     "notes",
     "chat_messages",
+    "module_versions",
+    "game_sessions",
+    "gm_actors",
+    "gm_turn_runs",
+    "gm_events",
+    "gm_command_receipts",
+    "gm_outbox_messages",
 }
 
 # 旧 AI 主持编排、权威执行和投影数据全部放弃，避免新架构继续背负双写路径。

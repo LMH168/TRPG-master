@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Awaitable
 from typing import Literal
 
 from agents import Agent, OpenAIChatCompletionsModel, Runner, function_tool
@@ -24,6 +25,42 @@ class SmokeOutput(BaseModel):
     tool_value: Literal["工具可用"]
 
 
+async def _with_timeout[T](awaitable: Awaitable[T], timeout_seconds: float) -> T:
+    """为所有 provider 调用设置统一超时，避免上游失效时无限占住回合。"""
+
+    async with asyncio.timeout(timeout_seconds):
+        return await awaitable
+
+
+def _classify_error(exc: BaseException) -> str:
+    """只返回稳定错误类别，不把上游响应、密钥或请求内容写入日志。"""
+
+    if isinstance(exc, asyncio.CancelledError):
+        return "cancelled"
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    return type(exc).__name__
+
+
+async def _verify_control_flow() -> bool:
+    """用本地协程验证超时、取消与脱敏分类，不额外消耗真实模型请求。"""
+
+    try:
+        await _with_timeout(asyncio.sleep(0.02), 0.001)
+        return False
+    except TimeoutError as exc:
+        if _classify_error(exc) != "timeout":
+            return False
+
+    task = asyncio.create_task(asyncio.sleep(10))
+    task.cancel()
+    try:
+        await task
+        return False
+    except asyncio.CancelledError as exc:
+        return _classify_error(exc) == "cancelled"
+
+
 @function_tool
 def read_only_probe() -> str:
     """返回固定只读值，证明模型能够调用受约束工具。"""
@@ -35,6 +72,9 @@ async def run_smoke() -> int:
     """读取环境配置并执行一次结构化输出与工具调用门禁。"""
 
     load_dotenv()
+    if not await _verify_control_flow():
+        print("provider_smoke=failed reason=control_flow_gate")
+        return 1
     provider = os.environ.get("HOST_MODEL_PROVIDER", "deepseek")
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "").rstrip("/")
     model_name = os.environ.get("DEEPSEEK_MODEL", "")
@@ -56,20 +96,22 @@ async def run_smoke() -> int:
         output_type=SmokeOutput,
     )
     try:
-        result = await Runner.run(agent, "执行能力检查。")
+        timeout_seconds = float(os.environ.get("HOST_MODEL_TIMEOUT_SECONDS", "30"))
+        result = await _with_timeout(Runner.run(agent, "执行能力检查。"), timeout_seconds)
         output = result.final_output
         if not isinstance(output, SmokeOutput):
             print("provider_smoke=failed reason=structured_output_type")
             return 1
         print(
             f"provider_smoke=passed provider={provider} model={model_name} "
-            "structured_output=passed tool_call=passed"
+            "structured_output=passed tool_call=passed timeout=passed "
+            "cancellation=passed error_classification=passed"
         )
         return 0
-    except Exception as exc:  # noqa: BLE001 - 门禁需要将所有上游错误归类为失败。
+    except BaseException as exc:  # noqa: BLE001 - 取消也必须归类并安全关闭客户端。
         print(
             f"provider_smoke=failed provider={provider} model={model_name} "
-            f"error={type(exc).__name__}"
+            f"error={_classify_error(exc)}"
         )
         return 1
     finally:
