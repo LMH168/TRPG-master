@@ -616,6 +616,35 @@ def guard_narration(
     # 具体禁词由冻结模组按线索解锁关系提供，主持代码不认识任何剧情专名。
     if any(term and term in draft.text for term in forbidden_terms):
         raise ValueError("叙事包含尚未公开的模组信息")
+    # 这些是新增可观察事实的常见句式。只有当本回合证据明确包含该句式时，
+    # Narrator 才能使用它；否则模型不能借“文学描写”凭空增加物品、动作或秘密。
+    grounded_text = " ".join(str(fact) for fact in visible_facts)
+    ungrounded_observation_markers = (
+        "手中的",
+        "手里拿着",
+        "手上的",
+        "手里的",
+        "摆弄",
+        "拍了拍",
+        "扫向",
+        "目光",
+        "藏着",
+        "藏有",
+        "秘密",
+        "传来",
+        "延伸向",
+        "蹲在",
+        "站着",
+        "站在",
+        "躲在",
+        "通向",
+        "半掩着",
+    )
+    if any(
+        marker in draft.text and marker not in grounded_text
+        for marker in ungrounded_observation_markers
+    ):
+        raise ValueError("叙事增加了未被证据支持的观察或动作")
     # 时长会改变玩家对事件顺序的理解；没有出现在公开事实中的时长不得由模型自行补写。
     duration_pattern = re.compile(
         r"(?:\d+|[一二三四五六七八九十百半几数]+)(?:分钟|小时|天|日|周|个月|月|年)"

@@ -300,6 +300,38 @@ def test_narration_guard_rejects_control_text_and_internal_ids() -> None:
             )
 
 
+def test_narration_guard_rejects_unsupported_observation_details() -> None:
+    """模型不能用文学描写增加证据中没有的物品、动作或秘密。"""
+
+    with pytest.raises(ValueError, match="观察或动作"):
+        guard_narration(
+            NarrationDraft(
+                text="守墓人冷淡地扫了你一眼，继续摆弄手中的铁锹，那里似乎藏着秘密。",
+                evidence_event_ids=["event-1"],
+            ),
+            committed_event_ids=["event-1"],
+            visible_facts=["魅惑检定失败。", "守墓人知道道格拉斯常坐的墓碑。"],
+        )
+
+    with pytest.raises(ValueError, match="观察或动作"):
+        guard_narration(
+            NarrationDraft(
+                text="守墓人站在一旁，拍了拍手上的灰。",
+                evidence_event_ids=["event-1"],
+            ),
+            committed_event_ids=["event-1"],
+            visible_facts=["追踪检定失败。"],
+        )
+
+    # 规则明确给出对应证据时，正常叙事仍然可以表达该事实。
+    grounded = guard_narration(
+        NarrationDraft(text="你听见远处传来钟声。", evidence_event_ids=["event-1"]),
+        committed_event_ids=["event-1"],
+        visible_facts=["你听见远处传来钟声。"],
+    )
+    assert grounded.text == "你听见远处传来钟声。"
+
+
 def test_narration_guard_rejects_afternoon_claim_at_half_past_five() -> None:
     """17:30 已属傍晚，不得再输出真实回放中的“时值午后”。"""
 
