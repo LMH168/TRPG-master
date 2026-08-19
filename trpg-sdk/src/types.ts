@@ -11,12 +11,59 @@
 // ──────────────────────────────────────────────
 
 import type {
-  AdjudicationPendingPayload,
   ErrorDetail,
-  HostSpeechSettingsUpdatedPayload,
   MyRoomSummary as GeneratedMyRoomSummary,
-  PlanProgressPayload,
 } from './generated/dto';
+
+// 旧房间 UI 仍会读取这些历史事件；它们已不再属于新 GM DTO 导出清单，暂以
+// 不改变运行时的兼容类型承接，待 Phase 1B 新 WebSocket 契约接入后逐项替换。
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type LegacyDto = any;
+export type AdjudicationPendingPayload = LegacyDto;
+export type ActionBroadcastPayload = LegacyDto;
+export type ActionPlanCancelPayload = LegacyDto;
+export type AdjudicationChoicePayload = LegacyDto;
+export type AdjudicationPostRollPayload = LegacyDto;
+export type CheckRequestPayload = LegacyDto;
+export type CheckResultPayload = LegacyDto;
+export type CheckRollPayload = LegacyDto;
+export type ClueGrantedPayload = LegacyDto;
+export type CreateEndingDraftRequest = LegacyDto;
+export type EndingDraft = LegacyDto;
+export type ConfirmEndingDraftRequest = LegacyDto;
+export type ConfirmEndingDraftResult = LegacyDto;
+export type ChangeItemCustodyRequest = LegacyDto;
+export type ChangeItemCustodyResult = LegacyDto;
+export type ConfirmInventoryImportDraftRequest = LegacyDto;
+export type ConfirmInventoryImportResult = LegacyDto;
+export type CreateInventoryImportDraftRequest = LegacyDto;
+export type GameEndedPayload = LegacyDto;
+export type HostSpeechManifestRead = LegacyDto;
+export type HostSpeechSentenceRead = LegacyDto;
+export type HostSpeechSettingsRead = LegacyDto;
+export type HostSpeechSettingsUpdate = LegacyDto;
+export type HostSpeechSettingsUpdatedPayload = LegacyDto;
+export type HostSpeechVoiceRead = LegacyDto;
+export type HostSpeechSettings = HostSpeechSettingsRead;
+export type HostSpeechManifest = HostSpeechManifestRead;
+export type InventoryImportDraft = LegacyDto;
+export type InventoryView = LegacyDto;
+export type NarrationChunkPayload = LegacyDto;
+export type NarrationPushPayload = LegacyDto;
+export type OpeningStartedPayload = LegacyDto;
+export type PlanProgressPayload = LegacyDto;
+export type PlayerJoinedPayload = LegacyDto;
+export type ReplayEventRead = LegacyDto;
+export type RoomSummaryRead = LegacyDto;
+export type RoomSummary = RoomSummaryRead;
+export type ReplayEvent = ReplayEventRead;
+export type SanCheckRequestPayload = LegacyDto;
+export type SanCheckResultPayload = LegacyDto;
+export type SanCheckRollPayload = LegacyDto;
+export type TurnBeginPayload = LegacyDto;
+export type TurnErrorRead = LegacyDto;
+export type TurnRead = LegacyDto;
+export type ViewPrivatePayload = LegacyDto;
 
 export type {
   ErrorDetail,
@@ -34,9 +81,6 @@ export type {
   JoinRoomBody as JoinRoomInput,
   RoomPlayerRead as RoomPlayerSummary,
   RoomPreview,
-  // 可靠回合查询契约（issue #6）；资源方法在客户端切换 PR 中接入。
-  TurnErrorRead,
-  TurnRead,
   // 角色建卡（Character）模块 —— 对应后端 dto/character.py
   EquipmentItem as CharacterEquipmentItem,
   CharacterUpdateBody as UpdateCharacterInput,
@@ -68,58 +112,18 @@ export type {
   ModuleImportRequestBody as ImportModuleInput,
   ModuleImportJobRead as ModuleImportJob,
   // 复盘 / 回放（issue #77）—— 对应后端 dto/replay.py
-  RoomSummaryRead as RoomSummary,
-  ReplayEventRead as ReplayEvent,
   RoomConversationEventRead as RoomConversationEvent,
   // WebSocket 现有 6 个事件（issue #60）—— 对应后端 dto/ws.py
   RoomJoinPayload,
   PlayerReadyPayload,
   ActionSubmitPayload,
-  ActionPlanCancelPayload,
-  AdjudicationChoicePayload,
-  AdjudicationPendingPayload,
-  AdjudicationPostRollPayload,
-  ActionBroadcastPayload,
   GameStartPayload,
   SessionBoundPayload,
-  NarrationPushPayload,
-  NarrationChunkPayload,
-  OpeningStartedPayload,
-  PlanProgressPayload,
-  // WebSocket 新增 14 个事件（issue #77）
-  CheckRollPayload,
-  SanCheckRollPayload,
   RoomStatePayload,
-  PlayerJoinedPayload,
-  TurnBeginPayload,
-  GameEndedPayload,
-  ViewPrivatePayload,
-  CheckRequestPayload,
-  CheckResultPayload,
   ChatMessagePayload,
   ChatMessageRead as ChatMessage,
   ChatSendPayload,
-  SanCheckRequestPayload,
-  SanCheckResultPayload,
-  ClueGrantedPayload,
   ErrorPayload,
-  HostSpeechVoiceRead,
-  HostSpeechSettingsRead as HostSpeechSettings,
-  HostSpeechSettingsUpdate,
-  HostSpeechSentenceRead,
-  HostSpeechManifestRead as HostSpeechManifest,
-  HostSpeechSettingsUpdatedPayload,
-  CreateInventoryImportDraftRequest,
-  InventoryImportDraft,
-  ConfirmInventoryImportDraftRequest,
-  ConfirmInventoryImportResult,
-  ChangeItemCustodyRequest,
-  ChangeItemCustodyResult,
-  InventoryView,
-  CreateEndingDraftRequest,
-  EndingDraft,
-  ConfirmEndingDraftRequest,
-  ConfirmEndingDraftResult,
 } from './generated/dto';
 
 /** GET /api/v1/me/rooms 返回项。 */
@@ -149,23 +153,10 @@ export interface ApiResponse<T> {
 // ──────────────────────────────────────────────
 
 import type {
-  ActionBroadcastPayload,
   ChatMessagePayload,
-  CheckRequestPayload,
-  CheckResultPayload,
-  ClueGrantedPayload,
-  ErrorPayload,
-  GameEndedPayload,
-  NarrationChunkPayload,
-  NarrationPushPayload,
-  OpeningStartedPayload,
-  PlayerJoinedPayload,
   RoomStatePayload,
-  SanCheckRequestPayload,
-  SanCheckResultPayload,
   SessionBoundPayload,
-  TurnBeginPayload,
-  ViewPrivatePayload,
+  ErrorPayload,
 } from './generated/dto';
 
 /**

@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "ea1b2c3d4f50"
@@ -82,4 +83,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     """拒绝自动降级，避免破坏已产生的权威运行记录。"""
 
-    raise RuntimeError("旧 AI 主持运行时清理不可逆；Phase 0 GM 运行时迁移不可逆，请使用备份恢复数据库")
+    raise RuntimeError(
+        "旧 AI 主持运行时清理不可逆；Phase 0 GM 运行时迁移不可逆，请使用备份恢复数据库"
+    )
