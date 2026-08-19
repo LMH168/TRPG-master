@@ -64,8 +64,15 @@ class RollCheck(StrictCamelModel):
     check_id: str = Field(min_length=1, max_length=100)
 
 
+class ChooseOption(StrictCamelModel):
+    """提交模组声明的不可逆剧情选择，不能由模型直接写结局。"""
+
+    kind: Literal["choose_option"]
+    option_id: str = Field(min_length=1, max_length=100)
+
+
 Command = Annotated[
-    MoveActor | InspectTarget | TalkToNpc | WaitUntil | StartCheck | RollCheck,
+    MoveActor | InspectTarget | TalkToNpc | WaitUntil | StartCheck | RollCheck | ChooseOption,
     Field(discriminator="kind"),
 ]
 CommandAdapter = TypeAdapter(Command)
@@ -105,6 +112,12 @@ class PlayerProjection(StrictCamelModel):
     pending_decisions: list[PendingDecision] = Field(default_factory=list)
     checks: list[CheckRead] = Field(default_factory=list)
     pending_clarification: ClarificationRead | None = None
+    scene_id: str | None = None
+    scene_label: str | None = None
+    clues: list[str] = Field(default_factory=list)
+    hp: int | None = Field(default=None, ge=0)
+    san: int | None = Field(default=None, ge=0)
+    ending_id: str | None = None
 
 
 class PendingDecision(StrictCamelModel):
@@ -157,6 +170,7 @@ class SessionRead(StrictCamelModel):
     module_id: str
     module_version: str
     projection: PlayerProjection
+    opening_narration: str | None = None
 
 
 class TurnState(StrictCamelModel):
@@ -193,7 +207,14 @@ class NarrationDraft(StrictCamelModel):
 class ActionCandidate(StrictCamelModel):
     """当前玩家可以安全尝试的动作候选；不包含成功后的隐藏结果。"""
 
-    action: Literal["move_actor", "inspect_target", "talk_to_npc", "wait_until", "start_check"]
+    action: Literal[
+        "move_actor",
+        "inspect_target",
+        "talk_to_npc",
+        "wait_until",
+        "start_check",
+        "choose_option",
+    ]
     target_id: str | None = None
     label: str = Field(min_length=1, max_length=200)
     aliases: list[str] = Field(default_factory=list)
@@ -217,7 +238,14 @@ class ContextSnapshot(StrictCamelModel):
 class IntentStep(StrictCamelModel):
     """意图解释器提出的单个有限动作，不是可直接执行的脚本。"""
 
-    action: Literal["move_actor", "inspect_target", "talk_to_npc", "wait_until", "start_check"]
+    action: Literal[
+        "move_actor",
+        "inspect_target",
+        "talk_to_npc",
+        "wait_until",
+        "start_check",
+        "choose_option",
+    ]
     target_id: str | None = None
     skill_id: str | None = None
     goal: str | None = None

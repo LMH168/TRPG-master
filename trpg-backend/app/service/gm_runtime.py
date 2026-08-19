@@ -2,8 +2,8 @@
 
 import secrets
 import uuid
-from datetime import UTC, datetime
-from typing import Literal, cast
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,16 +82,37 @@ def _agents() -> tuple[IntentInterpreter, Narrator]:
 # Phase 1A 只冻结《追书人》第一条单人调查需要的对象；后续完整 ModulePack
 # 会把同样的结构移入模组运行包，Kernel 仍只消费结构化定义。
 _LOCATIONS = {
-    "arnoldsburg": {"library", "kimball_house", "cemetery"},
-    "library": {"arnoldsburg"},
-    "kimball_house": {"arnoldsburg"},
-    "cemetery": {"arnoldsburg"},
+    "arnoldsburg": {"library", "newspaper", "kimball_house", "cemetery"},
+    "library": {"arnoldsburg", "newspaper"},
+    "newspaper": {"arnoldsburg", "library"},
+    "kimball_house": {"arnoldsburg", "cemetery"},
+    "cemetery": {"arnoldsburg", "kimball_house", "crypt"},
+    "crypt": {"cemetery"},
 }
 _TARGETS = {
-    "arnoldsburg": {"town_sign", "library", "kimball_house", "cemetery"},
+    "arnoldsburg": {
+        "town_sign",
+        "neighbors",
+        "library",
+        "newspaper",
+        "kimball_house",
+        "cemetery",
+    },
     "library": {"old_newspapers", "bookshelf", "librarian"},
-    "kimball_house": {"desk", "empty_shelf"},
-    "cemetery": {"graveyard_gate", "headstone", "gravekeeper"},
+    "newspaper": {"newspaper_archive", "hilda"},
+    "kimball_house": {"desk", "empty_shelf", "search_study", "read_diary", "surveillance"},
+    "cemetery": {
+        "graveyard_gate",
+        "headstone",
+        "gravekeeper",
+        "track_grave",
+        "night_watch",
+        "open_crypt",
+        "call_douglas",
+        "attack_douglas",
+        "leave",
+    },
+    "crypt": {"open_crypt", "follow_douglas", "talk_douglas", "leave"},
 }
 _SKILLS = {
     "spot-hidden": {"base": 25, "purpose": "发现不明显的物体、痕迹或异常"},
@@ -99,6 +120,7 @@ _SKILLS = {
     "listen": {"base": 20, "purpose": "发现听觉上不明显的声音或动静"},
     "persuade": {"base": 10, "purpose": "以合理承诺或论证说服他人"},
     "charm": {"base": 15, "purpose": "以友善态度建立短暂信任"},
+    "sanity": {"base": 50, "purpose": "面对超自然现象时保持理智"},
 }
 
 
@@ -133,11 +155,14 @@ async def create_session(
             version=pack.version,
             world_ref="coc7",
             content_schema_version=1,
-            content_json=pack.catalog,
+            # 目录用于房间展示，runtime 是同一版本的结构化规则切片。
+            content_json={"catalog": pack.catalog, "runtime": pack.runtime},
         )
         db.add(module_version)
         await db.flush()
     now = datetime.now(UTC)
+    runtime = pack.runtime
+    initial = dict(runtime.get("initial_state", {}))
     session = GameSession(
         room_id=room_id,
         module_id=scenario.id,
@@ -147,6 +172,12 @@ async def create_session(
             "world_time": now.isoformat(),
             "location_id": "arnoldsburg",
             "visible_facts": [],
+            "scene_id": runtime.get("initial_scene_id", "briefing"),
+            "clues": list(initial.get("clues", [])),
+            "flags": dict(initial.get("flags", {})),
+            "ending_id": None,
+            # 运行包随会话冻结在数据库中；投影函数只挑选公开字段，不会返回此私有定义。
+            "_runtime": runtime,
         },
         state_version=0,
         created_at=now,
@@ -157,7 +188,12 @@ async def create_session(
         room_id=room_id,
         display_name=display_name,
         location_id="arnoldsburg",
-        state_json={"alive": True},
+        state_json={
+            "alive": True,
+            "hp": int(initial.get("hp", 10)),
+            "san": int(initial.get("san", 50)),
+            "items": list(initial.get("items", [])),
+        },
         created_at=now,
     )
     db.add_all([session, actor])
@@ -213,12 +249,15 @@ async def submit_command(
         ]
         if interrupted:
             state["next_interrupt_at"] = None
+            if state.get("flags", {}).get("night_watch"):
+                state["scene_id"] = "confrontation"
     elif command.kind == "move_actor":
         exits = _LOCATIONS.get(actor.location_id, set())
         if command.target_id not in exits:
             raise GmRuntimeError("目标地点不是当前地点的合法出口")
         previous_location = actor.location_id
         actor.location_id = command.target_id
+        state["scene_id"] = _scene_for_location(state, command.target_id)
         event_type = "actor_moved"
         event_payload = {"from": previous_location, "to": command.target_id}
         narration_facts = [f"你从 {previous_location} 来到了 {command.target_id}。"]
@@ -228,6 +267,7 @@ async def submit_command(
         event_type = "target_inspected" if command.kind == "inspect_target" else "npc_contacted"
         event_payload = {"target_id": command.target_id, "topic": getattr(command, "topic", "")}
         narration_facts = [f"你完成了对 {command.target_id} 的行动。"]
+        _apply_module_target(state, actor, command.target_id, getattr(command, "topic", ""))
     elif command.kind == "start_check":
         skill = _SKILLS.get(command.skill_id)
         if skill is None:
@@ -297,6 +337,14 @@ async def submit_command(
         narration_facts = [
             f"{run.skill_id} 检定结果为 {'成功' if run.success else '失败'}，骰点 {roll}。"
         ]
+        _apply_check_outcome(state, actor, run.goal, bool(run.success))
+    elif command.kind == "choose_option":
+        _apply_module_target(state, actor, command.option_id, command.option_id)
+        if state.get("ending_id") is None:
+            raise GmRuntimeError("该剧情选择当前不可用")
+        event_type = "ending_committed"
+        event_payload = {"ending_id": state["ending_id"]}
+        narration_facts = [f"结局已确定：{state['ending_id']}。"]
     else:
         raise GmRuntimeError("不支持的 Kernel 命令")
     session.state_json = state
@@ -383,17 +431,22 @@ def _check_read(run: CheckRun) -> CheckRead:
 def _session_read(session: GameSession, actor: RuntimeActor) -> SessionRead:
     """把 ORM 会话转换成玩家安全 DTO。"""
 
+    runtime = _runtime_from_session(session)
     return SessionRead(
         session_id=session.room_id,
         module_id=session.module_id,
         module_version=session.module_version,
         projection=_projection(session, actor),
+        opening_narration=runtime.get("opening_narration"),
     )
 
 
 def _projection(session: GameSession, actor: RuntimeActor) -> PlayerProjection:
     """只选择玩家可见字段，避免把 keeper 状态扩散到 API。"""
 
+    runtime = _runtime_from_session(session)
+    scene_id = session.state_json.get("scene_id")
+    scene = next((item for item in runtime.get("scenes", []) if item.get("id") == scene_id), {})
     return PlayerProjection(
         session_id=session.room_id,
         actor_id=actor.id,
@@ -401,7 +454,125 @@ def _projection(session: GameSession, actor: RuntimeActor) -> PlayerProjection:
         world_time=datetime.fromisoformat(session.state_json["world_time"]),
         location_id=actor.location_id,
         visible_facts=list(session.state_json.get("visible_facts", [])),
+        scene_id=scene_id,
+        scene_label=scene.get("label"),
+        clues=list(session.state_json.get("clues", [])),
+        hp=actor.state_json.get("hp"),
+        san=actor.state_json.get("san"),
+        ending_id=session.state_json.get("ending_id"),
     )
+
+
+def _runtime_from_session(session: GameSession) -> dict[str, Any]:
+    """读取会话冻结的结构化运行包，避免运行中再次读取原始模组文件。"""
+
+    runtime = session.state_json.get("_runtime", {})
+    return cast(dict[str, Any], runtime) if isinstance(runtime, dict) else {}
+
+
+def _scene_for_location(state: dict[str, object], location_id: str) -> str:
+    """把移动后的地点映射为公开场景，保持旧移动命令兼容。"""
+
+    current = str(state.get("scene_id", "briefing"))
+    if location_id == "library":
+        return "library"
+    if location_id == "newspaper":
+        return "newspaper"
+    if location_id == "kimball_house":
+        return "kimball_house"
+    if location_id == "cemetery" and current not in {"confrontation", "crypt", "douglas"}:
+        return "cemetery"
+    if location_id == "crypt":
+        return "crypt"
+    return current
+
+
+def _add_clues(state: dict[str, Any], clues: list[str]) -> None:
+    """幂等地授予公开线索，避免重试重复写入。"""
+
+    owned_value = state.setdefault("clues", [])
+    if not isinstance(owned_value, list):
+        owned = []
+        state["clues"] = owned
+    else:
+        owned = cast(list[str], owned_value)
+    for clue in clues:
+        if clue not in owned:
+            owned.append(clue)
+
+
+def _apply_module_target(
+    state: dict[str, Any], actor: RuntimeActor, target_id: str, topic: str
+) -> None:
+    """按《追书人》运行包的公开动作规则推进线索和路线标记。"""
+
+    flags_value = state.setdefault("flags", {})
+    if not isinstance(flags_value, dict):
+        flags = {}
+        state["flags"] = flags
+    else:
+        flags = cast(dict[str, Any], flags_value)
+    if target_id in {"neighbors", "ask_neighbors"}:
+        state["scene_id"] = "neighbors"
+        _add_clues(state, ["douglas_cemetery"])
+    elif target_id in {"library", "library_research"}:
+        state["scene_id"] = "library"
+        _add_clues(state, ["old_report"])
+    elif target_id in {"newspaper", "newspaper_archive"}:
+        state["scene_id"] = "newspaper"
+        _add_clues(state, ["hilda_statement"])
+    elif target_id in {"search_study", "read_diary"}:
+        state["scene_id"] = "kimball_house"
+        _add_clues(state, ["diary_choice", "tunnel_hint"])
+    elif target_id in {"gravekeeper", "track_grave", "night_watch"}:
+        state["scene_id"] = "cemetery"
+        _add_clues(state, ["favorite_grave", "night_silhouette"])
+        if target_id == "night_watch":
+            state["flags"]["night_watch"] = True
+            state["next_interrupt_at"] = (
+                datetime.fromisoformat(str(state["world_time"])) + timedelta(hours=1)
+            ).isoformat()
+    elif target_id in {"call_douglas", "open_crypt", "follow_douglas"}:
+        state["scene_id"] = "douglas" if target_id != "open_crypt" else "crypt"
+        _add_clues(state, ["tunnel_hint"])
+    elif target_id in {"talk_douglas", "douglas"} or "礼貌" in topic:
+        state["scene_id"] = "douglas"
+        _add_clues(state, ["douglas_truth", "ghouls_leaving"])
+        flags["douglas_conversation_completed"] = True
+        state["ending_id"] = "peaceful_resolution"
+    elif target_id == "peaceful_resolution":
+        state["ending_id"] = "peaceful_resolution"
+    elif target_id == "follow_underground":
+        state["ending_id"] = "follow_underground"
+    elif target_id == "attack_douglas":
+        flags["douglas_alive"] = False
+        state["ending_id"] = "douglas_killed"
+    elif target_id == "flee" or (target_id == "leave" and flags.get("douglas_alive") is False):
+        state["ending_id"] = "flee"
+
+
+def _apply_check_outcome(
+    state: dict[str, Any], actor: RuntimeActor, goal: str, success: bool
+) -> None:
+    """把检定结果映射为公开线索或失败前进，不让模型直接写状态。"""
+
+    lowered = goal.lower()
+    if any(word in goal for word in ("邻居", "朋友")):
+        _add_clues(state, ["douglas_cemetery"])
+    elif "图书馆" in goal or "报纸" in goal:
+        _add_clues(state, ["old_report"] if success else ["old_report"])
+    elif "档案" in goal or "证词" in goal:
+        _add_clues(state, ["hilda_statement"])
+    elif "书房" in goal or "日记" in goal:
+        _add_clues(state, ["diary_choice", "tunnel_hint"])
+    elif "墓" in goal or "足迹" in goal or "监视" in goal:
+        _add_clues(state, ["tunnel_hint", "night_silhouette"])
+    elif "理智" in goal or "食尸鬼" in lowered:
+        actor.state_json["san"] = max(
+            0, int(actor.state_json.get("san", 50)) - (1 if not success else 0)
+        )
+        if "食尸鬼" in goal and not success:
+            state["ending_id"] = "asylum"
 
 
 async def submit_free_text(
