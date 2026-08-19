@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from app.dto.gm import CommandEnvelope
 from app.models.gm import GameEvent, OutboxMessage
 from app.models.room import Room
+from app.service.gm_ai import build_context_snapshot
 from app.service.gm_runtime import create_session, read_projection, submit_command
 
 
@@ -459,6 +460,24 @@ async def test_checkpoint_outcome_advances_time_and_scene_from_module_data(
     assert resolved.projection.world_time == moved.projection.world_time + timedelta(hours=1)
     assert "night_silhouette" in resolved.projection.clues
     assert any("人影" in fact for fact in resolved.narration_facts)
+
+    confrontation = await build_context_snapshot(db_session, room_id=room_id, actor_id=actor_id)
+    assert any(
+        candidate.target_id == "call_douglas" for candidate in confrontation.action_candidates
+    )
+    called = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        resolved.revision,
+        "call-209",
+        {"kind": "inspect_target", "target_id": "call_douglas"},
+    )
+    conversation = await build_context_snapshot(db_session, room_id=room_id, actor_id=actor_id)
+    assert called.projection.scene_id == "douglas"
+    assert any(
+        candidate.target_id == "talk_douglas" for candidate in conversation.action_candidates
+    )
 
 
 async def test_fault_point_retries_do_not_duplicate_events_or_outbox(db_session) -> None:

@@ -325,7 +325,7 @@ async def submit_command(
             f"{_location_label(state, command.target_id)}。"
         ]
     elif command.kind == "inspect_target" or command.kind == "talk_to_npc":
-        if command.target_id not in _TARGETS.get(actor.location_id, set()):
+        if not _target_is_available(state, actor, command.kind, command.target_id):
             raise GmRuntimeError("目标不在当前地点的可见对象中")
         event_type = "target_inspected" if command.kind == "inspect_target" else "npc_contacted"
         event_payload = {"target_id": command.target_id, "topic": getattr(command, "topic", "")}
@@ -669,6 +669,27 @@ def _actor_check_value(actor: RuntimeActor, skill_id: str, fallback: int) -> int
         return int(actor.state_json.get("san", fallback))
     skills = actor.state_json.get("skills", {})
     return int(skills.get(skill_id, fallback)) if isinstance(skills, dict) else fallback
+
+
+def _target_is_available(
+    state: dict[str, Any], actor: RuntimeActor, action: str, target_id: str
+) -> bool:
+    """同时兼容旧内置对象和运行包声明的当前场景动作。"""
+
+    if target_id in _TARGETS.get(actor.location_id, set()):
+        return True
+    runtime = state.get("_runtime", {})
+    if not isinstance(runtime, dict):
+        return False
+    owned_clues = set(state.get("clues", []))
+    return any(
+        isinstance(item, dict)
+        and item.get("scene_id") == state.get("scene_id")
+        and item.get("action") == action
+        and item.get("target_id") == target_id
+        and set(item.get("requires_clues", [])) <= owned_clues
+        for item in runtime.get("actions", [])
+    )
 
 
 def _checkpoint_label(state: dict[str, Any], checkpoint_id: str) -> str:

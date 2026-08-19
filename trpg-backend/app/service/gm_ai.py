@@ -349,6 +349,32 @@ def _candidates_for(state: dict[str, Any], location_id: str) -> list[ActionCandi
         ActionCandidate(action="wait_until", label="等待到指定时间"),
     ]
     if isinstance(runtime, dict):
+        owned_clues = set(state.get("clues", []))
+        # 场景动作只公开标签和稳定目标；执行结果仍由 Kernel 决定。
+        for action in runtime.get("actions", []):
+            if (
+                not isinstance(action, dict)
+                or action.get("scene_id") != scene_id
+                or not set(action.get("requires_clues", [])) <= owned_clues
+            ):
+                continue
+            action_kind = action.get("action")
+            target_id = action.get("target_id")
+            label = action.get("label")
+            if (
+                action_kind not in {"inspect_target", "talk_to_npc", "choose_option"}
+                or not isinstance(target_id, str)
+                or not isinstance(label, str)
+            ):
+                continue
+            candidates.append(
+                ActionCandidate(
+                    action=action_kind,
+                    target_id=target_id,
+                    label=label,
+                    aliases=[str(alias) for alias in action.get("aliases", [])],
+                )
+            )
         for checkpoint in checkpoints:
             checkpoint_id = checkpoint.get("id")
             skill_id = checkpoint.get("skill")

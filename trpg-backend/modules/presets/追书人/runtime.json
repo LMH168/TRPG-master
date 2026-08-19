@@ -71,6 +71,12 @@
     {"id": "track_grave", "scene_id": "cemetery", "targets": ["headstone", "track_grave"], "requires_clues": ["favorite_grave"], "label": "检查道格拉斯常去的墓碑及周围痕迹", "aliases": ["检查墓碑", "侦察墓碑", "追踪墓碑附近的足迹"], "skill": "track", "success_clues": ["tunnel_hint"], "failure_clues": ["favorite_grave"]},
     {"id": "night_watch", "scene_id": "cemetery", "targets": ["night_watch"], "label": "在夜间守候并观察墓地", "aliases": ["夜间监视墓地", "在墓地守候"], "skill": "luck", "success_outcome": {"clues": ["night_silhouette"], "scene_id": "confrontation", "advance_minutes": 60, "facts": ["你在墓地守候了一小时，看见道格拉斯常去的墓碑旁出现了一个人影。"]}, "failure_outcome": {"clues": ["night_silhouette"], "scene_id": "confrontation", "advance_minutes": 60, "facts": ["你在墓地守候了一小时。虽然夜色遮住了细节，你仍看见道格拉斯常去的墓碑旁出现了一个人影。"]}}
   ],
+  "actions": [
+    {"scene_id": "confrontation", "action": "inspect_target", "target_id": "call_douglas", "label": "呼喊墓碑旁的人影", "aliases": ["呼喊道格拉斯", "叫住人影"], "requires_clues": ["night_silhouette"]},
+    {"scene_id": "confrontation", "action": "inspect_target", "target_id": "attack_douglas", "label": "攻击墓碑旁的人影", "aliases": ["攻击人影"], "requires_clues": ["night_silhouette"]},
+    {"scene_id": "douglas", "action": "talk_to_npc", "target_id": "talk_douglas", "label": "与道格拉斯交谈", "aliases": ["和道格拉斯说话", "询问道格拉斯"], "requires_clues": ["night_silhouette"]},
+    {"scene_id": "douglas", "action": "choose_option", "target_id": "peaceful_resolution", "label": "礼貌交谈后离开", "aliases": ["接受道格拉斯的选择并离开"], "requires_clues": ["douglas_truth"]}
+  ],
   "endings": [
     {"id": "peaceful_resolution", "label": "礼貌交谈后离开", "outcome": "resolved"},
     {"id": "follow_underground", "label": "跟随道格拉斯进入地下", "outcome": "investigator_disappears"},

@@ -100,6 +100,20 @@ def _validate_runtime(runtime: dict[str, Any]) -> None:
     for field in ("scenes", "clues", "checkpoints", "endings"):
         if not isinstance(runtime[field], list):
             raise ModulePackError(f"运行包 {field} 必须是数组")
+    # actions 是场景公开交互的通用声明；旧运行包没有时保持空集合。
+    allowed_actions = {"inspect_target", "talk_to_npc", "choose_option"}
+    for action in runtime.get("actions", []):
+        if not isinstance(action, dict):
+            raise ModulePackError("运行包 action 必须是对象")
+        for field in ("scene_id", "target_id", "label"):
+            if not isinstance(action.get(field), str) or not action[field]:
+                raise ModulePackError(f"运行包 action 缺少字段：{field}")
+        if action.get("action") not in allowed_actions:
+            raise ModulePackError("运行包 action.action 不受支持")
+        for field in ("aliases", "requires_clues"):
+            value = action.get(field, [])
+            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                raise ModulePackError(f"运行包 action.{field} 必须是字符串数组")
     # 披露门禁属于模组语义，不写死在主持代码中；未配置的旧运行包保持兼容。
     for guard in runtime.get("disclosure_guards", []):
         if not isinstance(guard, dict) or not isinstance(guard.get("term"), str):
