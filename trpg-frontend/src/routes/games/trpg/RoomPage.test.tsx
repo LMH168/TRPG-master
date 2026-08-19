@@ -1166,6 +1166,18 @@ describe('RoomPage conversation history', () => {
     expect(screen.queryByText('半截叙事片段。')).not.toBeInTheDocument()
   })
 
+  it('hides the legacy Not Found noise from the action channel', async () => {
+    renderRoomPage()
+    await waitFor(() => expect(mockOnWsMessage).toHaveBeenCalled())
+
+    // 新 GM REST 会话已经负责权威回合，旧 WS 的无上下文 404 不应显示给玩家。
+    act(() => emitWsMessage({
+      type: 'error',
+      payload: { code: 'NOT_FOUND', message: 'Not Found' },
+    }))
+    expect(screen.queryByText('Not Found')).not.toBeInTheDocument()
+  })
+
   it('speaks the narration only once the authoritative push has landed', async () => {
     installRoomSpeechApi()
     localStorage.setItem(

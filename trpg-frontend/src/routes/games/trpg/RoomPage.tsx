@@ -356,6 +356,11 @@ function liveResourcesOf(playerView: AgentPlayerView | null): Record<string, num
   return resources
 }
 
+/** 旧房间轮询/WS 在新 GM REST 会话中可能返回无上下文的 404；这类噪声不应覆盖主持错误。 */
+function isIgnorableLegacyRoomError(message: string): boolean {
+  return message.trim() === 'Not Found'
+}
+
 function resourceValue(playerView: AgentPlayerView | null, id: string): number | null {
   const normalized = id.toLocaleLowerCase()
   const resource = playerView?.self_actor.resources.find((item) =>
@@ -1718,6 +1723,9 @@ export default function RoomPage() {
   }, [clearSettledAction, commitNarration, playerId, reconnectToken, roomId])
 
   useEffect(() => {
+    // 新 GM REST 运行时有自己的 revision/检定恢复，不再调用已移除的旧 turns API；
+    // 测试替身或旧 SDK 没有 gm 资源时，才保留原 WebSocket 回合恢复流程。
+    if ((sdk as unknown as { gm?: object }).gm) return
     let cancelled = false
     void restorePersistedTurn().catch((error: unknown) => {
       if (cancelled) return
@@ -1973,6 +1981,7 @@ export default function RoomPage() {
         // 只中止揭示，不清待提交队列：队列里的都是已经落库的权威消息（push 紧跟
         // 片段到达），清掉等于丢服务端认定已发生的叙事。中止后它们会立即落地。
         setStreamingNarration(null)
+        if (isIgnorableLegacyRoomError(envelope.payload.publicMessage)) return
         setActionError(envelope.payload.publicMessage)
         setActionErrorRetryable(envelope.payload.retryable)
         setActionErrorIsGuidance(envelope.payload.code === 'HOST_AGENT_INVALID_OUTPUT')
@@ -1989,6 +1998,7 @@ export default function RoomPage() {
         setSecondaryProgressLabel(null)
         setPendingAdjudication(null)
         setStreamingNarration(null)
+        if (isIgnorableLegacyRoomError(envelope.payload.message)) return
         setActionError(envelope.payload.message)
         setActionErrorRetryable(false)
         setActionErrorIsGuidance(false)
@@ -2090,6 +2100,20 @@ export default function RoomPage() {
         }>
       }
     }).gm
+    if (gmApi) {
+      // 新 GM REST 不经过旧 WS 的 action.broadcast；发送时立即回显，避免模型响应前
+      // 玩家看不到自己刚刚提交的内容。相同 clientActionId 的重试会由 messageId 去重。
+      setMessages((current) => appendLiveMessage(current, {
+        type: 'player',
+        channel: 'action',
+        messageId: conversationMessageId('action.broadcast', action.clientActionId),
+        sender: senderName,
+        content: action.utterance,
+        time: formatRoomTime(new Date()),
+        isSelf: true,
+        playerId,
+      }))
+    }
     const request = gmApi && roomId && reconnectToken
       ? gmApi.submitFreeText(
         roomId,
@@ -2105,17 +2129,6 @@ export default function RoomPage() {
     void request
       .then((result) => {
         if (gmApi) {
-          // 新 GM REST 不经过旧 WS 的 action.broadcast，回合成功后立即补入玩家行动。
-          setMessages((current) => appendLiveMessage(current, {
-            type: 'player',
-            channel: 'action',
-            messageId: conversationMessageId('action.broadcast', action.clientActionId),
-            sender: senderName,
-            content: action.utterance,
-            time: formatRoomTime(new Date()),
-            isSelf: true,
-            playerId,
-          }))
           const typedResult = result as {
             status: 'clarification' | 'completed' | 'failed'
             revision: number
@@ -2149,6 +2162,9 @@ export default function RoomPage() {
               time: formatRoomTime(new Date()),
             }))
           }
+          setTyping(false)
+          setProgressLabel(null)
+          setSecondaryProgressLabel(null)
         } else {
           setPlayerView((result as { player_view: AgentPlayerView }).player_view)
         }
