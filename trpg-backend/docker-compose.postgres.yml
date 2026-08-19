@@ -1,0 +1,21 @@
+# 本文件提供与 CI 相同的 PostgreSQL 16 本地测试数据库。
+# 仅用于 Phase 0 及后续迁移/集成测试，不承载生产数据。
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: trpg
+      POSTGRES_PASSWORD: trpg
+      POSTGRES_DB: trpg_test
+    ports:
+      - "${TRPG_POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trpg -d trpg_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - trpg-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  trpg-postgres-data:

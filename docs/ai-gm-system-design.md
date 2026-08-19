@@ -114,6 +114,15 @@ Agents SDK 默认最适合 OpenAI Responses 路径，也提供语言级 provider
 
 本文后半部分描述最终需要覆盖的能力，不代表每个阶段同时开工。实现时只把当前 Phase 的 capability、DTO、表和测试视为硬需求；后续章节是约束未来扩展方向，不能据此提前建设空接口、插件系统或通用工作流。每个 Phase 通过自己的退出条件后再引入下一批能力。
 
+#### 开工前执行输入
+
+设计依赖的素材已经归档，但“配置存在”与“门禁通过”是两件事。开工前需使用
+`trpg-backend/.env` 中当前 DeepSeek-compatible 候选完成一次真实 provider smoke；只记录脱敏
+元数据，不提交密钥。数据库使用 `trpg-backend/docker-compose.postgres.yml` 提供的
+`postgres:16`，与 CI 服务镜像保持一致。四个预设 ModulePack 已在
+`trpg-backend/modules/presets/`，规则书 PDF 仅在本机 `trpg-backend/rulesets/coc7/source/`
+保留并被 Git 忽略。
+
 ### 1.3 已确认的产品边界
 
 | 问题 | 最终约定 | 实现边界 |

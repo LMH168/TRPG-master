@@ -129,6 +129,17 @@ trpg-backend/rulesets/coc7/
 
 ### P0-1 Agents SDK 模型兼容门禁
 
+#### 开工执行输入（当前基线）
+
+- 首个候选使用仓库现有 DeepSeek-compatible 配置：`HOST_MODEL_PROVIDER=deepseek`、
+  `DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL` 和 `DEEPSEEK_API_KEY`，值从本地
+  `trpg-backend/.env` 读取；密钥不得写入 Git、日志或验收记录。
+- 当前配置只算“已准备”，不算门禁通过。必须实际运行一次 P0-1 smoke，确认地址、模型、
+  Chat Completions JSON 输出、工具调用、超时/取消和错误分类；失败时不得用 fake provider
+  冒充生产通过。
+- 运行记录只保留 provider、模型名、SDK 版本、schema 版本、时间和脱敏结果。若更换模型或
+  `base_url`，需重新执行门禁。
+
 - 添加 `openai-agents` 依赖，不改业务入口。
 - 定义一个 Pydantic 输出模型和一个只读函数工具。
 - 支持配置 `base_url/api_key/model_name/api_style`，验证 OpenAI 与当前生产候选的 OpenAI-compatible 配置。
@@ -157,6 +168,13 @@ trpg-backend/rulesets/coc7/
 - 添加引用完整性、ID 唯一性和玩家文本不含 keeper 字段的检查。
 
 退出：运行包可以被纯 Python 加载并通过静态检查，不需要模型参与。
+
+#### 素材边界
+
+四个预设目录已提交到 `trpg-backend/modules/presets/`，每个目录包含 `catalog.json`、
+`manifest.json`、README 和本地归档的原始文件。规则书只保留在本机
+`trpg-backend/rulesets/coc7/source/`，由 `.gitignore` 排除，不作为仓库输入提交。
+Phase 0 只读取已制作的 ModulePack；PDF/DOCX 自动解析不属于开工前置条件。
 
 ### P0-4 搭建新运行时空骨架
 
@@ -326,7 +344,10 @@ TurnState: collecting | understanding | validating | awaiting_clarification |
 
 ### 12.3 数据库、迁移与 CI
 
-- 新运行时只支持 PostgreSQL 15+；`app.db` 仅供旧运行时保留。
+- 新运行时只支持 PostgreSQL 15+；CI 固定使用 `postgres:16`，本地使用同镜像的
+  `trpg-backend/docker-compose.postgres.yml`；`app.db` 仅供旧运行时保留。
+- 本地启动：`docker compose -f trpg-backend/docker-compose.postgres.yml up -d`，然后设置
+  `DATABASE_URL=postgresql+asyncpg://trpg:trpg@127.0.0.1:5432/trpg_test` 执行迁移和测试。
 - 使用仓库唯一的 migration 工具；本地、CI、测试环境使用同一 PostgreSQL 镜像。
 - CI 从空库执行迁移，再运行 DTO、Kernel、权限和恢复测试。
 - Phase 0 最小表集为 `game_sessions`、`actors`、`turn_runs`、`turn_inputs`、`game_events`、`command_receipts`、`outbox_messages`。
