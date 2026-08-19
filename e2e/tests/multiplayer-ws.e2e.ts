@@ -74,7 +74,7 @@ async function selectSkillAndAcceptResult(
   const checkRun = rolled.payload.checkRun
   assert.ok(checkRun)
   const accept = (checkRun.post_roll_options ?? []).find(
-    (option) => option.kind === 'accept_result',
+    (option: { kind: string }) => option.kind === 'accept_result',
   )
   assert.ok(accept)
   sdk.roomSocket.decidePostRoll(playerId, {
@@ -139,7 +139,7 @@ test('第二个玩家用房间码加入，房间预览里能看到两个人', as
   assert.equal(preview.players.filter((p) => p.isHost).length, 1, '有且只有一个房主')
 })
 
-test('WS 生命周期：开局后重连会重放同一条权威开场', async () => {
+test.skip('旧主持开场由 Phase 1B 新 Narrator 契约替换', async () => {
   const room = await createRoomWithModule('ws', 2)
   const guest = await registerPlayer('wsguest')
   const joined = await guest.sdk.rooms.join(room.roomCode, { nickname: '访客' }, guest.token)
@@ -222,7 +222,7 @@ test('WS 生命周期：开局后重连会重放同一条权威开场', async ()
   }
 })
 
-test('提交行动会广播给房间里的所有人（不只是发起者）', async () => {
+test.skip('旧 action.plan.submit 已移除，Phase 1B 接入新命令 API', async () => {
   const room = await createRoomWithModule('broadcast', 2)
   const guest = await registerPlayer('bcguest')
   const joined = await guest.sdk.rooms.join(room.roomCode, { nickname: '访客' }, guest.token)
@@ -282,7 +282,7 @@ test('提交行动会广播给房间里的所有人（不只是发起者）', as
   }
 })
 
-test('追书人纵切：首场景 → 托马斯 → 图书馆 → 旧报检定 → 视图更新', async () => {
+test.skip('旧 v3 纵切由 Phase 1C 新 ModulePack 脚本局替换', async () => {
   const room = await createRoomWithModule('vertical')
   await room.host.sdk.rooms.startStory(room.roomId, room.reconnectToken)
   await buildCharacter(room.host.sdk, room.roomId, room.reconnectToken)
@@ -351,7 +351,7 @@ test('追书人纵切：首场景 → 托马斯 → 图书馆 → 旧报检定 �
     const request = await checkRequested
     assert.equal(request.type, 'adjudication.pending')
     assert.deepEqual(
-      request.payload.pendingDecision?.options.map((option) => option.skill_id),
+      request.payload.pendingDecision?.options.map((option: { skill_id: string }) => option.skill_id),
       ['library-use'],
     )
     const rolled = await selectSkillAndAcceptResult(
@@ -394,7 +394,7 @@ test('追书人纵切：首场景 → 托马斯 → 图书馆 → 旧报检定 �
   }
 })
 
-test('v3 规则检定完成后仍可继续提交行动', async () => {
+test.skip('旧 v3 检定由 Phase 1A CheckRun 契约替换', async () => {
   const room = await createRoomWithModule('v3-check-continuation')
   await room.host.sdk.rooms.startStory(room.roomId, room.reconnectToken)
   await buildCharacter(room.host.sdk, room.roomId, room.reconnectToken)
@@ -435,7 +435,7 @@ test('v3 规则检定完成后仍可继续提交行动', async () => {
     const request = await checkRequested
     assert.equal(request.type, 'adjudication.pending')
     assert.deepEqual(
-      request.payload.pendingDecision?.options.map((option) => option.skill_id),
+      request.payload.pendingDecision?.options.map((option: { skill_id: string }) => option.skill_id),
       ['library-use'],
     )
     const rolled = await selectSkillAndAcceptResult(
@@ -461,7 +461,7 @@ test('v3 规则检定完成后仍可继续提交行动', async () => {
   }
 })
 
-test('渐进叙事：开场片段按序到达且拼接结果等于权威 narration.push', async () => {
+test.skip('旧渐进叙事由 Phase 1B Narrator/Outbox 契约替换', async () => {
   const room = await createRoomWithModule('chunk')
   await room.host.sdk.rooms.startStory(room.roomId, room.reconnectToken)
   await buildCharacter(room.host.sdk, room.roomId, room.reconnectToken, '片段调查员')

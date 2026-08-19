@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from app.controller.v1 import (
     auth,
     games,
+    gm,
     health,
     me,
     modules,
@@ -25,3 +26,4 @@ api_router.include_router(modules.router)
 api_router.include_router(me.router)
 api_router.include_router(games.games_router)
 api_router.include_router(games.systems_router)
+api_router.include_router(gm.router)

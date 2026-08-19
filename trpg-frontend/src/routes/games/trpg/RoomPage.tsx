@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { RoomSocketServerError, TurnFailedError, type AdjudicationPendingPayload, type AgentPlayerView, type AgentTurnPhase, type CheckRequestPayload, type CheckResultPayload, type EndingDraft, type NarrationPushPayload, type RoomConversationEvent, type RoomPlayerSummary, type TurnRead } from 'trpg-sdk'
+import { RoomSocketServerError, TurnFailedError, type AdjudicationPendingPayload, type AgentPlayerView, type AgentTurnPhase, type CheckRequestPayload, type CheckResultPayload, type EndingDraft, type HostSpeechVoiceRead, type NarrationPushPayload, type RoomConversationEvent, type RoomPlayerSummary, type TurnRead } from 'trpg-sdk'
 import { ArrowLeft, Users, Map, MapPin, BookOpen, ScrollText, Star, X, SendHorizontal, Plus, Save, FlagOff, Heart, Brain, Volume2, Pause, Play, Square, RotateCcw, Mic, LoaderCircle } from 'lucide-react'
 import { useCallback, useState, useRef, useEffect, useMemo, type Dispatch, type FormEvent, type SetStateAction } from 'react'
 import { useRoomStore } from '@/stores/room-store'
@@ -23,6 +23,8 @@ import type {
   PendingCheckDecisionView as UiPendingCheckDecisionView,
 } from '@/features/adjudication'
 import './RoomPage.css'
+
+type CheckSkillOption = { id: string; name?: string; targetValue?: number }
 
 function IsometricDiceIcon() {
   return (
@@ -121,7 +123,7 @@ function checkRunForUi(
   return {
     ...checkRun,
     final_result: checkRun.final_result ?? null,
-    post_roll_options: (checkRun.post_roll_options ?? []).map((option) => {
+    post_roll_options: (checkRun.post_roll_options ?? []).map((option: Record<string, unknown>) => {
       if ('resource_id' in option) {
         return {
           ...option,
@@ -692,7 +694,7 @@ function DiceModal({
     ? activeCheckDice?.selectedSkillId ?? checkRequest?.skills[0]?.id ?? null
     : null
   const selectedSkill =
-    checkRequest?.skills.find((skill) => skill.id === activeSelectedSkillId) ?? null
+    checkRequest?.skills.find((skill: CheckSkillOption) => skill.id === activeSelectedSkillId) ?? null
   const targetValue = selectedSkill?.targetValue ?? 65
   const canEditCheck = isCheckMode && !activeRolling && !activeShowResult && activeResult === null && !activeCheckDice?.submitted
 
@@ -1089,7 +1091,7 @@ function DiceModal({
 
       {isCheckMode && checkRequest && checkRequest.skills.length > 1 && (
         <div className="flex flex-wrap gap-2 mb-3.5">
-          {checkRequest.skills.map((skill) => (
+          {checkRequest.skills.map((skill: CheckSkillOption) => (
             <button
               key={skill.id}
               disabled={!canEditCheck}
@@ -1375,7 +1377,7 @@ export default function RoomPage() {
   const clearSettledAdjudication = useCallback((correlationId?: string | null) => {
     // 开场叙事等没有 messageId 的推送不属于任何动作，不能拿来收面板。
     if (!correlationId) return
-    setPendingAdjudication((current) =>
+    setPendingAdjudication((current: AdjudicationPendingPayload | null) =>
       current?.correlationId === correlationId ? null : current,
     )
   }, [])
@@ -1609,7 +1611,7 @@ export default function RoomPage() {
     if (!turn) return
 
     const utterance = locator?.clientActionId === turn.clientActionId
-      ? locator.utterance
+      ? locator?.utterance ?? ''
       : ''
     writeTurnLocator(roomId, playerId, {
       clientActionId: turn.clientActionId,
@@ -1837,10 +1839,10 @@ export default function RoomPage() {
           time: formatRoomTime(new Date()),
           isSelf: envelope.payload.playerId === playerId,
         }))
-        setPendingCheck(current =>
+        setPendingCheck((current: CheckRequestPayload | null) =>
           current?.clientActionId === envelope.payload.clientActionId ? null : current
         )
-        setPendingCheckDice(current =>
+        setPendingCheckDice((current: PendingCheckDiceState | null) =>
           current?.clientActionId === envelope.payload.clientActionId ? null : current
         )
         if (envelope.payload.playerId === playerId) setShowDice(false)
@@ -1862,11 +1864,12 @@ export default function RoomPage() {
         setPendingAdjudication(envelope.payload)
         const checkRun = envelope.payload.checkRun
         const selected = selectedAdjudicationOptionRef.current
+        const selectedOption = selected?.option
         if (
           envelope.payload.status === 'awaiting_post_roll_decision' &&
           checkRun &&
           selected?.correlationId === envelope.payload.correlationId &&
-          selected.option.candidate_id === checkRun.selected_candidate_id
+          selectedOption?.candidate_id === checkRun.selected_candidate_id
         ) {
           const rollKey = `${checkRun.check_id}:${checkRun.roll_count}`
           if (shownAdjudicationRollRef.current !== rollKey) {
@@ -1881,13 +1884,13 @@ export default function RoomPage() {
             const checkRequest: CheckRequestPayload = {
               playerId: playerId ?? '',
               clientActionId: envelope.payload.correlationId,
-              summary: selected.option.method_summary,
-              difficulty: selected.option.difficulty,
+              summary: selectedOption?.method_summary ?? '',
+              difficulty: selectedOption?.difficulty ?? 'regular',
               skills: [
                 {
-                  id: selected.option.candidate_id,
-                  name: selected.option.display_name,
-                  targetValue: selected.option.target_value,
+                  id: selectedOption?.candidate_id ?? '',
+                  name: selectedOption?.display_name ?? '',
+                  targetValue: selectedOption?.target_value ?? 0,
                 },
               ],
             }
@@ -2857,13 +2860,13 @@ export default function RoomPage() {
                   disabled={hostSpeech.voices.length === 0}
                   className="w-full bg-input border border-border-light rounded-md px-3 py-2 text-sm text-text-primary disabled:opacity-50"
                 >
-                  {hostSpeech.voices.map((voice) => (
+                  {hostSpeech.voices.map((voice: HostSpeechVoiceRead) => (
                     <option key={voice.voiceType} value={voice.voiceType}>{voice.label}</option>
                   ))}
                 </select>
               ) : (
                 <div className="w-full bg-panel border border-border-light rounded-md px-3 py-2 text-sm text-text-primary">
-                  {hostSpeech.voices.find((voice) => voice.voiceType === hostSpeech.voiceType)?.label ?? hostSpeech.voiceType}
+                  {hostSpeech.voices.find((voice: HostSpeechVoiceRead) => voice.voiceType === hostSpeech.voiceType)?.label ?? hostSpeech.voiceType}
                 </div>
               )}
               <span className="block text-[10px] text-text-dim mt-1">情绪由 DouBao TTS 2.0 根据当前句自动表达</span>
@@ -3012,7 +3015,7 @@ export default function RoomPage() {
         onSelectSkill={(candidateId) => {
           if (!playerId || !pendingAdjudication?.pendingDecision) return
           const decision = pendingAdjudication.pendingDecision
-          const option = decision.options.find((item) => item.candidate_id === candidateId)
+          const option = decision.options.find((item: { candidate_id: string }) => item.candidate_id === candidateId)
           if (!option) return
           selectedAdjudicationOptionRef.current = {
             correlationId: pendingAdjudication.correlationId,

@@ -72,6 +72,8 @@ class Settings(BaseSettings):
     )
     deepseek_model: str = Field(default="deepseek-chat", min_length=1)
     deepseek_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+    # Phase 0 生产主持只允许选择一个真实 provider；没有对应密钥时禁止创建游戏会话。
+    host_model_provider: Literal["openai", "qwen", "deepseek", "fake"] = "deepseek"
     # 结构化输出请求的传输层重试，三个 provider 共用。只覆盖超时、连接错误、5xx
     # 与 429；其余 4xx 立即失败。默认一次重试，避免一次瞬态故障就让整个回合报废。
     model_client_max_attempts: int = Field(default=2, ge=1, le=5)
@@ -157,3 +159,15 @@ def get_settings() -> Settings:
     没必要每次调用都重新读一遍磁盘——缓存下来，全进程共享同一份配置对象。
     """
     return Settings()
+
+
+def host_model_is_configured(settings: Settings) -> bool:
+    """判断生产候选主持 provider 是否已配置，不返回密钥本身。"""
+
+    key = {
+        "openai": settings.openai_api_key,
+        "qwen": settings.qwen_api_key,
+        "deepseek": settings.deepseek_api_key,
+        "fake": None,
+    }[settings.host_model_provider]
+    return key is not None and bool(secret_value(key).strip())

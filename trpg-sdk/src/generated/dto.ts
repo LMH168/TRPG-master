@@ -9,98 +9,12 @@
  * 校验有没有人改了后端 DTO 却忘记重新生成（issue #75 决策 3）。
  */
 
-export interface AcceptResultOption {
-  option_id: string;
-  kind?: "accept_result";
-}
-
 /**
- * action.plan.submit 原话广播 payload。
- */
-export interface ActionBroadcastPayload {
-  turnId: string;
-  playerId: string;
-  clientActionId: string;
-  nickname: string;
-  characterName?: string | null;
-  utterance: string;
-}
-
-/**
- * Player-safe declaration id and semantic cues supplied by one checkpoint.
- */
-export interface ActionDeclarationOption {
-  id: string;
-  /**
-   * @minItems 1
-   */
-  semantic_hints: [string, ...string[]];
-}
-
-export interface ActionPlanCancelPayload {
-  clientActionId: string;
-  requestId: string;
-}
-
-/**
- * action.plan.submit 事件 payload。
- *
- * `client_action_id` 是客户端为一次逻辑动作生成的稳定幂等键；网络重试必须
- * 复用原值。两个字段都在契约层拒绝空白文本。
+ * 保留前端提交形状；新 GM Agent 接入前由服务端明确拒绝。
  */
 export interface ActionSubmitPayload {
   clientActionId: string;
   utterance: string;
-  summarizedFrom?: string[] | null;
-  visibility?: ("public" | "private") | null;
-}
-
-export interface ActorResourceView {
-  id: string;
-  name: string;
-  value: number;
-}
-
-export interface ActorValueView {
-  id: string;
-  name: string;
-  value: number;
-}
-
-/**
- * Choose or cancel a v3 Engine-owned pending skill decision.
- */
-export interface AdjudicationChoicePayload {
-  clientActionId: string;
-  requestId: string;
-  sourceRevision: string;
-  decisionId: string;
-  decisionVersion: number;
-  candidateId?: string | null;
-  cancel?: boolean;
-}
-
-export interface AdjudicationPendingPayload {
-  turnId: string;
-  correlationId: string;
-  planId?: string | null;
-  sourceRevision: string;
-  status: "awaiting_skill_choice" | "awaiting_post_roll_decision";
-  pendingDecision?: PendingCheckDecisionView | null;
-  checkRun?: CheckRunView | null;
-}
-
-/**
- * Resolve a v3 Engine-owned post-roll decision.
- */
-export interface AdjudicationPostRollPayload {
-  clientActionId: string;
-  requestId: string;
-  sourceRevision: string;
-  checkId: string;
-  checkVersion: number;
-  optionId: string;
-  revisedMethod?: string | null;
 }
 
 /**
@@ -158,31 +72,6 @@ export interface AuthResult {
   token: string;
   userId: string;
   nickname: string;
-}
-
-export interface AvailableExitView {
-  id: string;
-  name: string;
-  target_id?: string | null;
-  aliases?: string[];
-  description?: string;
-  destination?: ExitDestinationView | null;
-}
-
-export interface ChangeItemCustodyRequest {
-  request_id: string;
-  source_revision: string;
-  actor_id: string;
-  expected_version: number;
-  reason: "pickup" | "drop" | "throw" | "place" | "transfer";
-  to_custody: ItemCustody;
-}
-
-export interface ChangeItemCustodyResult {
-  request_id: string;
-  item: ItemInstance;
-  revision: string;
-  event_id: string;
 }
 
 /**
@@ -336,9 +225,6 @@ export interface CharacterUpdateBody {
   notes?: string;
 }
 
-/**
- * chat.message 讨论区广播 payload。
- */
 export interface ChatMessagePayload {
   messageId: string;
   playerId: string;
@@ -362,7 +248,7 @@ export interface ChatMessageRead {
 }
 
 /**
- * chat.send 讨论区消息；该通道不会进入 Host Agent 上下文。
+ * 玩家讨论区消息，不进入任何模型上下文。
  */
 export interface ChatSendPayload {
   text: string;
@@ -370,175 +256,39 @@ export interface ChatSendPayload {
 }
 
 /**
- * 向动作发起者推送可用检定项；旧历史允许缺少 turn_id。
+ * 客户端或 Intent Interpreter 提交的幂等命令信封。
  */
-export interface CheckRequestPayload {
-  turnId?: string | null;
-  playerId: string;
-  clientActionId: string;
-  summary: string;
-  difficulty: "regular" | "hard" | "extreme";
-  skills: CheckSkillOptionPayload[];
+export interface CommandEnvelope {
+  schemaVersion?: 1;
+  clientRequestId: string;
+  expectedRevision: number;
+  actorId: string;
+  command: MoveActor | InspectTarget | TalkToNpc | WaitUntil;
 }
 
 /**
- * check.result 推送最终权威结果。
- *
- * 保留原始骰点，并通过 resolution_kind / luck_spent 说明幸运等 post-roll
- * 结算，避免把未达标骰点直接展示成普通成功（issue #327）。
+ * 一次命令提交的确定性结果和最新玩家投影。
  */
-export interface CheckResultPayload {
-  turnId: string;
-  playerId: string;
-  clientActionId: string;
-  skill: string;
-  skillName: string;
-  characterName?: string | null;
-  rollValue: number;
-  targetValue: number;
-  difficulty: "regular" | "hard" | "extreme";
-  successLevel: "critical" | "extreme" | "hard" | "regular" | "failure" | "fumble";
-  passed: boolean;
-  result: string;
-  resolutionKind?: "initial_roll" | "accept_result" | "spend_luck" | "push";
-  luckSpent?: number | null;
-}
-
-export interface CheckRoll {
-  value: number;
-  degree: "critical_success" | "extreme_success" | "hard_success" | "regular_success" | "failure" | "fumble";
-  passed: boolean;
+export interface CommandResult {
+  schemaVersion?: 1;
+  clientRequestId: string;
+  revision: number;
+  events: DomainEventEnvelope[];
+  projection: PlayerProjection;
 }
 
 /**
- * 为待处理动作提交玩家选择的技能与 D100 结果。
+ * Kernel 提交给事件日志和 Narrator 的领域事件。
  */
-export interface CheckRollPayload {
-  clientActionId: string;
-  skill: string;
-  rollValue: number;
-}
-
-export interface CheckRunView {
-  check_id: string;
-  action_request_id: string;
-  selected_candidate_id: string;
-  selected_skill_id: string;
-  selected_skill_name: string;
-  difficulty: "regular" | "hard" | "extreme";
-  target_value: number;
-  status: "awaiting_post_roll_decision" | "resolved";
-  version: number;
-  roll_count: number;
-  roll: CheckRoll;
-  post_roll_options?: (AcceptResultOption | SpendResourceOption | PushOption)[];
-  final_result?: CheckRoll | null;
-  resolution_kind?: "initial_roll" | "accept_result" | "spend_luck" | "push";
-  luck_spent?: number | null;
-}
-
-/**
- * A player-owned skill that may be selected for the pending check.
- */
-export interface CheckSkillOptionPayload {
-  id: string;
-  name: string;
-  targetValue: number;
-}
-
-/**
- * Trusted candidate menu exposed to the host semantic matcher.
- */
-export interface CheckpointOption {
-  id: string;
-  target_id: string;
-  action_hint: string;
-  skills?: string[];
-  difficulty?: ("regular" | "hard" | "extreme") | null;
-  declaration_options?: ActionDeclarationOption[];
-}
-
-/**
- * clue.granted 推送 payload（issue #77 新增，线索发现，本期不会真的发出）。
- */
-export interface ClueGrantedPayload {
-  playerId: string;
-  clueName: string;
-  description?: string | null;
-}
-
-export interface ConfirmEndingDraftRequest {
-  request_id: string;
-  source_revision: string;
-  draft_version: number;
-}
-
-export interface ConfirmEndingDraftResult {
-  request_id: string;
-  resolution: EndingResolution;
-  revision: string;
-}
-
-export interface ConfirmInventoryImportDraftRequest {
-  request_id: string;
-  source_revision: string;
-  draft_version: number;
-}
-
-export interface ConfirmInventoryImportResult {
-  request_id: string;
-  draft_id: string;
-  created_item_ids: string[];
-  revision: string;
-}
-
-export interface CreateEndingDraftRequest {
-  request_id: string;
-  source_revision: string;
-  mode?: "ending_and_epilogue";
-  player_intent: string;
-}
-
-export interface CreateInventoryImportDraftRequest {
-  request_id: string;
-  source_revision: string;
-  character_revision: string;
-  claims: ItemClaim[];
-}
-
-export interface EndingDraft {
-  draft_id: string;
-  request_id: string;
-  source_revision: string;
-  mode?: "ending_and_epilogue";
-  player_intent: string;
-  title: string;
-  summary: string;
-  epilogue: string;
-  facets?: {
-    [k: string]: JsonValue;
+export interface DomainEventEnvelope {
+  schemaVersion?: 1;
+  eventId: string;
+  eventType: string;
+  actorId: string;
+  visibility?: "public" | "private" | "hidden";
+  payload: {
+    [k: string]: unknown;
   };
-  /**
-   * @minItems 1
-   */
-  evidence_refs: [string, ...string[]];
-  version?: number;
-  status?: "active" | "confirmed" | "expired";
-}
-
-export interface EndingResolution {
-  draft_id: string;
-  source_revision: string;
-  anchor_id: string;
-  /**
-   * @minItems 1
-   */
-  fact_refs: [string, ...string[]];
-  facets?: {
-    [k: string]: JsonValue;
-  };
-  confirmed_by: string;
-  confirmed_event_id: string;
 }
 
 export interface EquipmentItem {
@@ -586,6 +336,7 @@ export type ErrorCode =
   | "HOST_SPEECH_UNAVAILABLE"
   | "HOST_SPEECH_FAILED"
   | "HOST_SPEECH_TIMEOUT"
+  | "HOST_MODEL_UNAVAILABLE"
   | "REVISION_CONFLICT"
   | "ITEM_VERSION_CONFLICT"
   | "ITEM_ALREADY_TAKEN"
@@ -611,25 +362,10 @@ export interface ErrorDetail {
     | null;
 }
 
-/**
- * error 推送 payload；用于向发起连接返回玩家安全的协议错误。
- */
 export interface ErrorPayload {
   code: string;
   message: string;
   correlationId?: string | null;
-}
-
-export interface ExitDestinationView {
-  scene_id: string;
-  name: string;
-}
-
-/**
- * game.ended 推送 payload（issue #77 新增，触发复盘，本期不会真的发出）。
- */
-export interface GameEndedPayload {
-  reason?: string | null;
 }
 
 /**
@@ -643,10 +379,7 @@ export interface GameRead {
 }
 
 /**
- * game.start 事件 payload——目前不带任何字段。
- *
- * 定义一个空模型（而不是完全跳过校验）是为了让 game.start 也走跟其它事件
- * 一致的"接收端过一次模型校验"路径，行为对齐、不搞特例。
+ * 请求从建卡阶段进入基础游戏页面。
  */
 export interface GameStartPayload {}
 
@@ -664,159 +397,12 @@ export interface GameSystemRead {
   gameDescription?: string | null;
 }
 
-export interface HostSpeechManifestRead {
-  messageId: string;
-  sentences: HostSpeechSentenceRead[];
-}
-
-export interface HostSpeechSentenceRead {
-  index: number;
-  text: string;
-}
-
-export interface HostSpeechSettingsRead {
-  available: boolean;
-  provider: string;
-  voiceType: string | null;
-  voices: HostSpeechVoiceRead[];
-  autoEmotion?: boolean;
-}
-
-export interface HostSpeechSettingsUpdate {
-  voiceType: string;
-}
-
-export interface HostSpeechSettingsUpdatedPayload {
-  voiceType: string | null;
-}
-
-export interface HostSpeechVoiceRead {
-  voiceType: string;
-  label: string;
-}
-
-export interface InventoryImportDraft {
-  draft_id: string;
-  request_id: string;
-  room_id: string;
-  player_id: string;
-  actor_id: string;
-  source_revision: string;
-  character_revision: string;
-  version?: number;
-  entries: InventoryImportEntry[];
-  confirmed?: boolean;
-}
-
-export interface InventoryImportEntry {
-  claim_id: string;
-  decision: "accepted" | "normalized" | "rejected";
-  reason_code?:
-    | (
-        | "anachronistic"
-        | "profession_mismatch"
-        | "wealth_exceeded"
-        | "restricted_by_setting"
-        | "reserved_canon_identity"
-        | "invalid_quantity"
-        | "unsupported_item"
-      )
-    | null;
-  normalized_definition?: ItemDefinition | null;
-  narrative_policy: "brought" | "adjusted" | "not_brought";
-}
-
-export interface InventoryItemView {
-  id: string;
-  name: string;
-  source_label?: string;
-  quantity: number;
-  condition: string;
-  version: number;
-}
-
-export interface InventoryView {
-  inventory?: InventoryItemView[];
-  loose_items?: InventoryItemView[];
-}
-
-export interface ItemAcquisition {
-  source_type: "character_import" | "location" | "entity" | "runtime";
-  source_id: string;
-  player_safe_label: string;
-  event_id: string;
-  revision: string;
-}
-
-export interface ItemCapability {
-  id: string;
-  type: string;
-  target_selector?: ItemTargetSelector;
-  consumes?: boolean;
-}
-
-export interface ItemClaim {
-  claim_id: string;
-  raw_name: string;
-  declared_quantity?: number;
-  declared_properties?: string[];
-  source?: "character_sheet";
-}
-
-export interface ItemComponent {
-  portable?: boolean;
-  unique?: boolean;
-  quantity?: number;
-  capabilities?: ItemCapability[];
-}
-
-export interface ItemCustody {
-  kind: "actor_inventory" | "location" | "entity" | "retired";
-  ref_id: string;
-  form: "carried" | "loose" | "placed" | "thrown" | "contained";
-}
-
-export interface ItemDefinition {
-  definition_id: string;
-  display: ItemDisplay;
-  item_component: ItemComponent;
-}
-
-export interface ItemDisplay {
-  name: string;
-  description?: string;
-}
-
-export interface ItemInstance {
-  id: string;
-  room_id: string;
-  kind?: "item";
-  origin: "canon" | "runtime";
-  definition_id: string;
-  display: ItemDisplay;
-  item_component: ItemComponent;
-  custody: ItemCustody;
-  state?: ItemState;
-  acquisition?: ItemAcquisition | null;
-  keeper_notes?: string;
-  hidden_information_refs?: string[];
-  version?: number;
-  created_event_id: string;
-  last_event_id: string;
-  updated_revision: string;
-}
-
-export interface ItemState {
-  condition?: string;
-  status?: "active" | "retired";
-  values?: {
-    [k: string]: JsonValue;
-  };
-}
-
-export interface ItemTargetSelector {
-  entity_ids?: string[];
-  location_ids?: string[];
+/**
+ * 请求调查当前可见的地点或对象。
+ */
+export interface InspectTarget {
+  kind: "inspect_target";
+  targetId: string;
 }
 
 /**
@@ -824,44 +410,6 @@ export interface ItemTargetSelector {
  */
 export interface JoinRoomBody {
   nickname?: string | null;
-}
-
-export interface JsonValue {
-  [k: string]: unknown;
-}
-
-export interface KnownInformationView {
-  id: string;
-  title: string;
-  summary: string;
-  content: string;
-  related_entities?: string[];
-  related_scenes?: string[];
-  scope: "actor" | "party";
-}
-
-export interface KnownLocationView {
-  id: string;
-  kind: "region" | "site" | "room" | "connector";
-  name: string;
-  description?: string;
-  parent_location_id?: string | null;
-  region_id?: string | null;
-  existence: "rumored" | "known";
-  localization: "unknown" | "approximate" | "located";
-  access: "unknown" | "reachable" | "blocked";
-  visited?: boolean;
-}
-
-export interface LocationBreadcrumbView {
-  id: string;
-  name: string;
-}
-
-export interface LocationContextView {
-  current_location_id: string;
-  breadcrumbs?: LocationBreadcrumbView[];
-  position_context?: PositionContextView | null;
 }
 
 /**
@@ -959,6 +507,14 @@ export interface ModuleStoryPage {
 }
 
 /**
+ * 请求把当前调查员移动到已知地点。
+ */
+export interface MoveActor {
+  kind: "move_actor";
+  targetId: string;
+}
+
+/**
  * GET /api/v1/me/rooms 返回项
  */
 export interface MyRoomSummary {
@@ -973,42 +529,14 @@ export interface MyRoomSummary {
 }
 
 /**
- * narration.chunk 推送 payload（issue #203）。
- *
- * 片段只是同一条 `narration.push` 的渐进展示形式，不是权威消息：服务端先
- * 生成并校验完整叙事、落库去重成功，才按句切片下发，最后再发权威的
- * `narration.push`。客户端按 `messageId` 归组、按 `sequence` 排序去重，
- * 拼接结果必须与最终 `narration.push` 的 `text` 完全一致；历史恢复和持久化
- * 始终只认 `narration.push`，临时拼接内容不得写入权威历史。
+ * Narrator 生成的候选文本，必须引用已提交事件。
  */
-export interface NarrationChunkPayload {
-  turnId?: string | null;
-  clientActionId?: string | null;
-  messageId: string;
-  sequence: number;
+export interface NarrationDraft {
   text: string;
-}
-
-/**
- * narration.push 推送 payload。
- */
-export interface NarrationPushPayload {
-  turnId?: string | null;
-  clientActionId?: string | null;
-  messageId?: string | null;
-  text: string;
-}
-
-export interface NarrativeDetailView {
-  id: string;
-  kind: "description" | "sensory" | "atmosphere" | "pacing" | "foreshadowing";
-  text: string;
-}
-
-export interface ObservableStateView {
-  key: string;
-  label: string;
-  value: JsonValue;
+  /**
+   * @minItems 1
+   */
+  evidenceEventIds: [string, ...string[]];
 }
 
 /**
@@ -1039,87 +567,23 @@ export interface OccupationSpec {
 }
 
 /**
- * 权威开场正在由 Host 模型生成；模板模式不会发送。
+ * 只包含当前玩家可见的稳定投影，不允许出现 keeper 字段。
  */
-export interface OpeningStartedPayload {
-  messageId: string;
-}
-
-export interface PendingCheckDecisionView {
-  decision_id: string;
-  status?: "awaiting_skill_choice";
-  action_request_id: string;
-  source_revision: string;
-  decision_version: number;
-  actor_id: string;
-  summary: string;
-  /**
-   * @minItems 1
-   */
-  options: [PendingCheckOption, ...PendingCheckOption[]];
-  allow_cancel?: true;
-}
-
-export interface PendingCheckOption {
-  candidate_id: string;
-  skill_id: string;
-  display_name: string;
-  target_value: number;
-  difficulty: "regular" | "hard" | "extreme";
-  method_summary: string;
-  player_safe_reason: string;
-}
-
-export interface PlanProgressPayload {
-  turnId: string;
-  correlationId: string;
-  currentStep: number;
-  completedSteps: number;
-  totalSteps: number;
-  phase: "understanding" | "executing" | "waiting_for_player" | "stopped" | "completed";
-  publicProgressLabel?: string | null;
-  safeReason?: string | null;
+export interface PlayerProjection {
+  sessionId: string;
+  actorId: string;
+  revision: number;
+  worldTime: string;
+  locationId: string;
+  visibleFacts: string[];
+  pendingCommandId?: string | null;
 }
 
 /**
- * player.joined 推送 payload（issue #77 新增，同上，本期不会真的发出）。
- */
-export interface PlayerJoinedPayload {
-  player: RoomPlayerRead;
-}
-
-/**
- * player.ready 事件 payload。
- *
- * `ready` 必填、不给默认值：协议上「设置准备状态」这个动作必须说清楚要设成
- * 什么，缺字段是一条畸形消息，应该被丢弃，而不是被悄悄当成 `False` 处理。
- * 这里给默认值的代价不只在后端——它会顺着 codegen 变成 SDK 的
- * `ready?: boolean`，让 `setReady(playerId, {})` 也能通过类型检查并静默地把
- * 玩家设成未准备（见 PR #76 review）。改动前的手写 SDK 类型本来就是必填的。
+ * 设置玩家准备状态。
  */
 export interface PlayerReadyPayload {
   ready: boolean;
-}
-
-/**
- * Complete player-safe world snapshot used by one model/Agent run.
- */
-export interface PlayerView {
-  room_id: string;
-  player_id: string;
-  actor_id: string;
-  background: string;
-  scene_id: string;
-  phase: "playing" | "ended";
-  revision: string;
-  self_actor: SelfActorView;
-  scene: SceneView;
-  location_context?: LocationContextView | null;
-  known_locations?: KnownLocationView[];
-  inventory?: InventoryItemView[];
-  world?: WorldStateView;
-  known_information?: KnownInformationView[];
-  checkpoint_options?: CheckpointOption[];
 }
 
 export interface PortraitGenerationRequest {
@@ -1145,21 +609,6 @@ export interface PortraitGenerationTaskRead {
   startedAt?: string | null;
   finishedAt?: string | null;
   updatedAt: string;
-}
-
-export interface PositionContextView {
-  kind?: "access_boundary";
-  id: string;
-  label: string;
-  state: "locked" | "blocked" | "interaction_required";
-  destination_id: string;
-}
-
-export interface PushOption {
-  option_id: string;
-  kind?: "push";
-  requires_revised_method?: true;
-  player_safe_risk_summary: string;
 }
 
 /**
@@ -1192,19 +641,6 @@ export interface RegisterBody {
 }
 
 /**
- * GET /api/v1/rooms/{roomId}/replay 返回项——对应 `events` 表的一行。
- */
-export interface ReplayEventRead {
-  id: string;
-  playerId?: string | null;
-  eventType: string;
-  payload: {
-    [k: string]: unknown;
-  };
-  createdAt: string;
-}
-
-/**
  * POST /api/v1/rooms/{roomId}/characters/{characterId}/roll-attributes 返回。
  *
  * 服务端权威掷骰（COC7 标准法）：STR/CON/DEX/APP/POW = 3d6*5，
@@ -1223,14 +659,12 @@ export interface RollAttributesResult {
 /**
  * GET /api/v1/rooms/{roomId}/conversation 返回项。
  *
- * 它面向房间页恢复当前对话 UI：讨论区消息继续来自 `chat_messages`，行动频道
- * 的玩家原话、主持叙事和检定结果来自 `events`。这不是 replay 的替代品；
- * 讨论区仍然不进入 replay，也仍然会在结束游戏时按既有语义清理。
+ * 当前只承载讨论区消息；行动频道将在新 GM Agent 协议中重新定义。
  */
 export interface RoomConversationEventRead {
   id: string;
-  type: "chat.message" | "action.broadcast" | "narration.push" | "check.result";
-  channel: "discussion" | "action";
+  type: "chat.message";
+  channel: "discussion";
   payload: {
     [k: string]: unknown;
   };
@@ -1258,16 +692,7 @@ export interface RoomCreateResult {
 }
 
 /**
- * room.join 事件 payload。
- *
- * `reconnect_token` 必填：它是玩家在这个房间里的身份密钥（`players.reconnect_token`，
- * 建房/加入时下发给本人）。WS 连接握手只校验了「你是某个登录账号」，但连接
- * 时带的 playerId 是任意的、而且被公开房间预览暴露——只认 playerId 会让任何
- * 登录用户绑定成别人（冒充房主 game.start / 提交行动，PR #78 review 指出）。
- * 绑定时要求出示该玩家的 reconnect_token，才能证明「你就是这个玩家本人」。
- *
- * roomCode/nickname 是前端沿用原型习惯发送的冗余字段，服务端不读，保留可选
- * 以免影响现有调用方。
+ * 使用房间重连凭证绑定当前 WebSocket 身份。
  */
 export interface RoomJoinPayload {
   reconnectToken: string;
@@ -1312,27 +737,10 @@ export interface RoomPreview {
   players: RoomPlayerRead[];
 }
 
-/**
- * room.state 推送 payload（issue #77 新增，替代 HTTP 轮询伪广播）。
- *
- * 本期协议槽位已留好（信封类型/校验器/SDK 方法齐全），但 ws.py 里没有任何
- * 地方会真的发出这个事件——大厅玩家列表仍然是前端 `GET /rooms/{roomCode}`
- * 轮询获取（issue"三处原型取舍"表格，真正切换依赖前端改动，本期不动
- * trpg-frontend）。
- */
 export interface RoomStatePayload {
   roomId: string;
   phase: string;
   players: RoomPlayerRead[];
-}
-
-/**
- * GET /api/v1/rooms/{roomId}/summary 返回。
- */
-export interface RoomSummaryRead {
-  roomId: string;
-  summaryText?: string | null;
-  highlights?: string[] | null;
 }
 
 /**
@@ -1348,45 +756,6 @@ export interface RulesetRead {
 }
 
 /**
- * san.check.request 推送 payload（issue #77 新增，本期不会真的发出）。
- */
-export interface SanCheckRequestPayload {
-  playerId: string;
-  currentSan?: number | null;
-}
-
-/**
- * san.check.result 推送 payload（issue #77 新增，同 CheckResultPayload
- * 直接返回终值，本期不会真的发出）。
- */
-export interface SanCheckResultPayload {
-  playerId: string;
-  rollValue: number;
-  sanLoss: number;
-  result: string;
-}
-
-/**
- * san.check.roll 事件 payload（issue #77 新增）。
- *
- * 定义一个空模型（而不是完全跳过校验）理由同 GameStartPayload：让它也走
- * 跟其它事件一致的"接收端过一次模型校验"路径。本期同样是 NOT_IMPLEMENTED 桩。
- */
-export interface SanCheckRollPayload {}
-
-export interface SceneView {
-  id: string;
-  name: string;
-  description: string;
-  time?: string | null;
-  narrative_details?: NarrativeDetailView[];
-  visible_entities?: VisibleEntity[];
-  visible_actors?: VisibleActorView[];
-  available_exits?: AvailableExitView[];
-  loose_items?: InventoryItemView[];
-}
-
-/**
  * POST /api/v1/rooms/{roomId}/module 请求体
  */
 export interface SelectModuleBody {
@@ -1394,28 +763,29 @@ export interface SelectModuleBody {
   attributeGenMethod?: string;
 }
 
-/**
- * The requesting player's actor; only public_status_summary may be shared.
- */
-export interface SelfActorView {
-  id: string;
-  name: string;
-  occupation?: string | null;
-  attributes?: ActorValueView[];
-  skills?: ActorValueView[];
-  resources?: ActorResourceView[];
-  conditions?: string[];
-  equipment?: string[];
-  background_summary?: string;
-  public_status_summary?: string;
-}
-
-/**
- * session.bound 推送 payload。
- */
 export interface SessionBoundPayload {
   roomId: string;
   playerId: string;
+}
+
+/**
+ * 创建新 GM 会话时冻结的房间、模组和调查员信息。
+ */
+export interface SessionCreateBody {
+  roomId: string;
+  moduleId: string;
+  actorId: string;
+  displayName: string;
+}
+
+/**
+ * 创建或重连后返回的玩家安全会话投影。
+ */
+export interface SessionRead {
+  sessionId: string;
+  moduleId: string;
+  moduleVersion: string;
+  projection: PlayerProjection;
 }
 
 /**
@@ -1475,14 +845,6 @@ export interface SkillSpec {
   relatedAttr?: string | null;
 }
 
-export interface SpendResourceOption {
-  option_id: string;
-  kind?: "spend_resource";
-  resource_id?: "luck";
-  cost: number;
-  result_degree: "critical_success" | "extreme_success" | "hard_success" | "regular_success" | "failure" | "fumble";
-}
-
 /**
  * POST /api/v1/systems/{systemId}/character/quick-generate 返回（#337）。
  *
@@ -1501,134 +863,30 @@ export interface SystemQuickGenerateResult {
   compute?: CharacterComputeResult | null;
 }
 
-export interface ToolCompletedPayload {
-  turnId: string;
-  correlationId: string;
-  toolName: string;
-  status: "success" | "error";
-}
-
-export interface ToolStartedPayload {
-  turnId: string;
-  correlationId: string;
-  toolName: string;
-  publicProgressLabel: string;
+/**
+ * 请求与当前可见 NPC 交谈。
+ */
+export interface TalkToNpc {
+  kind: "talk_to_npc";
+  targetId: string;
+  topic?: string;
 }
 
 /**
- * turn.begin 推送 payload（issue #77 新增，回合制约束，本期不会真的发出）。
+ * 回合生命周期的最小判别状态。
  */
-export interface TurnBeginPayload {
-  playerId: string;
+export interface TurnState {
+  value:
+    | "collecting"
+    | "understanding"
+    | "validating"
+    | "awaiting_clarification"
+    | "awaiting_roll"
+    | "resolving"
+    | "narrating"
+    | "completed"
+    | "failed";
 }
-
-/**
- * 玩家目标进入 Engine 权威提交边界的程度。
- */
-export type TurnCommitState = "not_committed" | "partially_committed" | "committed";
-
-/**
- * 可以安全显示给当前玩家的脱敏错误。
- */
-export interface TurnErrorRead {
-  code: string;
-  stage: TurnErrorStage;
-  retryable: boolean;
-  publicMessage: string;
-  occurredAt: string;
-}
-
-/**
- * 错误发生的稳定阶段；不得把内部函数名暴露给客户端。
- */
-export type TurnErrorStage =
-  "receive" | "planning" | "validation" | "adjudication" | "execution" | "narration" | "delivery" | "recovery";
-
-export interface TurnFailedPayload {
-  turnId: string;
-  correlationId: string;
-  code: string;
-  publicMessage: string;
-  retryable: boolean;
-}
-
-export interface TurnPhaseChangedPayload {
-  turnId: string;
-  correlationId: string;
-  phase:
-    | "reading_player_view"
-    | "understanding_action"
-    | "waiting_for_check"
-    | "executing_action"
-    | "refreshing_player_view"
-    | "generating_narration";
-}
-
-/**
- * 刷新、重连和重复请求时的最终恢复来源。
- */
-export interface TurnRead {
-  turnId: string;
-  roomId: string;
-  clientActionId: string;
-  status: TurnStatus;
-  commitState: TurnCommitState;
-  resumePoint: TurnResumePoint;
-  waitingReason: TurnWaitingReason;
-  recoveryAction: TurnRecoveryAction;
-  phaseVersion: number;
-  error?: TurnErrorRead | null;
-  pendingDecision?: {
-    [k: string]: unknown;
-  } | null;
-  narration?: {
-    [k: string]: unknown;
-  } | null;
-  messageId?: string | null;
-  playerView?: {
-    [k: string]: unknown;
-  } | null;
-  viewRevision?: string | null;
-  createdAt: string;
-  updatedAt: string;
-  completedAt?: string | null;
-}
-
-/**
- * 客户端根据持久状态可以安全执行的下一步。
- */
-export type TurnRecoveryAction =
-  "wait" | "retry_same_input" | "choose_skill" | "choose_post_roll" | "fetch_result" | "submit_new_input" | "none";
-
-/**
- * 服务重建或玩家重试时唯一允许继续的位置。
- */
-export type TurnResumePoint =
-  "planning" | "adjudicating" | "executing" | "narrating" | "delivering" | "awaiting_player" | "none";
-
-export interface TurnStartedPayload {
-  turnId: string;
-  correlationId: string;
-}
-
-/**
- * 一次玩家输入在回合协调器中的持久化阶段。
- */
-export type TurnStatus =
-  | "received"
-  | "planning"
-  | "adjudicating"
-  | "executing"
-  | "awaiting_narration"
-  | "delivering"
-  | "completed"
-  | "failed"
-  | "cancelled";
-
-/**
- * 回合暂停等待玩家输入的公开原因。
- */
-export type TurnWaitingReason = "skill_choice" | "post_roll_decision" | "none";
 
 /**
  * PATCH /api/v1/auth/me 请求体
@@ -1647,54 +905,9 @@ export interface ValidationIssueView {
 }
 
 /**
- * view.private 推送 payload（issue #77 新增，私密视角/不泄底的载体）。
- *
- * 本期协议槽位已留好，但 `narration.push` 仍然是全房间广播（issue
- * "三处原型取舍"表格），没有任何地方会真的发出这个事件——真正的信息
- * 不对称需要规则引擎知道"这条叙事该给谁看"，归 #48/#68。
+ * 请求把时间推进到模组允许的目标时间。
  */
-export interface ViewPrivatePayload {
-  playerId: string;
-  text: string;
-}
-
-export interface ViewUpdatedPayload {
-  turnId?: string | null;
-  playerId: string;
-  playerView: PlayerView;
-}
-
-/**
- * Another actor currently visible to this player, with public fields only.
- */
-export interface VisibleActorView {
-  id: string;
-  name: string;
-  occupation?: string | null;
-  status_summary?: string;
-}
-
-export interface VisibleEntity {
-  id: string;
-  kind: "npc" | "object" | "location";
-  name: string;
-  aliases?: string[];
-  description: string;
-  narrative_details?: NarrativeDetailView[];
-  observable_state?: ObservableStateView[];
-}
-
-/**
- * Player-safe world facts committed outside the current scene.
- *
- * See :class:`ProjectionWorldState`; this is the same data on the model/UI
- * side of the projector.
- */
-export interface WorldStateView {
-  day_index?: number;
-  hour_of_day?: number;
-  time_of_day?: "day" | "night";
-  core_resolved?: boolean;
-  ending_available?: boolean;
-  ending_id?: string | null;
+export interface WaitUntil {
+  kind: "wait_until";
+  targetTime: string;
 }

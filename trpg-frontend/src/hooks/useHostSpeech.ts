@@ -280,7 +280,7 @@ export function useHostSpeech({ roomId, reconnectToken, accountToken }: UseHostS
 
   const handleSettingsUpdated = useCallback((voiceType: string | null) => {
     stop()
-    setSettings((current) => current ? { ...current, voiceType } : current)
+    setSettings((current: HostSpeechSettings | null) => current ? { ...current, voiceType } : current)
   }, [stop])
 
   useEffect(() => {

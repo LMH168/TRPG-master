@@ -6,6 +6,8 @@
 
 from collections.abc import Sequence
 
+import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "d8e9f0a1b2c3"
@@ -17,7 +19,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     """按外键依赖顺序删除旧主持运行时表和房间字段。"""
 
-    for table_name in (
+    tables = (
         "memory_entries",
         "memory_projection_runs",
         "agenda_step_executions",
@@ -47,8 +49,15 @@ def upgrade() -> None:
         "module_win_conditions",
         "entities",
         "scenario_scenes",
-    ):
-        op.drop_table(table_name)
+    )
+    if op.get_bind().dialect.name == "postgresql":
+        # 这些表全都属于被放弃的旧运行时，交叉外键没有保留价值。CASCADE 只在
+        # PostgreSQL 清理同一批旧表时使用，不会触及账号、房间或角色卡基础表。
+        for table_name in tables:
+            op.execute(sa.text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
+    else:
+        for table_name in tables:
+            op.drop_table(table_name)
 
     with op.batch_alter_table("rooms") as batch_op:
         batch_op.drop_column("module_version")
