@@ -269,7 +269,7 @@ Phase 0 只读取已制作的 ModulePack；PDF/DOCX 自动解析不属于开工�
 
 ## 6. Phase 1C：《追书人》完整门禁
 
-当前实现进度：`trpg-backend/modules/presets/追书人/runtime.json` 已建立第一版结构化运行包，包含场景、技能、公开线索、检查点、夜间中断和结局切面；`tests/test_gm_paper_chase_playthrough.py` 与 E2E HTTP 门禁覆盖和平、地下、死亡后逃离和理智失败的恢复骨架。真实模型完整局、浏览器视觉 E2E、战斗/追逐细化仍是本阶段未完成的退出条件，不能仅以该运行包视为发布完成。
+当前实现进度：`trpg-backend/modules/presets/追书人/runtime.json` 已建立结构化运行包，包含场景、技能、公开线索、检查点、夜间中断、破窗追逐、食尸鬼遭遇和结局切面；`tests/test_gm_paper_chase_playthrough.py` 已覆盖八类脚本门禁。真实模型完整局、浏览器视觉 E2E 和 PostgreSQL 迁移仍需在当前提交链路中重新留存证据，不能仅以脚本测试视为发布完成。
 
 - 补齐该模组所需的调查路线、NPC 关系、关键线索恢复和多结局。
 - 只实现该模组需要的 CoC7 战斗、步行追逐、HP、SAN 和疯狂子集。

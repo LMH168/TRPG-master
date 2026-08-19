@@ -862,7 +862,7 @@ CoC 7e 作为首个规则模块，提供：
 
 规则集返回结构化结果，不生成文学叙事。首版只有 CoC7，不为单一实现预建动态插件框架；先保持清晰的 Python 模块边界，第二个规则集出现时再抽象公共接口。
 
-CoC7 原始规则书归档于 `trpg-backend/rulesets/coc7/source/克苏鲁的呼唤 守秘人规则书 40周年纪念版.pdf`，其 SHA-256 和资料状态记录在同目录 `manifest.json`。规则书用于核对规则语义、设计结构化规则和编写测试；运行时读取项目自己的 `coc7` 规则数据，不把整本 PDF 直接交给模型或 Kernel。四个预设原文分别归档于 `trpg-backend/modules/presets/` 下的中文目录，路径和哈希由各自 manifest 记录。
+CoC7 原始规则书只归档在开发者本机的 `trpg-backend/rulesets/coc7/source/`，其 SHA-256 和资料状态记录在同目录 `manifest.json`；规则书 PDF 不进入 Git。规则书用于核对规则语义、设计结构化规则和编写测试；运行时读取项目自己的 `coc7` 规则数据，不把整本 PDF 直接交给模型或 Kernel。四个预设原文同样只保留在本机的中文目录 `trpg-backend/modules/presets/*/source/`，Git 只保存 manifest、catalog 和结构化 runtime。
 
 ## 7. Turn Manager：单人与多人真正分开的地方
 
