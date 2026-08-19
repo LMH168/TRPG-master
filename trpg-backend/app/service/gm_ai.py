@@ -11,7 +11,7 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime
 from typing import Protocol
 
-from agents import Agent, OpenAIChatCompletionsModel, OpenAIResponsesModel, Runner
+from agents import Agent, ModelSettings, OpenAIChatCompletionsModel, OpenAIResponsesModel, Runner
 from openai import AsyncOpenAI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +31,16 @@ from app.models.gm import GameEvent, GameSession, RuntimeActor
 
 class GmModelUnavailable(RuntimeError):
     """模型未配置、调用失败或返回了不符合契约的结果。"""
+
+
+def _agent_model_settings(provider: str) -> ModelSettings:
+    """关闭兼容 provider 的思考模式，避免为结构化短输出付出额外延迟。"""
+
+    if provider == "deepseek":
+        return ModelSettings(extra_body={"thinking": {"type": "disabled"}})
+    if provider == "qwen":
+        return ModelSettings(extra_body={"enable_thinking": False})
+    return ModelSettings()
 
 
 class IntentInterpreter(Protocol):
@@ -120,6 +130,7 @@ class AgentsSdkInterpreter:
                 '"source_revision":0}。只输出符合 IntentResult schema 的结构化结果。'
             ),
             model=model,
+            model_settings=_agent_model_settings(provider),
             output_type=IntentResult,
         )
 
@@ -179,6 +190,7 @@ class AgentsSdkNarrator:
                 "不得补写 NPC 行动、秘密、数值变化或复活。只输出 NarrationDraft 结构化结果。"
             ),
             model=model,
+            model_settings=_agent_model_settings(provider),
             output_type=NarrationDraft,
         )
 
@@ -254,7 +266,9 @@ def _candidates_for(location_id: str) -> list[ActionCandidate]:
 
     exits = {
         "arnoldsburg": [
+            ("neighbors", "询问朋友和邻居"),
             ("library", "前往图书馆"),
+            ("newspaper", "前往报社档案室"),
             ("kimball_house", "前往金博尔旧居"),
             ("cemetery", "前往墓园"),
         ],
@@ -269,14 +283,28 @@ def _candidates_for(location_id: str) -> list[ActionCandidate]:
             ("bookshelf", "检查书架"),
             ("librarian", "与图书管理员交谈"),
         ],
+        "newspaper": [
+            ("newspaper_archive", "申请查阅报社档案"),
+            ("hilda", "询问未刊证词"),
+        ],
         "kimball_house": [("desk", "检查书桌"), ("empty_shelf", "检查空书架")],
         "cemetery": [
             ("graveyard_gate", "观察墓园入口"),
             ("headstone", "检查墓碑"),
             ("gravekeeper", "与守墓人交谈"),
+            ("neighbors", "回想邻居提供的线索"),
+            ("track_grave", "追踪墓碑附近的足迹"),
+            ("night_watch", "在夜间监视墓地"),
+            ("call_douglas", "呼喊道格拉斯的名字"),
+            ("attack_douglas", "攻击墓地的人影"),
+            ("open_crypt", "移开墓穴入口石板"),
+        ],
+        "crypt": [
+            ("talk_douglas", "与道格拉斯交谈"),
+            ("follow_douglas", "跟随道格拉斯进入地下"),
         ],
     }
-    return [
+    candidates = [
         *[
             ActionCandidate(action="move_actor", target_id=target, label=label)
             for target, label in exits.get(location_id, [])
@@ -293,6 +321,21 @@ def _candidates_for(location_id: str) -> list[ActionCandidate]:
         ],
         ActionCandidate(action="wait_until", label="等待到指定时间"),
     ]
+    if location_id in {"cemetery", "crypt"}:
+        candidates.extend(
+            [
+                ActionCandidate(
+                    action="choose_option", target_id="peaceful_resolution", label="礼貌交谈后离开"
+                ),
+                ActionCandidate(
+                    action="choose_option",
+                    target_id="follow_underground",
+                    label="跟随道格拉斯进入地下",
+                ),
+                ActionCandidate(action="choose_option", target_id="flee", label="逃离墓地"),
+            ]
+        )
+    return candidates
 
 
 def validate_intent(snapshot: ContextSnapshot, result: IntentResult) -> IntentResult:
@@ -308,7 +351,7 @@ def validate_intent(snapshot: ContextSnapshot, result: IntentResult) -> IntentRe
         raise ValueError("意图提案必须包含一到四个动作")
     candidates = {(item.action, item.target_id) for item in snapshot.action_candidates}
     for step in result.steps:
-        if (step.action, step.target_id) not in candidates and step.action != "start_check":
+        if (step.action, step.target_id) not in candidates and step.action not in {"start_check"}:
             raise ValueError("意图目标不在当前玩家可见候选中")
         if step.action == "start_check" and (not step.skill_id or not step.goal):
             raise ValueError("检定提案缺少技能或目标")
@@ -341,6 +384,8 @@ def intent_step_to_command(
         if step.target_time is None:
             raise ValueError("等待提案缺少目标时间")
         command_payload = {"kind": "wait_until", "target_time": step.target_time}
+    elif step.action == "choose_option":
+        command_payload = {"kind": "choose_option", "option_id": step.target_id or ""}
     else:
         command_payload = {
             "kind": "start_check",

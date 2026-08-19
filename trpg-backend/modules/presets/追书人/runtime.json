@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "initial_scene_id": "briefing",
+  "opening_narration": "禁酒令时期的美国密歇根州，阿诺兹堡镇笼罩在初秋的暮色里。托马斯·金博尔请你调查叔叔道格拉斯一年前的失踪，以及最近从旧居被盗的五本珍藏旧书。你站在镇口，手里攥着委托信，调查就从这里开始。",
+  "initial_state": {
+    "clues": ["stolen_books", "douglas_missing"],
+    "flags": {},
+    "hp": 10,
+    "san": 50,
+    "items": []
+  },
+  "skills": [
+    {"id": "spot-hidden", "name": "侦查", "base": 25, "purpose": "发现视觉上不明显的物体、痕迹或异常", "typical_targets": ["书房", "墓地", "物品"], "no_check_when": "目标明显且没有时间压力", "check_when": "目标隐蔽且失败会改变线索或耗时", "failure_consequence": "给予替代线索或额外时间代价", "source_refs": ["coc7:skill:spot-hidden"], "status": "implemented"},
+    {"id": "library-use", "name": "图书馆使用", "base": 20, "purpose": "检索和理解书籍、报纸与档案", "typical_targets": ["图书馆", "报社", "日记"], "no_check_when": "资料索引清楚且可以慢慢查阅", "check_when": "时间紧迫或资料难以定位", "failure_consequence": "发现替代资料但耗费时间", "source_refs": ["coc7:skill:library-use"], "status": "implemented"},
+    {"id": "track", "name": "追踪", "base": 10, "purpose": "辨认并跟随足迹或移动痕迹", "typical_targets": ["墓地", "道路"], "no_check_when": "痕迹清晰且没有干扰", "check_when": "痕迹模糊、陈旧或被覆盖", "failure_consequence": "获得较弱方向线索", "source_refs": ["coc7:skill:track"], "status": "implemented"},
+    {"id": "charm", "name": "魅惑", "base": 15, "purpose": "以友善态度建立短暂信任", "typical_targets": ["邻居", "守墓人"], "no_check_when": "对方没有理由拒绝且不影响后果", "check_when": "对方戒备且情报重要", "failure_consequence": "对方保留信息但不会凭空敌对", "source_refs": ["coc7:skill:charm"], "status": "implemented"},
+    {"id": "sanity", "name": "理智", "base": 50, "purpose": "面对超自然现象时保持理智", "typical_targets": ["食尸鬼", "超自然真相"], "no_check_when": "没有直接看到或理解超自然现象", "check_when": "首次直面危险超自然事实", "failure_consequence": "扣除理智并可能进入临时疯狂", "source_refs": ["coc7:sanity"], "status": "implemented"}
+  ],
+  "scenes": [
+    {"id": "briefing", "location_id": "arnoldsburg", "label": "托马斯的委托", "targets": ["neighbors", "library", "newspaper", "kimball_house", "cemetery"]},
+    {"id": "neighbors", "location_id": "arnoldsburg", "label": "朋友和邻居", "targets": ["ask_neighbors"]},
+    {"id": "library", "location_id": "library", "label": "当地图书馆", "targets": ["library_research"]},
+    {"id": "newspaper", "location_id": "newspaper", "label": "报社档案室", "targets": ["newspaper_archive"]},
+    {"id": "kimball_house", "location_id": "kimball_house", "label": "金博尔宅书房", "targets": ["search_study", "read_diary", "surveillance"]},
+    {"id": "cemetery", "location_id": "cemetery", "label": "公共墓地", "targets": ["gravekeeper", "track_grave", "night_watch"]},
+    {"id": "confrontation", "location_id": "cemetery", "label": "墓地的人影", "targets": ["call_douglas", "attack_douglas", "leave"]},
+    {"id": "crypt", "location_id": "crypt", "label": "地穴入口", "targets": ["open_crypt", "follow_douglas"]},
+    {"id": "douglas", "location_id": "crypt", "label": "与道格拉斯对话", "targets": ["talk_douglas", "follow_douglas", "leave"]}
+  ],
+  "clues": [
+    {"id": "stolen_books", "text": "五本珍藏旧书最近从金博尔宅被盗。", "visibility": "public"},
+    {"id": "douglas_missing", "text": "道格拉斯已经失踪一年。", "visibility": "public"},
+    {"id": "douglas_cemetery", "text": "邻居见过道格拉斯带书前往墓地。", "visibility": "public"},
+    {"id": "favorite_grave", "text": "守墓人知道道格拉斯常坐的墓碑。", "visibility": "public"},
+    {"id": "night_silhouette", "text": "守墓人曾在夜里看见墓碑旁的人影。", "visibility": "public"},
+    {"id": "old_report", "text": "旧报纸记载墓地出现过异常足迹和类人群体。", "visibility": "public"},
+    {"id": "hilda_statement", "text": "未刊证词描述了带有犬类特征的腐土生物。", "visibility": "public"},
+    {"id": "diary_choice", "text": "日记暗示道格拉斯选择加入地下的朋友。", "visibility": "public"},
+    {"id": "tunnel_hint", "text": "日记和足迹都指向墓地地下的入口。", "visibility": "public"},
+    {"id": "douglas_truth", "text": "道格拉斯保留记忆并主动选择了地下生活。", "visibility": "public"},
+    {"id": "ghouls_leaving", "text": "地下群体将关闭入口，道格拉斯不会再回来。", "visibility": "public"}
+  ],
+  "checkpoints": [
+    {"id": "ask_neighbors", "scene_id": "neighbors", "skill": "charm", "success_clues": ["douglas_cemetery"], "failure_clues": ["douglas_cemetery"]},
+    {"id": "library_research", "scene_id": "library", "skill": "library-use", "success_clues": ["old_report"], "failure_clues": ["old_report"]},
+    {"id": "newspaper_archive", "scene_id": "newspaper", "skill": "library-use", "success_clues": ["hilda_statement"], "failure_clues": ["old_report"]},
+    {"id": "search_study", "scene_id": "kimball_house", "skill": "spot-hidden", "success_clues": ["diary_choice", "tunnel_hint"], "failure_clues": ["tunnel_hint"]},
+    {"id": "read_diary", "scene_id": "kimball_house", "skill": "library-use", "success_clues": ["tunnel_hint", "diary_choice"], "failure_clues": ["tunnel_hint"]},
+    {"id": "gravekeeper", "scene_id": "cemetery", "skill": "charm", "success_clues": ["favorite_grave", "night_silhouette"], "failure_clues": ["favorite_grave"]},
+    {"id": "track_grave", "scene_id": "cemetery", "skill": "track", "success_clues": ["tunnel_hint"], "failure_clues": ["favorite_grave"]},
+    {"id": "night_watch", "scene_id": "cemetery", "skill": "luck", "success_clues": ["night_silhouette"], "failure_clues": ["night_silhouette"]}
+  ],
+  "endings": [
+    {"id": "peaceful_resolution", "label": "礼貌交谈后离开", "outcome": "resolved"},
+    {"id": "follow_underground", "label": "跟随道格拉斯进入地下", "outcome": "investigator_disappears"},
+    {"id": "douglas_killed", "label": "杀死道格拉斯并面对食尸鬼群", "outcome": "survived_with_loss"},
+    {"id": "asylum", "label": "临时疯狂后进入疗养院", "outcome": "institutionalized"},
+    {"id": "flee", "label": "道格拉斯死后逃离", "outcome": "survived_with_loss"}
+  ],
+  "route_rules": {
+    "move_to": {"library": "library", "newspaper": "newspaper", "kimball_house": "kimball_house", "cemetery": "cemetery"},
+    "confront_after_watch": "confrontation",
+    "open_crypt": "douglas",
+    "call_douglas": "douglas"
+  }
+}

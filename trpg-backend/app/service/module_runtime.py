@@ -22,6 +22,7 @@ class ModulePack:
     title: str
     manifest: dict[str, Any]
     catalog: dict[str, Any]
+    runtime: dict[str, Any]
 
 
 def load_module_pack(pack_dir: Path) -> ModulePack:
@@ -29,6 +30,7 @@ def load_module_pack(pack_dir: Path) -> ModulePack:
 
     manifest = _read_json(pack_dir / "manifest.json")
     catalog = _read_json(pack_dir / "catalog.json")
+    runtime_file = manifest.get("runtime_file")
     for field in ("module_id", "title", "content_version", "catalog_file"):
         if not isinstance(manifest.get(field), str) or not manifest[field].strip():
             raise ModulePackError(f"manifest 缺少字段：{field}")
@@ -38,12 +40,20 @@ def load_module_pack(pack_dir: Path) -> ModulePack:
         raise ModulePackError("manifest 与 catalog 的标题不一致")
     if not isinstance(catalog.get("story_pages"), list):
         raise ModulePackError("catalog.story_pages 必须是数组")
+    if runtime_file is None:
+        runtime = {}
+    else:
+        if runtime_file != "runtime.json":
+            raise ModulePackError("运行包只能引用同目录 runtime.json")
+        runtime = _read_json(pack_dir / runtime_file)
+        _validate_runtime(runtime)
     return ModulePack(
         module_id=manifest["module_id"],
         version=manifest["content_version"],
         title=manifest["title"],
         manifest=manifest,
         catalog=catalog,
+        runtime=runtime,
     )
 
 
@@ -70,3 +80,23 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ModulePackError(f"模组文件必须是 JSON 对象：{path}")
     return value
+
+
+def _validate_runtime(runtime: dict[str, Any]) -> None:
+    """校验运行包的顶层结构，防止安装不完整的剧情数据。"""
+
+    required = (
+        "schema_version",
+        "initial_scene_id",
+        "scenes",
+        "skills",
+        "clues",
+        "checkpoints",
+        "endings",
+    )
+    missing = [field for field in required if field not in runtime]
+    if missing:
+        raise ModulePackError(f"运行包缺少字段：{','.join(missing)}")
+    for field in ("scenes", "clues", "checkpoints", "endings"):
+        if not isinstance(runtime[field], list):
+            raise ModulePackError(f"运行包 {field} 必须是数组")

@@ -13,7 +13,7 @@
  * 当前玩家可以安全尝试的动作候选；不包含成功后的隐藏结果。
  */
 export interface ActionCandidate {
-  action: "move_actor" | "inspect_target" | "talk_to_npc" | "wait_until" | "start_check";
+  action: "move_actor" | "inspect_target" | "talk_to_npc" | "wait_until" | "start_check" | "choose_option";
   targetId?: string | null;
   label: string;
   aliases?: string[];
@@ -279,6 +279,14 @@ export interface CheckRead {
 }
 
 /**
+ * 提交模组声明的不可逆剧情选择，不能由模型直接写结局。
+ */
+export interface ChooseOption {
+  kind: "choose_option";
+  optionId: string;
+}
+
+/**
  * 刷新后可恢复的意图澄清问题和候选答案。
  */
 export interface ClarificationRead {
@@ -295,7 +303,7 @@ export interface CommandEnvelope {
   clientRequestId: string;
   expectedRevision: number;
   actorId: string;
-  command: MoveActor | InspectTarget | TalkToNpc | WaitUntil | StartCheck | RollCheck;
+  command: MoveActor | InspectTarget | TalkToNpc | WaitUntil | StartCheck | RollCheck | ChooseOption;
 }
 
 /**
@@ -493,7 +501,7 @@ export interface IntentResult {
  * 意图解释器提出的单个有限动作，不是可直接执行的脚本。
  */
 export interface IntentStep {
-  action: "move_actor" | "inspect_target" | "talk_to_npc" | "wait_until" | "start_check";
+  action: "move_actor" | "inspect_target" | "talk_to_npc" | "wait_until" | "start_check" | "choose_option";
   targetId?: string | null;
   skillId?: string | null;
   goal?: string | null;
@@ -686,6 +694,12 @@ export interface PlayerProjection {
   pendingDecisions?: PendingDecision[];
   checks?: CheckRead[];
   pendingClarification?: ClarificationRead | null;
+  sceneId?: string | null;
+  sceneLabel?: string | null;
+  clues?: string[];
+  hp?: number | null;
+  san?: number | null;
+  endingId?: string | null;
 }
 
 /**
@@ -903,6 +917,7 @@ export interface SessionRead {
   moduleId: string;
   moduleVersion: string;
   projection: PlayerProjection;
+  openingNarration?: string | null;
 }
 
 /**

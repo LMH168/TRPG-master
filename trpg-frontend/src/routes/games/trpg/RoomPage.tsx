@@ -493,7 +493,8 @@ function conversationEventToMessage(
     return {
       type: 'player',
       channel: 'action',
-      messageId: conversationMessageId(event.type, event.id),
+      // GM REST 与旧 WS 历史最终都使用 clientActionId，才能在本地回显和重连时去重。
+      messageId: conversationMessageId(event.type, payload.clientActionId),
       sender: displayName(payload.characterName, payload.nickname),
       content: payload.utterance,
       time: formatRoomTime(event.createdAt),
@@ -2008,7 +2009,8 @@ export default function RoomPage() {
     const api = (sdk as unknown as {
       gm?: {
         createSession: (payload: Record<string, string>, token: string, account: string) => Promise<{
-          projection: { revision: number; checks?: Array<GmPendingCheck & { status: string }> }
+        projection: { revision: number; checks?: Array<GmPendingCheck & { status: string }> }
+        openingNarration?: string | null
         }>
         getProjection: (room: string, actor: string, token: string) => Promise<{
           revision: number
@@ -2036,6 +2038,18 @@ export default function RoomPage() {
       const projection = await api.getProjection(roomId, playerId, reconnectToken)
       if (cancelled) return
       gmRevisionRef.current = projection.revision ?? session.projection.revision
+      const openingNarration = session.openingNarration
+      if (openingNarration) {
+        setMessages((current) => appendLiveMessage(current, {
+          type: 'narr',
+          channel: 'action',
+          messageId: 'gm-opening',
+          narrationId: 'gm-opening',
+          sender: '守秘人',
+          content: openingNarration,
+          time: formatRoomTime(new Date()),
+        }))
+      }
       const pending = projection.checks?.find((check) => check.status === 'awaiting_roll')
       setGmPendingCheck(pending ?? null)
       setGmClarification(projection.pendingClarification ?? null)
@@ -2091,6 +2105,17 @@ export default function RoomPage() {
     void request
       .then((result) => {
         if (gmApi) {
+          // 新 GM REST 不经过旧 WS 的 action.broadcast，回合成功后立即补入玩家行动。
+          setMessages((current) => appendLiveMessage(current, {
+            type: 'player',
+            channel: 'action',
+            messageId: conversationMessageId('action.broadcast', action.clientActionId),
+            sender: senderName,
+            content: action.utterance,
+            time: formatRoomTime(new Date()),
+            isSelf: true,
+            playerId,
+          }))
           const typedResult = result as {
             status: 'clarification' | 'completed' | 'failed'
             revision: number

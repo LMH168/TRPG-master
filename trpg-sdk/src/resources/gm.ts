@@ -39,7 +39,8 @@ export class GmResource {
     actorId: string,
     reconnectToken: string,
   ): Promise<PlayerProjection> {
-    const query = `?actorId=${encodeURIComponent(actorId)}`;
+    // 后端查询参数使用 Python/FastAPI 的 snake_case 命名，必须与 DTO 字段一致。
+    const query = `?actor_id=${encodeURIComponent(actorId)}`;
     return this.client.get<PlayerProjection>(
       `/gm/sessions/${encodeURIComponent(roomId)}/projection${query}`,
       this.roomAuth(reconnectToken),

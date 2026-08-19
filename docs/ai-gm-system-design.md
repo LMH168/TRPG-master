@@ -1123,6 +1123,8 @@ Actor 的死亡、失能、位置和存在状态始终以当前权威投影为�
 
 优先使用 Agents SDK 的 model/provider 扩展面，不在项目内再造一套完整 Provider 框架。项目只保留薄配置与兼容性门禁，统一记录：
 
+主持人的意图解释和叙事调用默认关闭 provider 的 thinking/reasoning 模式；结构化短输出不保存思维链，只保留最终 DTO、用量和错误状态。DeepSeek-compatible provider 使用 `thinking.type=disabled`，Qwen-compatible provider 使用 `enable_thinking=false`，其他 provider 需在兼容性门禁中验证等价配置。
+
 - JSON Schema/结构化输出能力；
 - tool calling 能力；
 - context window 与输出上限；
@@ -1176,6 +1178,8 @@ room_id -> turn_id -> intent_id -> command_id -> event_ids -> narration_id -> ou
 | Model playthrough | 是 | 自由语言理解、叙事、沙盒偏航和多人协调 |
 
 ### 13.1 《追书人》发布门禁
+
+仓库中的 `trpg-backend/modules/presets/追书人/runtime.json` 是当前 Kernel 消费的结构化运行包入口。它只保存可审查的场景、技能、线索、检查点和结局切面，不复制 PDF 正文；完整发布仍须逐条通过下列脚本、真实模型和浏览器门禁。
 
 至少包含以下完整局：
 

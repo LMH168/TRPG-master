@@ -95,6 +95,7 @@ _MODELS: list[type[BaseModel]] = [
     # 新 GM 运行时 Phase 0 契约（issue #33）
     gm.CommandEnvelope,
     gm.CommandResult,
+    gm.ChooseOption,
     gm.ClarificationRead,
     gm.ActionCandidate,
     gm.ContextSnapshot,

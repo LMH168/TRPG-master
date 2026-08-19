@@ -137,6 +137,7 @@ trpg-backend/rulesets/coc7/
 - 当前配置只算“已准备”，不算门禁通过。必须实际运行一次 P0-1 smoke，确认地址、模型、
   Chat Completions JSON 输出、工具调用、超时/取消和错误分类；失败时不得用 fake provider
   冒充生产通过。
+- 主持意图解释与叙事是低延迟结构化调用，默认关闭 provider thinking/reasoning；不得记录或展示思维链，只保留最终结构化结果和脱敏用量。
 - 运行记录只保留 provider、模型名、SDK 版本、schema 版本、时间和脱敏结果。若更换模型或
   `base_url`，需重新执行门禁。
 
@@ -267,6 +268,8 @@ Phase 0 只读取已制作的 ModulePack；PDF/DOCX 自动解析不属于开工�
 退出：浏览器可以完成第一条《追书人》路径并在任一等待点刷新恢复。
 
 ## 6. Phase 1C：《追书人》完整门禁
+
+当前实现进度：`trpg-backend/modules/presets/追书人/runtime.json` 已建立第一版结构化运行包，包含场景、技能、公开线索、检查点、夜间中断和结局切面；`tests/test_gm_paper_chase_playthrough.py` 与 E2E HTTP 门禁覆盖和平、地下、死亡后逃离和理智失败的恢复骨架。真实模型完整局、浏览器视觉 E2E、战斗/追逐细化仍是本阶段未完成的退出条件，不能仅以该运行包视为发布完成。
 
 - 补齐该模组所需的调查路线、NPC 关系、关键线索恢复和多结局。
 - 只实现该模组需要的 CoC7 战斗、步行追逐、HP、SAN 和疯狂子集。
