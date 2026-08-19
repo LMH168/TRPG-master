@@ -1,6 +1,16 @@
 {
   "schema_version": 1,
   "initial_scene_id": "briefing",
+  "initial_location_id": "arnoldsburg",
+  "initial_world_time": "1920-09-15T17:30:00-04:00",
+  "location_labels": {
+    "arnoldsburg": "阿诺兹堡",
+    "library": "当地图书馆",
+    "newspaper": "报社档案室",
+    "kimball_house": "金博尔旧居",
+    "cemetery": "公共墓地",
+    "crypt": "地下地穴"
+  },
   "opening_narration": "禁酒令时期的美国密歇根州，阿诺兹堡镇笼罩在初秋的暮色里。托马斯·金博尔请你调查叔叔道格拉斯一年前的失踪，以及最近从旧居被盗的五本珍藏旧书。你站在镇口，手里攥着委托信，调查就从这里开始。",
   "initial_state": {
     "clues": ["stolen_books", "douglas_missing"],
@@ -14,6 +24,7 @@
     {"id": "library-use", "name": "图书馆使用", "base": 20, "purpose": "检索和理解书籍、报纸与档案", "typical_targets": ["图书馆", "报社", "日记"], "no_check_when": "资料索引清楚且可以慢慢查阅", "check_when": "时间紧迫或资料难以定位", "failure_consequence": "发现替代资料但耗费时间", "source_refs": ["coc7:skill:library-use"], "status": "implemented"},
     {"id": "track", "name": "追踪", "base": 10, "purpose": "辨认并跟随足迹或移动痕迹", "typical_targets": ["墓地", "道路"], "no_check_when": "痕迹清晰且没有干扰", "check_when": "痕迹模糊、陈旧或被覆盖", "failure_consequence": "获得较弱方向线索", "source_refs": ["coc7:skill:track"], "status": "implemented"},
     {"id": "charm", "name": "魅惑", "base": 15, "purpose": "以友善态度建立短暂信任", "typical_targets": ["邻居", "守墓人"], "no_check_when": "对方没有理由拒绝且不影响后果", "check_when": "对方戒备且情报重要", "failure_consequence": "对方保留信息但不会凭空敌对", "source_refs": ["coc7:skill:charm"], "status": "implemented"},
+    {"id": "luck", "name": "幸运", "base": 50, "purpose": "判断不受调查员能力控制的偶然机会", "typical_targets": ["夜间守候"], "no_check_when": "结果不依赖偶然性", "check_when": "模组明确要求以幸运决定事件是否发生", "failure_consequence": "按模组提供失败前进结果", "source_refs": ["coc7:luck"], "status": "implemented"},
     {"id": "sanity", "name": "理智", "base": 50, "purpose": "面对超自然现象时保持理智", "typical_targets": ["食尸鬼", "超自然真相"], "no_check_when": "没有直接看到或理解超自然现象", "check_when": "首次直面危险超自然事实", "failure_consequence": "扣除理智并可能进入临时疯狂", "source_refs": ["coc7:sanity"], "status": "implemented"}
   ],
   "scenes": [
@@ -41,15 +52,31 @@
     {"id": "douglas_truth", "text": "道格拉斯保留记忆并主动选择了地下生活。", "visibility": "public"},
     {"id": "ghouls_leaving", "text": "地下群体将关闭入口，道格拉斯不会再回来。", "visibility": "public"}
   ],
+  "disclosure_guards": [
+    {"term": "人影", "requires_any_clues": ["night_silhouette"]},
+    {"term": "异常足迹", "requires_any_clues": ["old_report", "tunnel_hint"]},
+    {"term": "墓穴入口", "requires_any_clues": ["tunnel_hint"]},
+    {"term": "地穴", "requires_any_clues": ["tunnel_hint"]},
+    {"term": "食尸鬼", "requires_any_clues": ["hilda_statement", "douglas_truth"]},
+    {"term": "腐土生物", "requires_any_clues": ["hilda_statement"]},
+    {"term": "地下群体", "requires_any_clues": ["douglas_truth", "ghouls_leaving"]},
+    {"term": "耳机", "requires_any_clues": []}
+  ],
   "checkpoints": [
-    {"id": "ask_neighbors", "scene_id": "neighbors", "skill": "charm", "success_clues": ["douglas_cemetery"], "failure_clues": ["douglas_cemetery"]},
-    {"id": "library_research", "scene_id": "library", "skill": "library-use", "success_clues": ["old_report"], "failure_clues": ["old_report"]},
-    {"id": "newspaper_archive", "scene_id": "newspaper", "skill": "library-use", "success_clues": ["hilda_statement"], "failure_clues": ["old_report"]},
-    {"id": "search_study", "scene_id": "kimball_house", "skill": "spot-hidden", "success_clues": ["diary_choice", "tunnel_hint"], "failure_clues": ["tunnel_hint"]},
-    {"id": "read_diary", "scene_id": "kimball_house", "skill": "library-use", "success_clues": ["tunnel_hint", "diary_choice"], "failure_clues": ["tunnel_hint"]},
-    {"id": "gravekeeper", "scene_id": "cemetery", "skill": "charm", "success_clues": ["favorite_grave", "night_silhouette"], "failure_clues": ["favorite_grave"]},
-    {"id": "track_grave", "scene_id": "cemetery", "skill": "track", "success_clues": ["tunnel_hint"], "failure_clues": ["favorite_grave"]},
-    {"id": "night_watch", "scene_id": "cemetery", "skill": "luck", "success_clues": ["night_silhouette"], "failure_clues": ["night_silhouette"]}
+    {"id": "ask_neighbors", "scene_id": "neighbors", "targets": ["neighbors"], "label": "向朋友和邻居打听道格拉斯", "aliases": ["询问邻居", "向邻居打听"], "skill": "charm", "success_clues": ["douglas_cemetery"], "failure_clues": ["douglas_cemetery"]},
+    {"id": "library_research", "scene_id": "library", "targets": ["old_newspapers", "bookshelf"], "label": "查阅图书馆资料", "aliases": ["调查图书馆", "查旧报纸"], "skill": "library-use", "success_clues": ["old_report"], "failure_clues": ["old_report"]},
+    {"id": "newspaper_archive", "scene_id": "newspaper", "targets": ["newspaper_archive", "hilda"], "label": "查阅报社档案", "aliases": ["调查报社", "查档案"], "skill": "library-use", "success_clues": ["hilda_statement"], "failure_clues": ["old_report"]},
+    {"id": "search_study", "scene_id": "kimball_house", "targets": ["desk", "empty_shelf"], "label": "仔细搜查书房", "aliases": ["侦察书房", "检查书房"], "skill": "spot-hidden", "success_clues": ["diary_choice", "tunnel_hint"], "failure_clues": ["tunnel_hint"]},
+    {"id": "read_diary", "scene_id": "kimball_house", "targets": ["read_diary"], "label": "研读道格拉斯的日记", "aliases": ["阅读日记", "调查日记"], "skill": "library-use", "success_clues": ["tunnel_hint", "diary_choice"], "failure_clues": ["tunnel_hint"]},
+    {"id": "gravekeeper", "scene_id": "cemetery", "targets": ["gravekeeper"], "label": "与守墓人交谈并打听道格拉斯", "aliases": ["询问守墓人", "和守墓人交流"], "skill": "charm", "success_clues": ["favorite_grave", "night_silhouette"], "failure_clues": ["favorite_grave"]},
+    {"id": "track_grave", "scene_id": "cemetery", "targets": ["headstone", "track_grave"], "requires_clues": ["favorite_grave"], "label": "检查道格拉斯常去的墓碑及周围痕迹", "aliases": ["检查墓碑", "侦察墓碑", "追踪墓碑附近的足迹"], "skill": "track", "success_clues": ["tunnel_hint"], "failure_clues": ["favorite_grave"]},
+    {"id": "night_watch", "scene_id": "cemetery", "targets": ["night_watch"], "label": "在夜间守候并观察墓地", "aliases": ["夜间监视墓地", "在墓地守候"], "skill": "luck", "available_hours": {"start": 20, "end": 6}, "success_outcome": {"clues": ["night_silhouette"], "scene_id": "confrontation", "advance_minutes": 60, "facts": ["你在墓地守候了一小时，看见道格拉斯常去的墓碑旁出现了一个人影。"]}, "failure_outcome": {"clues": ["night_silhouette"], "scene_id": "confrontation", "advance_minutes": 60, "facts": ["你在墓地守候了一小时。虽然夜色遮住了细节，你仍看见道格拉斯常去的墓碑旁出现了一个人影。"]}}
+  ],
+  "actions": [
+    {"scene_id": "confrontation", "action": "inspect_target", "target_id": "call_douglas", "label": "呼喊墓碑旁的人影", "aliases": ["呼喊道格拉斯", "叫住人影"], "requires_clues": ["night_silhouette"], "outcome": {"clues": ["tunnel_hint"], "scene_id": "douglas", "facts": ["墓碑旁的人影停下脚步并转过身来。借着月光，你认出他就是失踪的道格拉斯。"]}},
+    {"scene_id": "confrontation", "action": "inspect_target", "target_id": "attack_douglas", "label": "攻击墓碑旁的人影", "aliases": ["攻击人影"], "requires_clues": ["night_silhouette"]},
+    {"scene_id": "douglas", "action": "talk_to_npc", "target_id": "talk_douglas", "label": "与道格拉斯交谈", "aliases": ["和道格拉斯说话", "询问道格拉斯"], "requires_clues": ["night_silhouette"], "outcome": {"clues": ["douglas_truth", "ghouls_leaving"], "facts": ["道格拉斯告诉你，他仍然记得过去，并且是自己选择了现在的地下生活。他说地下的同伴很快会关闭入口，他不会再回来。"]}},
+    {"scene_id": "douglas", "action": "choose_option", "target_id": "peaceful_resolution", "label": "礼貌交谈后离开", "aliases": ["接受道格拉斯的选择并离开"], "requires_clues": ["douglas_truth"], "outcome": {"ending_id": "peaceful_resolution", "facts": ["你没有阻拦道格拉斯。他向你告别后回到地下，墓地重新归于寂静。"]}}
   ],
   "endings": [
     {"id": "peaceful_resolution", "label": "礼貌交谈后离开", "outcome": "resolved"},

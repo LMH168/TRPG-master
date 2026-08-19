@@ -3,12 +3,14 @@
 from datetime import timedelta
 from typing import Any
 
+import pytest
 from sqlalchemy import func, select
 
 from app.dto.gm import CommandEnvelope
 from app.models.gm import GameEvent, OutboxMessage
 from app.models.room import Room
-from app.service.gm_runtime import create_session, read_projection, submit_command
+from app.service.gm_ai import build_context_snapshot
+from app.service.gm_runtime import GmRuntimeError, create_session, read_projection, submit_command
 
 
 async def _room(db_session, room_id: str, actor_id: str) -> None:
@@ -267,6 +269,8 @@ async def test_night_watch_interrupt_and_failed_sanity_reach_asylum(
         "wait-204",
         {"kind": "wait_until", "target_time": now + timedelta(hours=2)},
     )
+    assert interrupted.narration_facts == ["时间从9月15日17:30推进到18:30。"]
+    assert all("T" not in fact for fact in interrupted.narration_facts)
     assert interrupted.projection.scene_id == "confrontation"
     started = await _command(
         db_session,
@@ -414,6 +418,121 @@ async def test_repeated_failed_checks_still_reach_recovery_route(db_session, mon
         {"kind": "move_actor", "target_id": "arnoldsburg"},
     )
     assert moved_back.projection.location_id == "arnoldsburg"
+
+
+async def test_checkpoint_outcome_advances_time_and_scene_from_module_data(
+    db_session, monkeypatch
+) -> None:
+    """检定失败也应按模组声明推进时间与场景，不依赖目标名称硬编码。"""
+
+    monkeypatch.setattr("app.service.gm_runtime.secrets.randbelow", lambda _limit: 99)
+    room_id, actor_id = "00000000-0000-0000-0000-000000000209", "actor-209"
+    await _room(db_session, room_id, actor_id)
+    moved = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        0,
+        "cemetery-209",
+        {"kind": "move_actor", "target_id": "cemetery"},
+    )
+    before_night = await build_context_snapshot(db_session, room_id=room_id, actor_id=actor_id)
+    assert not any(
+        candidate.target_id == "night_watch" for candidate in before_night.action_candidates
+    )
+    with pytest.raises(GmRuntimeError, match="当前场景或时间不可用"):
+        await _command(
+            db_session,
+            room_id,
+            actor_id,
+            moved.revision,
+            "early-watch-209",
+            {
+                "kind": "start_check",
+                "check_id": "early-watch-209",
+                "skill_id": "luck",
+                "goal": "night_watch",
+            },
+        )
+    waited = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        moved.revision,
+        "wait-night-209",
+        {
+            "kind": "wait_until",
+            "target_time": moved.projection.world_time + timedelta(hours=2, minutes=30),
+        },
+    )
+    at_night = await build_context_snapshot(db_session, room_id=room_id, actor_id=actor_id)
+    assert any(candidate.target_id == "night_watch" for candidate in at_night.action_candidates)
+    started = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        waited.revision,
+        "watch-check-209",
+        {
+            "kind": "start_check",
+            "check_id": "watch-check-209",
+            "skill_id": "luck",
+            "goal": "night_watch",
+        },
+    )
+    resolved = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        started.revision,
+        "watch-roll-209",
+        {"kind": "roll_check", "check_id": "watch-check-209"},
+    )
+
+    assert resolved.check is not None and resolved.check.success is False
+    assert resolved.projection.scene_id == "confrontation"
+    assert resolved.projection.world_time == waited.projection.world_time + timedelta(hours=1)
+    assert "night_silhouette" in resolved.projection.clues
+    assert any("人影" in fact for fact in resolved.narration_facts)
+
+    confrontation = await build_context_snapshot(db_session, room_id=room_id, actor_id=actor_id)
+    assert any(
+        candidate.target_id == "call_douglas" for candidate in confrontation.action_candidates
+    )
+    called = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        resolved.revision,
+        "call-209",
+        {"kind": "inspect_target", "target_id": "call_douglas"},
+    )
+    conversation = await build_context_snapshot(db_session, room_id=room_id, actor_id=actor_id)
+    assert called.projection.scene_id == "douglas"
+    assert any(
+        candidate.target_id == "talk_douglas" for candidate in conversation.action_candidates
+    )
+    talked = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        called.revision,
+        "talk-209",
+        {"kind": "talk_to_npc", "target_id": "talk_douglas", "topic": "询问去向"},
+    )
+    assert talked.projection.ending_id is None
+    assert "douglas_truth" in talked.projection.clues
+    assert any("自己选择" in fact for fact in talked.narration_facts)
+    ended = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        talked.revision,
+        "ending-209",
+        {"kind": "choose_option", "option_id": "peaceful_resolution"},
+    )
+    assert ended.projection.ending_id == "peaceful_resolution"
+    assert any("重新归于寂静" in fact for fact in ended.narration_facts)
 
 
 async def test_fault_point_retries_do_not_duplicate_events_or_outbox(db_session) -> None:

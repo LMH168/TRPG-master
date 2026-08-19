@@ -29,6 +29,7 @@ from app.dto.room import (
 )
 from app.models.chat import ChatMessage
 from app.models.content import Game, GameSystem, Scenario, World
+from app.models.gm import CommandReceipt, GameSession, TurnRun
 from app.models.room import Character, CharacterPortrait, Player, Room
 from app.models.user import User
 from app.service import chat as chat_service
@@ -714,8 +715,8 @@ async def list_conversation_events(
 ) -> list[RoomConversationEventRead]:
     """GET /api/v1/rooms/{roomId}/conversation —— 房间对话历史。
 
-    AI 主持历史已随旧 runtime 移除，目前只返回玩家讨论区消息。新 GM Agent
-    接入时应建立新的会话消息模型，不复用旧事件表。
+    GM 历史直接从已幂等持久化的 TurnRun/CommandReceipt 生成，避免再建一套
+    可能与权威回合失配的消息双写表。
     """
     await require_room_member(db, room_id, reconnect_token)
 
@@ -745,4 +746,116 @@ async def list_conversation_events(
         for message, nickname in chat_rows
     ]
 
-    return conversation
+    players = list(await db.scalars(select(Player).where(Player.room_id == room_id)))
+    characters = list(await db.scalars(select(Character).where(Character.room_id == room_id)))
+    player_names = {player.id: player.nickname for player in players}
+    character_names = {
+        character.player_id: character.name for character in characters if character.name
+    }
+    turn_rows = list(
+        await db.scalars(
+            select(TurnRun)
+            .where(TurnRun.room_id == room_id)
+            .order_by(TurnRun.created_at, TurnRun.id)
+        )
+    )
+    for turn in turn_rows:
+        nickname = player_names.get(turn.actor_id, "玩家")
+        conversation.append(
+            RoomConversationEventRead(
+                id=f"{turn.id}:action",
+                type="action.broadcast",
+                channel="action",
+                payload={
+                    "playerId": turn.actor_id,
+                    "clientActionId": turn.client_request_id,
+                    "nickname": nickname,
+                    "characterName": character_names.get(turn.actor_id),
+                    "utterance": turn.input_text,
+                },
+                created_at=turn.created_at,
+            )
+        )
+        result = turn.result_json or {}
+        narration = result.get("narration")
+        if result.get("status") == "clarification":
+            narration = result.get("clarification_question")
+        if isinstance(narration, str) and narration.strip():
+            conversation.append(
+                RoomConversationEventRead(
+                    id=f"{turn.id}:narration",
+                    type="narration.push",
+                    channel="action",
+                    payload={"messageId": turn.client_request_id, "text": narration},
+                    created_at=turn.created_at,
+                )
+            )
+
+    receipt_rows = list(
+        await db.scalars(
+            select(CommandReceipt)
+            .where(CommandReceipt.room_id == room_id)
+            .order_by(CommandReceipt.created_at, CommandReceipt.client_request_id)
+        )
+    )
+    game_session = await db.get(GameSession, room_id)
+    runtime = game_session.state_json.get("_runtime", {}) if game_session is not None else {}
+    skill_labels = (
+        {
+            str(skill.get("id")): str(skill.get("name"))
+            for skill in runtime.get("skills", [])
+            if isinstance(skill, dict) and skill.get("id") and skill.get("name")
+        }
+        if isinstance(runtime, dict)
+        else {}
+    )
+    for receipt in receipt_rows:
+        result = receipt.result_json
+        check = result.get("check")
+        if not isinstance(check, dict) or check.get("status") != "resolved":
+            continue
+        projection = result.get("projection", {})
+        actor_id = projection.get("actor_id") if isinstance(projection, dict) else None
+        actor_id = str(actor_id or "")
+        passed = bool(check.get("success"))
+        conversation.append(
+            RoomConversationEventRead(
+                id=receipt.client_request_id,
+                type="check.result",
+                channel="action",
+                payload={
+                    "clientActionId": receipt.client_request_id,
+                    "playerId": actor_id,
+                    "characterName": character_names.get(actor_id),
+                    "skillName": check.get("skill_label")
+                    or skill_labels.get(str(check.get("skill_id")))
+                    or check.get("skill_id"),
+                    "targetValue": check.get("target_value"),
+                    "rollValue": check.get("roll"),
+                    "result": "success" if passed else "failure",
+                    "passed": passed,
+                    "successLevel": "regular" if passed else "failure",
+                    "difficulty": check.get("difficulty", "regular"),
+                    "resolutionKind": "accept_result",
+                },
+                created_at=receipt.created_at,
+            )
+        )
+        narration = result.get("narration")
+        if isinstance(narration, str) and narration.strip():
+            conversation.append(
+                RoomConversationEventRead(
+                    id=f"{receipt.client_request_id}:narration",
+                    type="narration.push",
+                    channel="action",
+                    payload={
+                        "messageId": f"gm-check-narration-{receipt.client_request_id}",
+                        "text": narration,
+                    },
+                    created_at=receipt.created_at,
+                )
+            )
+
+    # 同一时刻保持玩家行动、骰子、守秘人回复的稳定顺序。
+    order = {"action.broadcast": 0, "check.result": 1, "narration.push": 2, "chat.message": 3}
+    return sorted(conversation, key=lambda event: (event.created_at, order[event.type], event.id))

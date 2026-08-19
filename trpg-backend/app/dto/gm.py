@@ -99,6 +99,14 @@ class DomainEventEnvelope(StrictCamelModel):
     payload: dict[str, object]
 
 
+class KnownLocationRead(StrictCamelModel):
+    """玩家已经知道的地点，不包含未解锁路线或守秘信息。"""
+
+    id: str
+    label: str
+    visited: bool = True
+
+
 class PlayerProjection(StrictCamelModel):
     """只包含当前玩家可见的稳定投影，不允许出现 keeper 字段。"""
 
@@ -114,6 +122,7 @@ class PlayerProjection(StrictCamelModel):
     pending_clarification: ClarificationRead | None = None
     scene_id: str | None = None
     scene_label: str | None = None
+    known_locations: list[KnownLocationRead] = Field(default_factory=list)
     clues: list[str] = Field(default_factory=list)
     hp: int | None = Field(default=None, ge=0)
     san: int | None = Field(default=None, ge=0)
@@ -134,6 +143,7 @@ class CheckRead(StrictCamelModel):
 
     check_id: str
     skill_id: str
+    skill_label: str | None = None
     difficulty: Literal["regular", "hard", "extreme"]
     status: Literal["awaiting_roll", "resolved"]
     roll: int | None = Field(default=None, ge=1, le=100)
@@ -152,6 +162,7 @@ class CommandResult(StrictCamelModel):
     pending_decisions: list[PendingDecision] = Field(default_factory=list)
     check: CheckRead | None = None
     narration_facts: list[str] = Field(default_factory=list)
+    narration: str | None = None
 
 
 class SessionCreateBody(StrictCamelModel):
@@ -218,6 +229,8 @@ class ActionCandidate(StrictCamelModel):
     target_id: str | None = None
     label: str = Field(min_length=1, max_length=200)
     aliases: list[str] = Field(default_factory=list)
+    # 检定技能来自会话冻结的模组，模型只能选择候选，不能自行决定技能。
+    skill_id: str | None = None
 
 
 class ContextSnapshot(StrictCamelModel):
@@ -257,7 +270,8 @@ class IntentResult(StrictCamelModel):
     """模型对玩家自然语言的结构化理解，必须再经过确定性校验。"""
 
     kind: Literal["proposal", "clarification"]
-    summary: str = Field(min_length=1, max_length=500)
+    # summary 只用于调试，不参与权威执行；兼容模型在澄清时输出 null。
+    summary: str | None = Field(default=None, min_length=1, max_length=500)
     steps: list[IntentStep] = Field(default_factory=list, max_length=4)
     clarification_question: str | None = None
     clarification_options: list[str] = Field(default_factory=list)

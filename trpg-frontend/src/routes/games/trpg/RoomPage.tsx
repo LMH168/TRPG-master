@@ -186,6 +186,7 @@ interface Message {
 interface GmPendingCheck {
   checkId: string
   skillId: string
+  skillLabel?: string | null
   targetValue: number
 }
 
@@ -208,14 +209,17 @@ interface MapLocation {
 }
 
 const LOCATION_IMAGE_BY_ID: Record<string, string> = {
+  arnoldsburg: '/assets/rooms/play/location-arnoldsburg-streets.webp',
   arnoldsburg_streets: '/assets/rooms/play/location-arnoldsburg-streets.webp',
   thomas_office: '/assets/rooms/play/location-thomas-office.webp',
   neighborhood: '/assets/rooms/play/location-neighborhood.webp',
   cemetery: '/assets/rooms/play/location-cemetery.webp',
   library: '/assets/rooms/play/location-library.webp',
   newspaper_office: '/assets/rooms/play/location-newspaper-office.webp',
+  newspaper: '/assets/rooms/play/location-newspaper-office.webp',
   surveillance_point: '/assets/rooms/play/location-surveillance-point.webp',
   kimball_study: '/assets/rooms/play/location-kimball-study.webp',
+  kimball_house: '/assets/rooms/play/location-kimball-study.webp',
 }
 
 const GM_ENDING_LABELS: Record<string, string> = {
@@ -231,6 +235,17 @@ function mapLocationsFromPlayerView(
   gmProjection: PlayerProjection | null = null,
 ): MapLocation[] {
   if (!playerView) {
+    if (gmProjection?.knownLocations?.length) {
+      return gmProjection.knownLocations.map((location) => ({
+        id: location.id,
+        icon: '📍',
+        name: location.label,
+        desc: location.id === gmProjection.locationId ? '当前所在地点' : '已到访地点',
+        depth: 0,
+        visited: location.visited,
+        isCurrent: location.id === gmProjection.locationId,
+      }))
+    }
     if (gmProjection?.sceneLabel || gmProjection?.locationId) {
       return [{
         id: gmProjection.sceneId ?? gmProjection.locationId,
@@ -395,6 +410,13 @@ function formatRoomTime(value: string | Date): string {
   return new Date(value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
+/** 世界时间保留模组所在地的墙上时间，不转换成浏览器时区。 */
+function formatGmWorldTime(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value)
+  if (!match) return value
+  return `${Number(match[1])}年${Number(match[2])}月${Number(match[3])}日 ${match[4]}:${match[5]}`
+}
+
 function conversationMessageId(type: RoomConversationEvent['type'], id: string): string {
   return `history:${type}:${id}`
 }
@@ -456,7 +478,13 @@ const REVEAL_MAX_MS = 2400
 
 function mergeHistoricalMessages(current: Message[], history: Message[]): Message[] {
   const ids = new Set(current.flatMap((item) => (item.messageId ? [item.messageId] : [])))
-  return [...history.filter((item) => !item.messageId || !ids.has(item.messageId)), ...current]
+  const opening = current.filter((item) => item.messageId === 'gm-opening')
+  const live = current.filter((item) => item.messageId !== 'gm-opening')
+  return [
+    ...opening,
+    ...history.filter((item) => !item.messageId || !ids.has(item.messageId)),
+    ...live,
+  ]
 }
 
 function appendLiveMessage(current: Message[], message: Message): Message[] {
@@ -2073,15 +2101,17 @@ export default function RoomPage() {
       gmRevisionRef.current = projection.revision ?? session.projection.revision
       const openingNarration = session.openingNarration
       if (openingNarration) {
-        setMessages((current) => appendLiveMessage(current, {
-          type: 'narr',
-          channel: 'action',
-          messageId: 'gm-opening',
-          narrationId: 'gm-opening',
-          sender: '守秘人',
-          content: openingNarration,
-          time: formatRoomTime(new Date()),
-        }))
+        setMessages((current) => current.some((message) => message.messageId === 'gm-opening')
+          ? current
+          : [{
+              type: 'narr',
+              channel: 'action',
+              messageId: 'gm-opening',
+              narrationId: 'gm-opening',
+              sender: '守秘人',
+              content: openingNarration,
+              time: formatRoomTime(new Date()),
+            }, ...current])
       }
       const pending = projection.checks?.find((check) => check.status === 'awaiting_roll')
       setGmPendingCheck(pending ?? null)
@@ -2181,15 +2211,16 @@ export default function RoomPage() {
           if (typedResult.status === 'clarification') {
             const question = typedResult.clarificationQuestion ?? '请补充你要调查的目标'
             setGmClarification({ question, options: typedResult.clarificationOptions ?? [] })
-            setActionError(question)
-            setActionErrorIsGuidance(true)
+            // 澄清是守秘人对玩家的正常追问，不是系统错误；只在对话流中展示一次。
+            setActionError('')
+            setActionErrorIsGuidance(false)
           } else if (typedResult.narration || typedResult.commandResult?.narrationFacts?.length) {
             setGmClarification(null)
             const narration = typedResult.narration ?? typedResult.commandResult?.narrationFacts?.join(' ') ?? ''
             setMessages((current) => appendLiveMessage(current, {
               type: 'narr',
               channel: 'action',
-              messageId: `gm-${action.clientActionId}`,
+              messageId: conversationMessageId('narration.push', action.clientActionId),
               sender: '守秘人',
               content: narration,
               time: formatRoomTime(new Date()),
@@ -2277,6 +2308,7 @@ export default function RoomPage() {
           projection: PlayerProjection
           check?: { roll?: number | null; success?: boolean | null; skillId: string } | null
           narrationFacts?: string[]
+          narration?: string | null
         }>
       }
     }).gm
@@ -2297,20 +2329,35 @@ export default function RoomPage() {
       setGmProjection(result.projection)
       setGmPendingCheck(null)
       setTyping(false)
-      const text = result.narrationFacts?.join(' ') ?? (
+      const text = (result.narration ? result.narrationFacts?.[0] : result.narrationFacts?.join(' ')) ?? (
         result.check?.roll != null
           ? `${result.check.skillId} 检定骰点：${result.check.roll}`
           : '检定已结算'
       )
-      setMessages((current) => appendLiveMessage(current, {
-        type: 'dice',
-        channel: 'action',
-        messageId: `gm-check-${requestId}`,
-        sender: senderName,
-        content: text,
-        time: formatRoomTime(new Date()),
-        isSelf: true,
-      }))
+      setMessages((current) => {
+        const withDice = appendLiveMessage(current, {
+          type: 'dice',
+          channel: 'action',
+          messageId: conversationMessageId('check.result', requestId),
+          sender: senderName,
+          content: text,
+          time: formatRoomTime(new Date()),
+          isSelf: true,
+        })
+        return result.narration
+          ? appendLiveMessage(withDice, {
+              type: 'narr',
+              channel: 'action',
+              messageId: conversationMessageId(
+                'narration.push',
+                `gm-check-narration-${requestId}`,
+              ),
+              sender: '守秘人',
+              content: result.narration,
+              time: formatRoomTime(new Date()),
+            })
+          : withDice
+      })
     }).catch((error: unknown) => {
       setTyping(false)
       setActionError(friendlyErrorMessage(error, '投骰失败，请重试'))
@@ -2429,7 +2476,10 @@ export default function RoomPage() {
           <div className="room-play__module-title">{roomInfo?.moduleTitle || '当前模组'}</div>
           <div className="room-play__location" title={gmProjection?.sceneLabel || playerView?.scene.name || '场景同步中'}>
             <MapPin aria-hidden="true" />
-            <span>{gmProjection?.sceneLabel || playerView?.scene.name || '场景同步中'}</span>
+            <span>
+              {gmProjection?.sceneLabel || playerView?.scene.name || '场景同步中'}
+              {gmProjection?.worldTime ? ` · ${formatGmWorldTime(gmProjection.worldTime)}` : ''}
+            </span>
           </div>
         </div>
         <OnboardingTrigger className="room-play__guide-button" />
@@ -2590,6 +2640,41 @@ export default function RoomPage() {
           </div>
         )}
 
+        {/* 澄清属于 AI 主持回复。放进消息流并复用守秘人气泡，避免在输入框上方
+            以低对比度错误提示重复展示；选项仍是下一条玩家行动的快捷入口。 */}
+        {isActionChannel && gmClarification && !suspended && (
+          <div className="room-play__message room-play__message--narration animate-[msgIn_0.3s_ease]">
+            <div className="room-play__avatar room-play__avatar--keeper">
+              <img src="/assets/rooms/play/keeper-cat.webp" alt="" aria-hidden="true" />
+            </div>
+            <div className="room-play__message-body">
+              <div className="room-play__sender">守秘人</div>
+              <div className="room-play__message-card room-play__narration-card">
+                <div className="room-play__narration-text whitespace-pre-wrap">
+                  {gmClarification.question}
+                </div>
+                {gmClarification.options.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2" aria-label="守秘人提供的选项">
+                    {gmClarification.options.map((option) => (
+                      <button
+                        key={option}
+                        type="button"
+                        onClick={() => {
+                          setGmClarification(null)
+                          submitPlayerAction({ clientActionId: randomActionId(), utterance: option })
+                        }}
+                        className="rounded-sm border border-brass bg-[#fff8e8] px-2.5 py-1.5 text-sm text-brass-dark hover:bg-white"
+                      >
+                        {option}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Typing indicator。第一个片段到达后还没揭示出字的那一瞬间也留着它，
             避免出现一个空气泡。*/}
         {isActionChannel && (progressLabel !== null || typing || (streamingNarration !== null && streamingNarration.revealed === 0)) && (
@@ -2668,28 +2753,6 @@ export default function RoomPage() {
 
       {/* Input area */}
       <div className="room-play__composer">
-        {isActionChannel && gmClarification && !suspended && (
-          <div className="mb-2 px-1">
-            <p className="mb-1 text-[11px] text-[#8a642d]">{gmClarification.question}</p>
-            {gmClarification.options.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {gmClarification.options.map((option) => (
-                  <button
-                    key={option}
-                    type="button"
-                    onClick={() => {
-                      setGmClarification(null)
-                      submitPlayerAction({ clientActionId: randomActionId(), utterance: option })
-                    }}
-                    className="rounded-sm border border-brass bg-white px-2 py-1 text-[11px] text-brass-dark"
-                  >
-                    {option}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
         {gmEndingLabel && (
           <div
             aria-label="GM 结局"
@@ -2705,7 +2768,7 @@ export default function RoomPage() {
             onClick={rollGmPendingCheck}
             className="mb-2 w-full rounded-sm border border-brass bg-white py-2 text-sm font-semibold text-brass-dark"
           >
-            投掷 D100 · {gmPendingCheck.skillId}（目标值 {gmPendingCheck.targetValue}）
+            投掷 D100 · {gmPendingCheck.skillLabel ?? gmPendingCheck.skillId}（目标值 {gmPendingCheck.targetValue}）
           </button>
         )}
         {isActionChannel && !gmReady && !suspended && (
@@ -2993,6 +3056,11 @@ export default function RoomPage() {
             <span className="text-[10px] text-text-dim mt-1">
               {TIME_OF_DAY_LABELS[playerView.world.time_of_day]} ·{' '}
               {formatWorldTime(playerView.world.day_index, playerView.world.hour_of_day)}
+            </span>
+          )}
+          {!playerView?.world && gmProjection?.worldTime && (
+            <span className="text-[10px] text-text-dim mt-1">
+              {formatGmWorldTime(gmProjection.worldTime)}
             </span>
           )}
           </div>
