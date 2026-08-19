@@ -10,7 +10,7 @@ import os
 from collections.abc import Awaitable
 from typing import Literal
 
-from agents import Agent, OpenAIChatCompletionsModel, Runner, function_tool
+from agents import Agent, ModelSettings, OpenAIChatCompletionsModel, Runner, function_tool
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict
@@ -23,6 +23,16 @@ class SmokeOutput(BaseModel):
 
     status: Literal["ok"]
     tool_value: Literal["工具可用"]
+
+
+def _smoke_model_settings(provider: str) -> ModelSettings:
+    """让 smoke 与生产主持保持一致，关闭低延迟结构化调用的思考模式。"""
+
+    if provider == "deepseek":
+        return ModelSettings(extra_body={"thinking": {"type": "disabled"}})
+    if provider == "qwen":
+        return ModelSettings(extra_body={"enable_thinking": False})
+    return ModelSettings()
 
 
 async def _with_timeout[T](awaitable: Awaitable[T], timeout_seconds: float) -> T:
@@ -92,6 +102,7 @@ async def run_smoke() -> int:
             "然后只返回符合 schema 的 JSON 结果。"
         ),
         model=model,
+        model_settings=_smoke_model_settings(provider),
         tools=[read_only_probe],
         output_type=SmokeOutput,
     )

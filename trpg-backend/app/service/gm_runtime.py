@@ -100,7 +100,15 @@ _TARGETS = {
     },
     "library": {"old_newspapers", "bookshelf", "librarian"},
     "newspaper": {"newspaper_archive", "hilda"},
-    "kimball_house": {"desk", "empty_shelf", "search_study", "read_diary", "surveillance"},
+    "kimball_house": {
+        "desk",
+        "empty_shelf",
+        "search_study",
+        "read_diary",
+        "surveillance",
+        "lock_window",
+        "chase_thief",
+    },
     "cemetery": {
         "graveyard_gate",
         "headstone",
@@ -110,6 +118,7 @@ _TARGETS = {
         "open_crypt",
         "call_douglas",
         "attack_douglas",
+        "fight_ghouls",
         "leave",
     },
     "crypt": {"open_crypt", "follow_douglas", "talk_douglas", "leave"},
@@ -251,6 +260,8 @@ async def submit_command(
             state["next_interrupt_at"] = None
             if state.get("flags", {}).get("night_watch"):
                 state["scene_id"] = "confrontation"
+            elif state.get("flags", {}).get("window_watch"):
+                state["scene_id"] = "chase"
     elif command.kind == "move_actor":
         exits = _LOCATIONS.get(actor.location_id, set())
         if command.target_id not in exits:
@@ -532,6 +543,17 @@ def _apply_module_target(
             state["next_interrupt_at"] = (
                 datetime.fromisoformat(str(state["world_time"])) + timedelta(hours=1)
             ).isoformat()
+    elif target_id in {"surveillance", "lock_window"}:
+        state["scene_id"] = "kimball_house"
+        flags["window_watch"] = True
+        state["next_interrupt_at"] = (
+            datetime.fromisoformat(str(state["world_time"])) + timedelta(hours=1)
+        ).isoformat()
+    elif target_id == "chase_thief":
+        actor.location_id = "cemetery"
+        state["scene_id"] = "cemetery"
+        flags["window_watch"] = False
+        _add_clues(state, ["tunnel_hint"])
     elif target_id in {"call_douglas", "open_crypt", "follow_douglas"}:
         state["scene_id"] = "douglas" if target_id != "open_crypt" else "crypt"
         _add_clues(state, ["tunnel_hint"])
@@ -546,7 +568,11 @@ def _apply_module_target(
         state["ending_id"] = "follow_underground"
     elif target_id == "attack_douglas":
         flags["douglas_alive"] = False
+        flags["ghouls_active"] = True
         state["ending_id"] = "douglas_killed"
+    elif target_id == "fight_ghouls":
+        flags["ghouls_active"] = False
+        state["ending_id"] = state.get("ending_id") or "douglas_killed"
     elif target_id == "flee" or (target_id == "leave" and flags.get("douglas_alive") is False):
         state["ending_id"] = "flee"
 
