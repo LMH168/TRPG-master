@@ -9,6 +9,7 @@ import { CharacterTemplatesResource } from './resources/character-templates';
 import { CharactersResource } from './resources/characters';
 import { EndingsResource } from './resources/endings';
 import { GamesResource } from './resources/games';
+import { GmResource } from './resources/gm';
 import { InventoryResource } from './resources/inventory';
 import { ModulesResource } from './resources/modules';
 import { RoomSocket } from './resources/room-socket';
@@ -49,6 +50,7 @@ export class TrpgSdk {
   readonly auth: AuthResource;
   readonly characters: CharactersResource;
   readonly games: GamesResource;
+  readonly gm: GmResource;
   readonly endings: EndingsResource;
   readonly modules: ModulesResource;
   readonly inventory: InventoryResource;
@@ -62,6 +64,7 @@ export class TrpgSdk {
     this.auth = new AuthResource(client);
     this.characters = new CharactersResource(client);
     this.games = new GamesResource(client);
+    this.gm = new GmResource(client);
     this.endings = new EndingsResource(client);
     this.modules = new ModulesResource(client);
     this.inventory = new InventoryResource(client);

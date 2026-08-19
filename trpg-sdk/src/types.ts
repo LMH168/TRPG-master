@@ -135,6 +135,15 @@ export type {
   ChatMessageRead as ChatMessage,
   ChatSendPayload,
   ErrorPayload,
+  ActionCandidate,
+  ContextSnapshot,
+  GmTurnRead,
+  IntentResult,
+  IntentStep,
+  PlayerProjection,
+  SessionCreateBody,
+  SessionRead,
+  TurnInputBody,
 } from './generated/dto';
 
 /** GET /api/v1/me/rooms 返回项。 */
