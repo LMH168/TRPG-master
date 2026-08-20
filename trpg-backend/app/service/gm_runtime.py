@@ -171,6 +171,7 @@ async def create_session(
             version=pack.version,
             world_ref="coc7",
             content_schema_version=1,
+            content_hash=pack.content_hash,
             # 目录用于房间展示，runtime 是同一版本的结构化规则切片。
             content_json={"catalog": pack.catalog, "runtime": pack.runtime},
         )
@@ -206,6 +207,9 @@ async def create_session(
         room_id=room_id,
         module_id=scenario.id,
         module_version=pack.version,
+        content_hash=pack.content_hash,
+        ruleset_version="source-1",
+        ruleset_profile="paper_chase_phase1c",
         state_schema_version=1,
         state_json={
             "world_time": initial_world_time,
@@ -503,7 +507,9 @@ async def _narrate_committed_result(
 ) -> CommandResult:
     """检定已提交后生成玩家可见续写，失败时保留确定性事实。"""
 
-    snapshot = await build_context_snapshot(db, room_id=room_id, actor_id=actor_id)
+    snapshot = await build_context_snapshot(
+        db, room_id=room_id, actor_id=actor_id, purpose="narration"
+    )
     session = await db.get(GameSession, room_id)
     if session is None:
         return result
@@ -1027,6 +1033,9 @@ async def submit_free_text(
         if open_decision is not None:
             raise GmRuntimeError("请先完成当前待投骰检定")
         snapshot = await build_context_snapshot(db, room_id=room_id, actor_id=payload.actor_id)
+        # 保存模型实际看到的安全快照，便于复现原文片段选择和裁剪结果。
+        turn.context_json = snapshot.model_dump(mode="json")
+        await db.commit()
         interpreter, narrator = _agents()
         intent = validate_intent(snapshot, await interpreter.interpret(snapshot, payload.input))
         intent = guard_intent_coverage(snapshot, intent, payload.input)
@@ -1066,7 +1075,9 @@ async def submit_free_text(
         command_result = await submit_command(db, room_id=room_id, envelope=command)
         narration: str | None = None
         try:
-            refreshed = await build_context_snapshot(db, room_id=room_id, actor_id=payload.actor_id)
+            refreshed = await build_context_snapshot(
+                db, room_id=room_id, actor_id=payload.actor_id, purpose="narration"
+            )
             refreshed_session = await db.get(GameSession, room_id)
             forbidden_terms = (
                 _forbidden_narration_terms(refreshed_session.state_json)

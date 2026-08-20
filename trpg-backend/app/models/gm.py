@@ -20,6 +20,9 @@ class GameSession(Base):
     room_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
     module_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False)
     module_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    ruleset_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    ruleset_profile: Mapped[str] = mapped_column(String(100), nullable=False)
     state_schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     state_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     state_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
@@ -42,6 +45,7 @@ class ModuleVersion(Base):
     version: Mapped[str] = mapped_column(String(50), primary_key=True)
     world_ref: Mapped[str] = mapped_column(String(200), nullable=False)
     content_schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     content_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
@@ -83,6 +87,7 @@ class TurnRun(Base):
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="collecting")
     expected_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
     result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

@@ -8,8 +8,10 @@
   "runtime_pack_status": "not_built",
   "catalog_file": "catalog.json",
   "authors": ["夕影"],
+  "source_origin": "用户提供的作者文档",
   "source_file": "source/银之锁.docx",
   "source_sha256": "8b44348b338606cb3f0f48b57654bd52d6f61847531c9621178ccda5bccf5f6e",
   "license_status": "unconfirmed",
+  "license_notice": "保留作者署名；公开分发状态待项目方确认。",
   "capabilities": ["single_player", "puzzle", "inventory", "conditional_ending"]
 }

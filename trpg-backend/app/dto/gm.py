@@ -233,6 +233,48 @@ class ActionCandidate(StrictCamelModel):
     skill_id: str | None = None
 
 
+class SourceFragmentRead(StrictCamelModel):
+    """当前职责获准读取的一小段模组原文及其人工可追溯坐标。"""
+
+    fragment_id: str
+    content: str = Field(min_length=1, max_length=3000)
+    source_refs: list[str] = Field(min_length=1)
+
+
+class ContextSlice(StrictCamelModel):
+    """由权威状态确定性选出的结构化模组数据和必要原文片段。"""
+
+    structured_data: dict[str, object] = Field(default_factory=dict)
+    source_fragments: list[SourceFragmentRead] = Field(default_factory=list)
+    source_refs: list[str] = Field(default_factory=list)
+    visibility: Literal["player"] = "player"
+    revision: int = Field(ge=0)
+
+
+class RecentEvent(StrictCamelModel):
+    """最近事件窗口中的玩家可见事件，不包含内部命令载荷。"""
+
+    event_id: str
+    event_type: str
+    visible_content: str = Field(min_length=1, max_length=1000)
+
+
+class DerivedMemory(StrictCamelModel):
+    """从事件和权威状态派生的长期记忆，可按来源事件重新构建。"""
+
+    content: str = Field(min_length=1, max_length=1000)
+    source_event_ids: list[str] = Field(min_length=1)
+
+
+class PromptPack(StrictCamelModel):
+    """记录本次模型输入选择与裁剪结果，便于复现上下文。"""
+
+    purpose: Literal["intent", "narration"]
+    estimated_tokens: int = Field(ge=0)
+    selected_ids: list[str] = Field(default_factory=list)
+    trimmed_ids: list[str] = Field(default_factory=list)
+
+
 class ContextSnapshot(StrictCamelModel):
     """一次模型调用的不可变安全快照，记录模型实际被允许看到的内容。"""
 
@@ -246,6 +288,10 @@ class ContextSnapshot(StrictCamelModel):
     visible_facts: list[str] = Field(default_factory=list)
     action_candidates: list[ActionCandidate] = Field(default_factory=list)
     recent_event_ids: list[str] = Field(default_factory=list)
+    module_slice: ContextSlice | None = None
+    recent_events: list[RecentEvent] = Field(default_factory=list)
+    derived_memory: list[DerivedMemory] = Field(default_factory=list)
+    prompt_pack: PromptPack | None = None
 
 
 class IntentStep(StrictCamelModel):

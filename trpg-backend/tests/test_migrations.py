@@ -8,7 +8,8 @@ from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 PRE_CLEANUP_REVISION = "c7d8e9f0a1b2"
-HEAD_REVISION = "c2d3e4f5a6b7"
+PRE_CONTENT_FREEZE_REVISION = "c2d3e4f5a6b7"
+HEAD_REVISION = "c3d4e5f6a7b8"
 
 # 这些表承载账号、房间、角色、聊天、目录素材和生图，清理后必须继续存在。
 FOUNDATION_TABLES = {
@@ -186,4 +187,4 @@ def test_cleanup_migration_is_explicitly_irreversible(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "旧 AI 主持运行时清理不可逆" in result.stdout + result.stderr
-    assert _current_revision(database) == HEAD_REVISION
+    assert _current_revision(database) == PRE_CONTENT_FREEZE_REVISION

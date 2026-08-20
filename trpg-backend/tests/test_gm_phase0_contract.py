@@ -1,6 +1,7 @@
 """Phase 0 DTO 与预设 ModulePack 的最小契约测试。"""
 
 import asyncio
+import copy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from app.dto.gm import CommandEnvelope
 from app.models.gm import CheckRun, PendingDecisionRecord
 from app.models.room import Room
 from app.service.gm_runtime import create_session, submit_command
-from app.service.module_runtime import ModulePackError, load_preset
+from app.service.module_runtime import ModulePackError, _validate_runtime, load_preset
 from scripts.provider_smoke import _classify_error, _verify_control_flow
 from tests.helpers import bearer, create_room, reconnect, register
 
@@ -43,6 +44,49 @@ def test_paper_chase_preset_has_static_catalog() -> None:
     pack = load_preset("paper_chase")
     assert pack.title == "追书人"
     assert pack.catalog["story_pages"]
+    assert pack.runtime["schema_version"] == 2
+    assert pack.content_hash == pack.manifest["runtime_sha256"]
+
+
+def test_all_preset_sources_match_manifests() -> None:
+    """四份完整模组原文必须随仓库存在，并通过各自 manifest 哈希校验。"""
+
+    for module_id in ("paper_chase", "silver_lock", "forest_gap", "tuozidao"):
+        pack = load_preset(module_id)
+        assert pack.manifest["source_sha256"]
+
+
+def test_module_pack_rejects_source_hash_mismatch(tmp_path: Path) -> None:
+    """原文被替换但未更新 manifest 时必须拒绝加载，避免来源坐标失真。"""
+
+    (tmp_path / "source").mkdir()
+    (tmp_path / "source" / "module.pdf").write_bytes(b"changed")
+    (tmp_path / "manifest.json").write_text(
+        '{"module_id":"bad","title":"A","content_version":"v1",'
+        '"catalog_file":"catalog.json","source_file":"source/module.pdf",'
+        '"source_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}',
+        encoding="utf-8",
+    )
+    (tmp_path / "catalog.json").write_text('{"title":"A","story_pages":[]}', encoding="utf-8")
+    with pytest.raises(ModulePackError, match="原文哈希"):
+        from app.service.module_runtime import load_module_pack
+
+        load_module_pack(tmp_path)
+
+
+def test_module_pack_v2_rejects_duplicate_and_dangling_source_refs() -> None:
+    """v2 运行对象必须具有唯一 ID，且 fragment 来源引用必须存在。"""
+
+    runtime = load_preset("paper_chase").runtime
+    duplicate = copy.deepcopy(runtime)
+    duplicate["facts"].append(copy.deepcopy(duplicate["facts"][0]))
+    with pytest.raises(ModulePackError, match="重复 id"):
+        _validate_runtime(duplicate)
+
+    dangling = copy.deepcopy(runtime)
+    dangling["facts"][0]["source_refs"] = ["fragment:not-found"]
+    with pytest.raises(ModulePackError, match="来源引用不存在"):
+        _validate_runtime(dangling)
 
 
 def test_module_pack_rejects_invalid_catalog(tmp_path: Path) -> None:
