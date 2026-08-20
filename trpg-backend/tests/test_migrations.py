@@ -9,7 +9,7 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 PRE_CLEANUP_REVISION = "c7d8e9f0a1b2"
 PRE_CONTENT_FREEZE_REVISION = "c2d3e4f5a6b7"
-HEAD_REVISION = "c3d4e5f6a7b8"
+HEAD_REVISION = "d4e5f6a7b8c9"
 
 # 这些表承载账号、房间、角色、聊天、目录素材和生图，清理后必须继续存在。
 FOUNDATION_TABLES = {

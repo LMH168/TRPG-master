@@ -1,6 +1,7 @@
 """Phase 0 GM Kernel 的会话安装、Wait 命令和幂等回执服务。"""
 
 import copy
+import re
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -17,6 +18,7 @@ from app.dto.gm import (
     CommandEnvelope,
     CommandResult,
     DomainEventEnvelope,
+    EncounterRead,
     GmTurnRead,
     KnownLocationRead,
     PendingDecision,
@@ -49,6 +51,8 @@ from app.service.gm_ai import (
     guard_move_target,
     guard_narration,
     intent_step_to_command,
+    propose_adjudication,
+    validate_adjudication,
     validate_intent,
 )
 from app.service.module_runtime import ModulePackError, load_preset
@@ -84,60 +88,6 @@ def _agents() -> tuple[IntentInterpreter, Narrator]:
         settings = get_settings()
         _narrator = AgentsSdkNarrator(settings)
     return _intent_interpreter, _narrator
-
-
-# Phase 1A 只冻结《追书人》第一条单人调查需要的对象；后续完整 ModulePack
-# 会把同样的结构移入模组运行包，Kernel 仍只消费结构化定义。
-_LOCATIONS = {
-    "arnoldsburg": {"library", "newspaper", "kimball_house", "cemetery"},
-    "library": {"arnoldsburg", "newspaper"},
-    "newspaper": {"arnoldsburg", "library"},
-    "kimball_house": {"arnoldsburg", "cemetery"},
-    "cemetery": {"arnoldsburg", "kimball_house", "crypt"},
-    "crypt": {"cemetery"},
-}
-_TARGETS = {
-    "arnoldsburg": {
-        "town_sign",
-        "neighbors",
-        "library",
-        "newspaper",
-        "kimball_house",
-        "cemetery",
-    },
-    "library": {"old_newspapers", "bookshelf", "librarian"},
-    "newspaper": {"newspaper_archive", "hilda"},
-    "kimball_house": {
-        "desk",
-        "empty_shelf",
-        "search_study",
-        "read_diary",
-        "surveillance",
-        "lock_window",
-        "chase_thief",
-    },
-    "cemetery": {
-        "graveyard_gate",
-        "headstone",
-        "gravekeeper",
-        "track_grave",
-        "night_watch",
-        "open_crypt",
-        "call_douglas",
-        "attack_douglas",
-        "fight_ghouls",
-        "leave",
-    },
-    "crypt": {"open_crypt", "follow_douglas", "talk_douglas", "leave"},
-}
-_SKILLS = {
-    "spot-hidden": {"base": 25, "purpose": "发现不明显的物体、痕迹或异常"},
-    "library-use": {"base": 20, "purpose": "检索和理解图书馆、报纸与档案资料"},
-    "listen": {"base": 20, "purpose": "发现听觉上不明显的声音或动静"},
-    "persuade": {"base": 10, "purpose": "以合理承诺或论证说服他人"},
-    "charm": {"base": 15, "purpose": "以友善态度建立短暂信任"},
-    "sanity": {"base": 50, "purpose": "面对超自然现象时保持理智"},
-}
 
 
 async def create_session(
@@ -220,6 +170,18 @@ async def create_session(
             "clues": list(initial.get("clues", [])),
             "flags": dict(initial.get("flags", {})),
             "ending_id": None,
+            "scheduled_events": [],
+            "npc_states": {
+                str(npc["id"]): {
+                    "alive": True,
+                    "hp": int(npc.get("stats", {}).get("hp", 1)),
+                    "max_hp": int(npc.get("stats", {}).get("hp", 1)),
+                }
+                for npc in runtime.get("npcs", [])
+                if isinstance(npc, dict)
+                and isinstance(npc.get("id"), str)
+                and isinstance(npc.get("stats"), dict)
+            },
             # 运行包随会话冻结在数据库中；投影函数只挑选公开字段，不会返回此私有定义。
             "_runtime": runtime,
         },
@@ -227,6 +189,7 @@ async def create_session(
         created_at=now,
         updated_at=now,
     )
+    actor_hp = int(derived.get("HP", initial.get("hp", 10)))
     actor = RuntimeActor(
         id=actor_id,
         room_id=room_id,
@@ -234,10 +197,12 @@ async def create_session(
         location_id=initial_location,
         state_json={
             "alive": True,
-            "hp": int(derived.get("HP", initial.get("hp", 10))),
+            "hp": actor_hp,
+            "max_hp": actor_hp,
             "san": int(derived.get("SAN", initial.get("san", 50))),
             "luck": int(attributes.get("LUCK", 50)),
             "skills": dict(skills),
+            "attributes": dict(attributes),
             "items": list(equipment or initial.get("items", [])),
             "character_id": character.id if character is not None else None,
         },
@@ -294,26 +259,25 @@ async def submit_command(
         target_time = command.target_time
         if target_time <= current_time:
             raise GmRuntimeError("等待时间必须晚于当前世界时间")
-        # 定时威胁以最近边界打断等待，避免把世界时间直接跳过事件。
-        boundary = state.get("next_interrupt_at")
-        interrupted = boundary and current_time < datetime.fromisoformat(boundary) < target_time
-        effective_time = datetime.fromisoformat(boundary) if interrupted else target_time
+        scheduled = _next_scheduled_event(state, target_time)
+        effective_time = (
+            datetime.fromisoformat(str(scheduled["due_at"]))
+            if scheduled is not None
+            else target_time
+        )
         state["world_time"] = effective_time.isoformat()
         event_type = "time_advanced"
         event_payload = {
             "from": current_time.isoformat(),
             "to": effective_time.isoformat(),
-            "interrupted": bool(interrupted),
+            "interrupted": scheduled is not None,
         }
         narration_facts = [_format_time_change(current_time, effective_time)]
-        if interrupted:
-            state["next_interrupt_at"] = None
-            if state.get("flags", {}).get("night_watch"):
-                state["scene_id"] = "confrontation"
-            elif state.get("flags", {}).get("window_watch"):
-                state["scene_id"] = "chase"
+        if scheduled is not None:
+            narration_facts.extend(_apply_scheduled_event(state, actor, scheduled))
     elif command.kind == "move_actor":
-        exits = _LOCATIONS.get(actor.location_id, set())
+        location = _runtime_definition(state, "locations", actor.location_id)
+        exits = set(location.get("exits", [])) if location is not None else set()
         if command.target_id not in exits:
             raise GmRuntimeError("目标地点不是当前地点的合法出口")
         previous_location = actor.location_id
@@ -336,19 +300,22 @@ async def submit_command(
         event_payload = {"target_id": command.target_id, "topic": getattr(command, "topic", "")}
         runtime_facts = _apply_runtime_action_outcome(state, actor, command.kind, command.target_id)
         if runtime_facts is None:
-            narration_facts = [f"你完成了对 {command.target_id} 的行动。"]
-            _apply_module_target(state, actor, command.target_id, getattr(command, "topic", ""))
-        else:
-            narration_facts = runtime_facts
+            raise GmRuntimeError("模组没有声明该动作的权威效果")
+        narration_facts = runtime_facts
     elif command.kind == "start_check":
         skill = _skill_definition(state, command.skill_id)
         if skill is None:
             raise GmRuntimeError("技能未在当前规则切片中实现")
-        checkpoint = _checkpoint_definition(state, command.goal)
-        if checkpoint is not None and not _checkpoint_is_available(state, checkpoint):
+        checkpoint = _checkpoint_for_request(state, command.goal, command.skill_id)
+        if checkpoint is None:
+            raise GmRuntimeError("该检定未在当前场景声明")
+        if not _checkpoint_is_available(state, checkpoint):
             raise GmRuntimeError("该检定在当前场景或时间不可用")
-        if checkpoint is not None and checkpoint.get("skill") != command.skill_id:
+        if checkpoint.get("skill") != command.skill_id:
             raise GmRuntimeError("检定技能与模组声明不一致")
+        expected_difficulty = str(checkpoint.get("difficulty", "regular"))
+        if command.difficulty != expected_difficulty:
+            raise GmRuntimeError("检定难度与模组声明不一致")
         if await db.get(CheckRun, command.check_id) is not None:
             raise GmRuntimeError("check_id 已存在")
         target_value = _actor_check_value(actor, command.skill_id, int(skill["base"]))
@@ -358,10 +325,19 @@ async def submit_command(
             actor_id=actor.id,
             client_request_id=envelope.client_request_id,
             skill_id=command.skill_id,
-            goal=command.goal,
+            goal=str(checkpoint["id"]),
             difficulty=command.difficulty,
             status="awaiting_roll",
             target_value=target_value,
+            details_json={
+                "bonus_dice": int(checkpoint.get("bonus_dice", 0)),
+                "allow_luck": bool(checkpoint.get("allow_luck", False)),
+                "allow_push": bool(checkpoint.get("allow_push", False)),
+                "roll_values": [],
+                "luck_spent": 0,
+                "pushed": False,
+                "outcome_applied": False,
+            },
         )
         decision = PendingDecisionRecord(
             id=str(uuid.uuid4()),
@@ -393,40 +369,105 @@ async def submit_command(
             raise GmRuntimeError("检定已经结算，请重放原始 client_request_id 获取回执")
         if run.status != "awaiting_roll":
             raise GmRuntimeError("检定不在等待投骰状态")
-        roll = secrets.randbelow(100) + 1
-        multiplier = {"regular": 1, "hard": 0.5, "extreme": 0.2}[run.difficulty]
-        target_value = max(1, int(run.target_value * multiplier))
+        details = copy.deepcopy(run.details_json or {})
+        bonus_dice = int(details.get("bonus_dice", 0))
+        roll, roll_values = _roll_d100(bonus_dice)
+        level = _success_level(roll, run.target_value)
+        success = _passes_difficulty(level, run.difficulty)
         run.roll = roll
-        run.target_value = target_value
-        run.success = roll <= target_value
-        run.status = "resolved"
-        run.resolved_at = datetime.now(UTC)
+        run.success = success
+        details["roll_values"] = roll_values
+        details["success_level"] = level
+        details["final_result"] = success if success else None
+        run.details_json = details
         decision = await db.scalar(
             select(PendingDecisionRecord).where(PendingDecisionRecord.check_id == run.id)
         )
-        if decision:
-            decision.status = "resolved"
+        options = _post_roll_options(run, actor)
+        if success or not options:
+            run.status = "resolved"
+            run.resolved_at = datetime.now(UTC)
+            details["final_result"] = success
+            details["outcome_applied"] = True
+            run.details_json = details
+            if decision:
+                decision.status = "resolved"
+            narration_facts = _check_roll_facts(state, run)
+            narration_facts.extend(_apply_check_outcome(state, actor, run.goal, success))
+            event_type = "check_resolved"
+        else:
+            run.status = "awaiting_roll_decision"
+            if decision is None:
+                raise GmRuntimeError("检定待决策记录不存在")
+            decision.kind = "roll_decision"
+            decision.options = options
+            pending = [_pending_read(decision)]
+            narration_facts = _check_roll_facts(state, run)
+            event_type = "check_rolled"
+        check = _check_read(run, state)
+        event_payload = {
+            "check_id": run.id,
+            "roll": roll,
+            "target_value": run.target_value,
+            "success": success,
+            "success_level": level,
+        }
+    elif command.kind == "resolve_check":
+        run = await db.get(CheckRun, command.check_id, with_for_update=True)
+        if run is None or run.room_id != room_id or run.actor_id != actor.id:
+            raise GmRuntimeError("检定不存在")
+        if run.status != "awaiting_roll_decision":
+            raise GmRuntimeError("检定不在等待骰后选择状态")
+        decision = await db.scalar(
+            select(PendingDecisionRecord).where(PendingDecisionRecord.check_id == run.id)
+        )
+        if decision is None or command.option not in decision.options:
+            raise GmRuntimeError("该骰后选择当前不可用")
+        details = copy.deepcopy(run.details_json or {})
+        if command.option == "spend_luck":
+            cost = _luck_cost(run)
+            luck = int(actor.state_json.get("luck", 0))
+            if cost <= 0 or cost > luck:
+                raise GmRuntimeError("幸运不足或该结果不能花费幸运")
+            actor.state_json["luck"] = luck - cost
+            details["luck_spent"] = cost
+            details["success_level"] = _required_success_level(run.difficulty)
+            run.success = True
+        elif command.option == "push":
+            if not command.revised_method or not command.revised_method.strip():
+                raise GmRuntimeError("强推必须说明改变后的做法")
+            pushed_roll, pushed_values = _roll_d100(int(details.get("bonus_dice", 0)))
+            run.roll = pushed_roll
+            details["roll_values"] = [*details.get("roll_values", []), *pushed_values]
+            details["success_level"] = _success_level(pushed_roll, run.target_value)
+            details["pushed"] = True
+            details["revised_method"] = command.revised_method.strip()
+            run.success = _passes_difficulty(str(details["success_level"]), run.difficulty)
+        else:
+            run.success = False
+        run.status = "resolved"
+        run.resolved_at = datetime.now(UTC)
+        details["final_result"] = bool(run.success)
+        details["outcome_applied"] = True
+        run.details_json = details
+        decision.status = "resolved"
         check = _check_read(run, state)
         event_type = "check_resolved"
         event_payload = {
             "check_id": run.id,
-            "roll": roll,
-            "target_value": target_value,
-            "success": run.success,
+            "roll": run.roll,
+            "target_value": run.target_value,
+            "success": bool(run.success),
+            "success_level": details.get("success_level"),
+            "option": command.option,
         }
-        narration_facts = [
-            f"{_skill_fact_label(state, run.skill_id)}检定"
-            f"{'成功' if run.success else '失败'}，"
-            f"骰点为 {roll}，目标值为 {target_value}。"
-        ]
+        narration_facts = _check_roll_facts(state, run)
         narration_facts.extend(_apply_check_outcome(state, actor, run.goal, bool(run.success)))
     elif command.kind == "choose_option":
         runtime_facts = _apply_runtime_action_outcome(state, actor, command.kind, command.option_id)
         if runtime_facts is None:
-            _apply_module_target(state, actor, command.option_id, command.option_id)
-            narration_facts = []
-        else:
-            narration_facts = runtime_facts
+            raise GmRuntimeError("模组没有声明该剧情选择")
+        narration_facts = runtime_facts
         if state.get("ending_id") is None:
             raise GmRuntimeError("该剧情选择当前不可用")
         event_type = "ending_committed"
@@ -513,28 +554,32 @@ async def _narrate_committed_result(
     session = await db.get(GameSession, room_id)
     if session is None:
         return result
-    _interpreter, narrator = _agents()
     narration: str | None = None
-    # 只重试无副作用的叙事生成；权威检定、事件和回执已经提交，绝不重复执行。
-    for _attempt in range(2):
-        try:
-            draft = await narrator.narrate(
-                snapshot.model_copy(update={"action_candidates": []}),
-                [event.event_id for event in result.events],
-                result.narration_facts,
-            )
-            narration = guard_narration(
-                draft,
-                committed_event_ids=[event.event_id for event in result.events],
-                visible_facts=[*snapshot.visible_facts, *result.narration_facts],
-                forbidden_terms=[
-                    *_forbidden_narration_terms(session.state_json),
-                    *_time_narration_forbidden_terms(snapshot.world_time),
-                ],
-            ).text
-            break
-        except (GmModelUnavailable, ValueError):
-            continue
+    try:
+        _interpreter, narrator = _agents()
+    except GmModelUnavailable:
+        narrator = None
+    if narrator is not None:
+        # 只重试无副作用的叙事生成；权威检定、事件和回执已经提交，绝不重复执行。
+        for _attempt in range(2):
+            try:
+                draft = await narrator.narrate(
+                    snapshot.model_copy(update={"action_candidates": []}),
+                    [event.event_id for event in result.events],
+                    result.narration_facts,
+                )
+                narration = guard_narration(
+                    draft,
+                    committed_event_ids=[event.event_id for event in result.events],
+                    visible_facts=[*snapshot.visible_facts, *result.narration_facts],
+                    forbidden_terms=[
+                        *_forbidden_narration_terms(session.state_json),
+                        *_time_narration_forbidden_terms(snapshot.world_time),
+                    ],
+                ).text
+                break
+            except (GmModelUnavailable, ValueError):
+                continue
     if narration is None:
         # 模型失败或被安全门禁拒绝时，仍用已提交的公开后果继续对话；
         # 不重新投骰，也不把未验证的模型文本发给玩家。
@@ -559,7 +604,7 @@ def _pending_read(record: PendingDecisionRecord) -> PendingDecision:
 
     return PendingDecision(
         decision_id=record.id,
-        kind="roll_check",
+        kind=cast(Literal["roll_check", "roll_decision"], record.kind),
         check_id=record.check_id,
         options=list(record.options),
     )
@@ -568,15 +613,22 @@ def _pending_read(record: PendingDecisionRecord) -> PendingDecision:
 def _check_read(run: CheckRun, state: dict[str, Any] | None = None) -> CheckRead:
     """把检定内部记录转换为玩家可见结果。"""
 
+    details = run.details_json or {}
     return CheckRead(
         check_id=run.id,
         skill_id=run.skill_id,
         skill_label=_skill_label(state, run.skill_id) if state is not None else None,
         difficulty=cast(Literal["regular", "hard", "extreme"], run.difficulty),
-        status=cast(Literal["awaiting_roll", "resolved"], run.status),
+        status=cast(Literal["awaiting_roll", "awaiting_roll_decision", "resolved"], run.status),
         roll=run.roll,
         target_value=run.target_value,
         success=run.success,
+        success_level=details.get("success_level"),
+        bonus_dice=int(details.get("bonus_dice", 0)),
+        roll_values=[int(value) for value in details.get("roll_values", [])],
+        luck_spent=int(details.get("luck_spent", 0)),
+        pushed=bool(details.get("pushed", False)),
+        final_result=details.get("final_result"),
     )
 
 
@@ -625,6 +677,11 @@ def _projection(session: GameSession, actor: RuntimeActor) -> PlayerProjection:
         clues=list(session.state_json.get("clues", [])),
         hp=actor.state_json.get("hp"),
         san=actor.state_json.get("san"),
+        luck=actor.state_json.get("luck"),
+        major_wound=bool(actor.state_json.get("major_wound", False)),
+        unconscious=bool(actor.state_json.get("unconscious", False)),
+        temporary_insanity=bool(actor.state_json.get("temporary_insanity", False)),
+        encounter=_encounter_read(session.state_json.get("encounter")),
         ending_id=session.state_json.get("ending_id"),
     )
 
@@ -665,14 +722,32 @@ def _time_narration_forbidden_terms(world_time: datetime) -> tuple[str, ...]:
 
 
 def _skill_definition(state: dict[str, Any], skill_id: str) -> dict[str, Any] | None:
-    """优先读取会话冻结的模组技能，兼容旧测试仍使用的内置规则切片。"""
+    """从会话冻结的规则切片读取技能定义。"""
 
     runtime = state.get("_runtime", {})
     if isinstance(runtime, dict):
         for skill in runtime.get("skills", []):
             if isinstance(skill, dict) and skill.get("id") == skill_id:
                 return skill
-    return _SKILLS.get(skill_id)
+    return None
+
+
+def _runtime_definition(
+    state: dict[str, Any], collection: str, object_id: str
+) -> dict[str, Any] | None:
+    """按稳定 ID 读取冻结运行包对象，Kernel 不识别任何模组专名。"""
+
+    runtime = state.get("_runtime", {})
+    if not isinstance(runtime, dict):
+        return None
+    return next(
+        (
+            cast(dict[str, Any], item)
+            for item in runtime.get(collection, [])
+            if isinstance(item, dict) and item.get("id") == object_id
+        ),
+        None,
+    )
 
 
 def _location_label(state: dict[str, Any], location_id: str) -> str:
@@ -723,6 +798,11 @@ def _actor_check_value(actor: RuntimeActor, skill_id: str, fallback: int) -> int
         return int(actor.state_json.get("luck", fallback))
     if skill_id == "sanity":
         return int(actor.state_json.get("san", fallback))
+    attribute_ids = {"strength": "STR", "constitution": "CON", "dexterity": "DEX"}
+    attributes = actor.state_json.get("attributes", {})
+    attribute_id = attribute_ids.get(skill_id)
+    if attribute_id and isinstance(attributes, dict):
+        return int(attributes.get(attribute_id, fallback))
     skills = actor.state_json.get("skills", {})
     return int(skills.get(skill_id, fallback)) if isinstance(skills, dict) else fallback
 
@@ -730,22 +810,52 @@ def _actor_check_value(actor: RuntimeActor, skill_id: str, fallback: int) -> int
 def _target_is_available(
     state: dict[str, Any], actor: RuntimeActor, action: str, target_id: str
 ) -> bool:
-    """同时兼容旧内置对象和运行包声明的当前场景动作。"""
+    """校验动作声明、当前场景、前置线索和目标存活状态。"""
 
-    if target_id in _TARGETS.get(actor.location_id, set()):
-        return True
     runtime = state.get("_runtime", {})
     if not isinstance(runtime, dict):
         return False
     owned_clues = set(state.get("clues", []))
-    return any(
-        isinstance(item, dict)
-        and item.get("scene_id") == state.get("scene_id")
-        and item.get("action") == action
-        and item.get("target_id") == target_id
-        and set(item.get("requires_clues", [])) <= owned_clues
-        for item in runtime.get("actions", [])
+    definition = next(
+        (
+            item
+            for item in runtime.get("actions", [])
+            if isinstance(item, dict)
+            and item.get("scene_id") == state.get("scene_id")
+            and item.get("action") == action
+            and item.get("target_id") == target_id
+            and set(item.get("requires_clues", [])) <= owned_clues
+        ),
+        None,
     )
+    if definition is None:
+        return _visible_runtime_target(state, actor, action, target_id)
+    npc_id = definition.get("npc_id")
+    npc_states = state.get("npc_states", {})
+    return not (
+        isinstance(npc_id, str)
+        and isinstance(npc_states, dict)
+        and npc_states.get(npc_id, {}).get("alive") is False
+    )
+
+
+def _visible_runtime_target(
+    state: dict[str, Any], actor: RuntimeActor, action: str, target_id: str
+) -> bool:
+    """允许对当前地点公开对象或存活 NPC 提出无副作用的开放行动。"""
+
+    collection = "npcs" if action == "talk_to_npc" else "objects"
+    target = _runtime_definition(state, collection, target_id)
+    if target is None or target.get("location_id") != actor.location_id:
+        return False
+    if not set(target.get("requires_clues", [])) <= set(state.get("clues", [])):
+        return False
+    if collection == "npcs":
+        npc_states = state.get("npc_states", {})
+        return not (
+            isinstance(npc_states, dict) and npc_states.get(target_id, {}).get("alive") is False
+        )
+    return True
 
 
 def _apply_runtime_action_outcome(
@@ -770,25 +880,17 @@ def _apply_runtime_action_outcome(
         None,
     )
     if definition is None:
+        if _visible_runtime_target(state, actor, action, target_id):
+            label = _runtime_definition(
+                state, "npcs" if action == "talk_to_npc" else "objects", target_id
+            )
+            display = (label or {}).get("name") or (label or {}).get("label") or target_id
+            return [f"你完成了对{display}的行动；没有产生额外的权威状态变化。"]
         return None
     outcome = definition.get("outcome", {})
     if not isinstance(outcome, dict):
         return []
-    _add_clues(state, [str(clue) for clue in outcome.get("clues", [])])
-    scene_id = outcome.get("scene_id")
-    if isinstance(scene_id, str):
-        state["scene_id"] = scene_id
-    location_id = outcome.get("location_id")
-    if isinstance(location_id, str):
-        actor.location_id = location_id
-        state["location_id"] = location_id
-        known_locations = state.setdefault("known_locations", [])
-        if isinstance(known_locations, list) and location_id not in known_locations:
-            known_locations.append(location_id)
-    ending_id = outcome.get("ending_id")
-    if isinstance(ending_id, str):
-        state["ending_id"] = ending_id
-    return [str(fact) for fact in outcome.get("facts", [])]
+    return _apply_effects(state, actor, outcome)
 
 
 def _checkpoint_label(state: dict[str, Any], checkpoint_id: str) -> str:
@@ -813,12 +915,42 @@ def _checkpoint_definition(state: dict[str, Any], checkpoint_id: str) -> dict[st
     return None
 
 
+def _checkpoint_for_request(
+    state: dict[str, Any], goal: str, skill_id: str
+) -> dict[str, Any] | None:
+    """按 ID 优先解析检定；同场景同技能唯一时兼容玩家可读目标。"""
+
+    direct = _checkpoint_definition(state, goal)
+    if direct is not None:
+        return direct
+    runtime = state.get("_runtime", {})
+    if not isinstance(runtime, dict):
+        return None
+    matches = [
+        item
+        for item in runtime.get("checkpoints", [])
+        if isinstance(item, dict)
+        and item.get("scene_id") == state.get("scene_id")
+        and item.get("skill") == skill_id
+        and _checkpoint_is_available(state, item)
+    ]
+    return cast(dict[str, Any], matches[0]) if len(matches) == 1 else None
+
+
 def _checkpoint_is_available(state: dict[str, Any], checkpoint: dict[str, Any]) -> bool:
     """在 Engine 内重新校验场景、线索与时段，不信任模型候选。"""
 
     if checkpoint.get("scene_id") != state.get("scene_id"):
         return False
     if not set(checkpoint.get("requires_clues", [])) <= set(state.get("clues", [])):
+        return False
+    npc_id = checkpoint.get("npc_id")
+    npc_states = state.get("npc_states", {})
+    if (
+        isinstance(npc_id, str)
+        and isinstance(npc_states, dict)
+        and npc_states.get(npc_id, {}).get("alive") is False
+    ):
         return False
     window = checkpoint.get("available_hours")
     if not isinstance(window, dict):
@@ -860,74 +992,266 @@ def _add_clues(state: dict[str, Any], clues: list[str]) -> None:
             owned.append(clue)
 
 
-def _apply_module_target(
-    state: dict[str, Any], actor: RuntimeActor, target_id: str, topic: str
-) -> None:
-    """按《追书人》运行包的公开动作规则推进线索和路线标记。"""
+def _roll_d100(bonus_dice: int = 0) -> tuple[int, list[int]]:
+    """由服务端生成 D100；奖惩骰共享个位并选择最低或最高结果。"""
 
-    flags_value = state.setdefault("flags", {})
-    if not isinstance(flags_value, dict):
-        flags = {}
-        state["flags"] = flags
-    else:
-        flags = cast(dict[str, Any], flags_value)
-    if target_id in {"neighbors", "ask_neighbors"}:
-        state["scene_id"] = "neighbors"
-        _add_clues(state, ["douglas_cemetery"])
-    elif target_id in {"library", "library_research"}:
-        state["scene_id"] = "library"
-        _add_clues(state, ["old_report"])
-    elif target_id in {"newspaper", "newspaper_archive"}:
-        state["scene_id"] = "newspaper"
-        _add_clues(state, ["hilda_statement"])
-    elif target_id in {"search_study", "read_diary"}:
-        state["scene_id"] = "kimball_house"
-        _add_clues(state, ["diary_choice", "tunnel_hint"])
-    elif target_id in {"gravekeeper", "track_grave", "night_watch"}:
-        state["scene_id"] = "cemetery"
-        _add_clues(state, ["favorite_grave", "night_silhouette"])
-        if target_id == "night_watch":
-            state["flags"]["night_watch"] = True
-            state["next_interrupt_at"] = (
-                datetime.fromisoformat(str(state["world_time"])) + timedelta(hours=1)
-            ).isoformat()
-    elif target_id in {"surveillance", "lock_window"}:
-        state["scene_id"] = "kimball_house"
-        flags["window_watch"] = True
-        state["next_interrupt_at"] = (
-            datetime.fromisoformat(str(state["world_time"])) + timedelta(hours=1)
-        ).isoformat()
-    elif target_id == "chase_thief":
-        actor.location_id = "cemetery"
-        state["scene_id"] = "cemetery"
-        flags["window_watch"] = False
-        _add_clues(state, ["tunnel_hint"])
-    elif target_id in {"call_douglas", "open_crypt", "follow_douglas"}:
-        state["scene_id"] = "douglas" if target_id != "open_crypt" else "crypt"
-        _add_clues(state, ["tunnel_hint"])
-    elif target_id in {"talk_douglas", "douglas"} or "礼貌" in topic:
-        state["scene_id"] = "douglas"
-        _add_clues(state, ["douglas_truth", "ghouls_leaving"])
-        flags["douglas_conversation_completed"] = True
-        state["ending_id"] = "peaceful_resolution"
-    elif target_id == "peaceful_resolution":
-        state["ending_id"] = "peaceful_resolution"
-    elif target_id == "follow_underground":
-        state["ending_id"] = "follow_underground"
-    elif target_id == "attack_douglas":
-        flags["douglas_alive"] = False
-        flags["ghouls_active"] = True
-    elif target_id == "fight_ghouls":
-        flags["ghouls_active"] = False
-        state["ending_id"] = state.get("ending_id") or "douglas_killed"
-    elif target_id == "flee" or (target_id == "leave" and flags.get("douglas_alive") is False):
-        state["ending_id"] = "flee"
+    if bonus_dice == 0:
+        roll = secrets.randbelow(100) + 1
+        return roll, [roll]
+    ones = secrets.randbelow(10)
+    rolls = []
+    for _index in range(abs(bonus_dice) + 1):
+        tens = secrets.randbelow(10)
+        value = tens * 10 + ones
+        rolls.append(100 if value == 0 else value)
+    return (min(rolls) if bonus_dice > 0 else max(rolls)), rolls
+
+
+def _success_level(roll: int, target: int) -> str:
+    """按 CoC7 阈值计算大成功、极难、困难、常规、失败或大失败。"""
+
+    if roll == 1:
+        return "critical"
+    if roll == 100 or (target < 50 and roll >= 96):
+        return "fumble"
+    if roll <= max(1, target // 5):
+        return "extreme"
+    if roll <= max(1, target // 2):
+        return "hard"
+    if roll <= target:
+        return "regular"
+    return "failure"
+
+
+def _passes_difficulty(level: str, difficulty: str) -> bool:
+    """判断成功等级是否满足当前检定难度。"""
+
+    rank = {"fumble": 0, "failure": 0, "regular": 1, "hard": 2, "extreme": 3, "critical": 4}
+    required = {"regular": 1, "hard": 2, "extreme": 3}
+    return rank.get(level, 0) >= required[difficulty]
+
+
+def _required_success_level(difficulty: str) -> str:
+    """把难度转换为花费幸运后显示的最低成功等级。"""
+
+    return {"regular": "regular", "hard": "hard", "extreme": "extreme"}[difficulty]
+
+
+def _luck_cost(run: CheckRun) -> int:
+    """计算把当前失败骰点降到难度阈值所需的幸运点。"""
+
+    details = run.details_json or {}
+    if run.roll is None or details.get("success_level") == "fumble" or details.get("pushed"):
+        return 0
+    divisor = {"regular": 1, "hard": 2, "extreme": 5}[run.difficulty]
+    return max(0, run.roll - max(1, run.target_value // divisor))
+
+
+def _post_roll_options(run: CheckRun, actor: RuntimeActor) -> list[str]:
+    """根据检定种类和角色资源生成可恢复的骰后选择。"""
+
+    details = run.details_json or {}
+    if not details.get("allow_luck") and not details.get("allow_push"):
+        return []
+    options = ["accept_failure"]
+    cost = _luck_cost(run)
+    if details.get("allow_luck") and 0 < cost <= int(actor.state_json.get("luck", 0)):
+        options.append("spend_luck")
+    if details.get("allow_push") and not details.get("pushed"):
+        options.append("push")
+    return options
+
+
+def _check_roll_facts(state: dict[str, Any], run: CheckRun) -> list[str]:
+    """把权威骰点转换为 Narrator 可复述的确定性事实。"""
+
+    details = run.details_json or {}
+    level_labels = {
+        "critical": "大成功",
+        "extreme": "极难成功",
+        "hard": "困难成功",
+        "regular": "成功",
+        "failure": "失败",
+        "fumble": "大失败",
+    }
+    level = str(details.get("success_level", "failure"))
+    return [
+        f"{_skill_fact_label(state, run.skill_id)}检定{level_labels[level]}，"
+        f"骰点为 {run.roll}，技能值为 {run.target_value}。"
+    ]
+
+
+def _roll_formula(formula: int | str) -> int:
+    """结算 ModulePack 中受限的整数或 NdM 骰式，不执行任意表达式。"""
+
+    if isinstance(formula, int):
+        return max(0, formula)
+    match = re.fullmatch(r"(\d{1,2})d(\d{1,3})([+-]\d{1,3})?", formula.strip())
+    if match is None:
+        raise GmRuntimeError("模组包含不受支持的骰式")
+    count, sides = int(match.group(1)), int(match.group(2))
+    if count < 1 or sides < 2:
+        raise GmRuntimeError("模组骰式范围无效")
+    return max(
+        0, sum(secrets.randbelow(sides) + 1 for _index in range(count)) + int(match.group(3) or 0)
+    )
+
+
+def _schedule_timeline_events(state: dict[str, Any], event_ids: list[str]) -> None:
+    """按当前世界时间把声明的定时事件加入有序队列。"""
+
+    runtime = state.get("_runtime", {})
+    if not isinstance(runtime, dict):
+        return
+    definitions = {
+        item.get("id"): item
+        for item in runtime.get("timeline", [])
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    queue = state.setdefault("scheduled_events", [])
+    if not isinstance(queue, list):
+        queue = []
+        state["scheduled_events"] = queue
+    existing = {item.get("id") for item in queue if isinstance(item, dict)}
+    now = datetime.fromisoformat(str(state["world_time"]))
+    for event_id in event_ids:
+        definition = definitions.get(event_id)
+        trigger = definition.get("trigger", {}) if isinstance(definition, dict) else {}
+        minutes = trigger.get("after_minutes") if isinstance(trigger, dict) else None
+        if event_id not in existing and isinstance(minutes, int) and minutes >= 0:
+            queue.append({"id": event_id, "due_at": (now + timedelta(minutes=minutes)).isoformat()})
+            existing.add(event_id)
+    queue.sort(key=lambda item: str(item.get("due_at", "")) if isinstance(item, dict) else "")
+
+
+def _next_scheduled_event(state: dict[str, Any], target_time: datetime) -> dict[str, Any] | None:
+    """返回等待区间内最早的定时事件。"""
+
+    current = datetime.fromisoformat(str(state["world_time"]))
+    queue = state.get("scheduled_events", [])
+    if not isinstance(queue, list):
+        return None
+    return next(
+        (
+            cast(dict[str, Any], item)
+            for item in queue
+            if isinstance(item, dict)
+            and isinstance(item.get("due_at"), str)
+            and current < datetime.fromisoformat(item["due_at"]) <= target_time
+        ),
+        None,
+    )
+
+
+def _apply_scheduled_event(
+    state: dict[str, Any], actor: RuntimeActor, scheduled: dict[str, Any]
+) -> list[str]:
+    """移除并执行一个到期事件的 ModulePack 效果。"""
+
+    queue = state.get("scheduled_events", [])
+    if isinstance(queue, list):
+        state["scheduled_events"] = [item for item in queue if item is not scheduled]
+    definition = _runtime_definition(state, "timeline", str(scheduled.get("id", "")))
+    effect = definition.get("effect", {}) if definition is not None else {}
+    return _apply_effects(state, actor, effect if isinstance(effect, dict) else {})
+
+
+def _apply_damage(actor_state: dict[str, Any], amount: int) -> None:
+    """应用 HP、重伤、昏迷和死亡的最小 CoC7 伤害状态。"""
+
+    hp = int(actor_state.get("hp", 0))
+    max_hp = int(actor_state.get("max_hp", hp))
+    actor_state["hp"] = max(0, hp - amount)
+    if amount >= max(1, max_hp // 2):
+        actor_state["major_wound"] = True
+    if actor_state["hp"] == 0:
+        actor_state["unconscious"] = True
+        actor_state["alive"] = False
+
+
+def _apply_effects(state: dict[str, Any], actor: RuntimeActor, effect: dict[str, Any]) -> list[str]:
+    """解释 ModulePack 的通用效果集合并返回玩家可见事实。"""
+
+    _add_clues(state, [str(clue) for clue in effect.get("clues", [])])
+    if isinstance(effect.get("scene_id"), str):
+        state["scene_id"] = effect["scene_id"]
+    location_id = effect.get("location_id")
+    if isinstance(location_id, str):
+        actor.location_id = location_id
+        state["location_id"] = location_id
+        known = state.setdefault("known_locations", [])
+        if isinstance(known, list) and location_id not in known:
+            known.append(location_id)
+    if isinstance(effect.get("ending_id"), str):
+        state["ending_id"] = effect["ending_id"]
+    flags = state.setdefault("flags", {})
+    if isinstance(flags, dict) and isinstance(effect.get("flags"), dict):
+        flags.update(effect["flags"])
+    advance_minutes = effect.get("advance_minutes", 0)
+    if isinstance(advance_minutes, int) and advance_minutes > 0:
+        now = datetime.fromisoformat(str(state["world_time"]))
+        state["world_time"] = (now + timedelta(minutes=advance_minutes)).isoformat()
+    schedule = effect.get("schedule_events", [])
+    if isinstance(schedule, list) and schedule:
+        _schedule_timeline_events(state, [str(event_id) for event_id in schedule])
+    npc_states = state.setdefault("npc_states", {})
+    if isinstance(npc_states, dict) and isinstance(effect.get("npc_state"), dict):
+        for npc_id, changes in effect["npc_state"].items():
+            if isinstance(changes, dict):
+                npc_states.setdefault(str(npc_id), {}).update(changes)
+    if isinstance(effect.get("encounter"), dict):
+        current_encounter = state.get("encounter")
+        incoming = copy.deepcopy(effect["encounter"])
+        if isinstance(current_encounter, dict) and current_encounter.get(
+            "encounter_id"
+        ) == incoming.get("encounter_id"):
+            incoming["round"] = int(current_encounter.get("round", 1)) + 1
+        state["encounter"] = incoming
+    if isinstance(effect.get("encounter_update"), dict) and isinstance(
+        state.get("encounter"), dict
+    ):
+        state["encounter"].update(effect["encounter_update"])
+    damage_actor = effect.get("damage_actor")
+    if isinstance(damage_actor, (int, str)):
+        _apply_damage(actor.state_json, _roll_formula(damage_actor))
+    damage_npc = effect.get("damage_npc")
+    if isinstance(damage_npc, dict) and isinstance(npc_states, dict):
+        npc_id = str(damage_npc.get("npc_id", ""))
+        target = npc_states.setdefault(npc_id, {})
+        amount = _roll_formula(damage_npc.get("amount", 0))
+        divisor = int(damage_npc.get("armor_divisor", 1))
+        amount = amount // max(1, divisor)
+        _apply_damage(target, amount)
+        encounter = state.get("encounter")
+        if isinstance(encounter, dict) and encounter.get("opponent_id") == npc_id:
+            encounter["opponent_hp"] = target.get("hp", 0)
+            if target.get("alive") is False:
+                encounter["status"] = "won"
+        if target.get("alive") is False and isinstance(effect.get("on_npc_death"), dict):
+            _apply_effects(state, actor, effect["on_npc_death"])
+    san_loss = effect.get("san_loss")
+    if isinstance(san_loss, (int, str)):
+        loss = _roll_formula(san_loss)
+        actor.state_json["san"] = max(0, int(actor.state_json.get("san", 0)) - loss)
+        if loss >= 5:
+            actor.state_json["temporary_insanity"] = True
+            if isinstance(effect.get("temporary_insanity_ending"), str):
+                state["ending_id"] = effect["temporary_insanity_ending"]
+    return [str(fact) for fact in effect.get("facts", []) if isinstance(fact, str)]
+
+
+def _encounter_read(value: object) -> EncounterRead | None:
+    """把内部 Encounter 状态过滤为玩家投影。"""
+
+    if not isinstance(value, dict):
+        return None
+    return EncounterRead.model_validate(value)
 
 
 def _apply_check_outcome(
     state: dict[str, Any], actor: RuntimeActor, goal: str, success: bool
 ) -> list[str]:
-    """按模组 checkpoint 应用检定结果；旧自由目标只保留兼容行为。"""
+    """按模组 checkpoint 应用检定结果，不从目标文字推断剧情。"""
 
     runtime = state.get("_runtime", {})
     if isinstance(runtime, dict):
@@ -944,17 +1268,9 @@ def _apply_check_outcome(
             outcome = checkpoint.get(outcome_key, {})
             outcome = outcome if isinstance(outcome, dict) else {}
             clue_key = "success_clues" if success else "failure_clues"
-            clue_ids = [str(clue) for clue in outcome.get("clues", checkpoint.get(clue_key, []))]
-            _add_clues(state, clue_ids)
-            # 场景和时间后果由模组声明，避免 Kernel 认识任何具体剧情节点。
-            scene_id = outcome.get("scene_id")
-            if isinstance(scene_id, str) and scene_id:
-                state["scene_id"] = scene_id
-            advance_minutes = outcome.get("advance_minutes", 0)
-            if isinstance(advance_minutes, int) and advance_minutes > 0:
-                current_time = datetime.fromisoformat(str(state["world_time"]))
-                advanced_time = current_time + timedelta(minutes=advance_minutes)
-                state["world_time"] = advanced_time.isoformat()
+            outcome = copy.deepcopy(outcome)
+            outcome.setdefault("clues", checkpoint.get(clue_key, []))
+            facts = _apply_effects(state, actor, outcome)
             public_clues = {
                 str(clue.get("id")): str(clue.get("text"))
                 for clue in runtime.get("clues", [])
@@ -963,28 +1279,11 @@ def _apply_check_outcome(
                 and isinstance(clue.get("id"), str)
                 and isinstance(clue.get("text"), str)
             }
-            facts = [str(fact) for fact in outcome.get("facts", []) if isinstance(fact, str)]
             return facts or [
-                public_clues[clue_id] for clue_id in clue_ids if clue_id in public_clues
+                public_clues[clue_id]
+                for clue_id in outcome.get("clues", [])
+                if clue_id in public_clues
             ]
-
-    lowered = goal.lower()
-    if any(word in goal for word in ("邻居", "朋友")):
-        _add_clues(state, ["douglas_cemetery"])
-    elif "图书馆" in goal or "报纸" in goal:
-        _add_clues(state, ["old_report"] if success else ["old_report"])
-    elif "档案" in goal or "证词" in goal:
-        _add_clues(state, ["hilda_statement"])
-    elif "书房" in goal or "日记" in goal:
-        _add_clues(state, ["diary_choice", "tunnel_hint"])
-    elif "墓" in goal or "足迹" in goal or "监视" in goal:
-        _add_clues(state, ["tunnel_hint", "night_silhouette"])
-    elif "理智" in goal or "食尸鬼" in lowered:
-        actor.state_json["san"] = max(
-            0, int(actor.state_json.get("san", 50)) - (1 if not success else 0)
-        )
-        if "食尸鬼" in goal and not success:
-            state["ending_id"] = "asylum"
     return []
 
 
@@ -994,19 +1293,19 @@ async def submit_free_text(
     room_id: str,
     payload: TurnInputBody,
 ) -> GmTurnRead:
-    """解释一回合自然语言并把首个合法动作交给 Kernel。"""
+    """解释自然语言并按最新 revision 顺序执行全部合法步骤。"""
 
     previous = await db.scalar(
         select(TurnRun).where(TurnRun.client_request_id == payload.client_request_id)
     )
     if previous is not None and previous.room_id != room_id:
         raise GmRuntimeError("重复请求 ID 已属于其他房间")
-    if previous is not None and previous.result_json is not None and previous.status != "failed":
+    if previous is not None and previous.result_json is not None and previous.status != "paused":
         return GmTurnRead.model_validate(previous.result_json)
     turn = previous or TurnRun(
         room_id=room_id,
         client_request_id=payload.client_request_id,
-        status="understanding",
+        status="interpreting",
         expected_revision=payload.expected_revision,
         actor_id=payload.actor_id,
         input_text=payload.input,
@@ -1016,7 +1315,7 @@ async def submit_free_text(
         await db.commit()
     else:
         # 失败回合只恢复模型调用，不重放已经提交的 Kernel 命令。
-        turn.status = "understanding"
+        turn.status = "interpreting"
         turn.result_json = None
         turn.expected_revision = payload.expected_revision
         turn.actor_id = payload.actor_id
@@ -1038,6 +1337,8 @@ async def submit_free_text(
         await db.commit()
         interpreter, narrator = _agents()
         intent = validate_intent(snapshot, await interpreter.interpret(snapshot, payload.input))
+        turn.status = "validating"
+        await db.commit()
         intent = guard_intent_coverage(snapshot, intent, payload.input)
         session = await db.get(GameSession, room_id)
         runtime = session.state_json.get("_runtime", {}) if session is not None else {}
@@ -1066,15 +1367,49 @@ async def submit_free_text(
             turn.result_json = result.model_dump(mode="json")
             await db.commit()
             return result
-        command = intent_step_to_command(
-            intent.steps[0],
-            client_request_id=payload.client_request_id,
-            expected_revision=payload.expected_revision,
-            actor_id=payload.actor_id,
+        turn.status = "resolving"
+        await db.commit()
+        revision = payload.expected_revision
+        step_results: list[CommandResult] = []
+        for index, step in enumerate(intent.steps):
+            step_snapshot = (
+                snapshot
+                if index == 0
+                else await build_context_snapshot(db, room_id=room_id, actor_id=payload.actor_id)
+            )
+            validate_adjudication(step_snapshot, propose_adjudication(step_snapshot, step))
+            step_request_id = (
+                payload.client_request_id
+                if index == 0
+                else f"{payload.client_request_id}:{index + 1}"
+            )
+            command = intent_step_to_command(
+                step,
+                client_request_id=step_request_id,
+                expected_revision=revision,
+                actor_id=payload.actor_id,
+            )
+            step_result = await submit_command(db, room_id=room_id, envelope=command)
+            step_results.append(step_result)
+            revision = step_result.revision
+            if step_result.pending_decisions:
+                break
+        if not step_results:
+            raise GmRuntimeError("模型没有提出可执行步骤")
+        last_result = step_results[-1]
+        command_result = last_result.model_copy(
+            update={
+                "client_request_id": payload.client_request_id,
+                "events": [event for result in step_results for event in result.events],
+                "narration_facts": [
+                    fact for result in step_results for fact in result.narration_facts
+                ],
+            }
         )
-        command_result = await submit_command(db, room_id=room_id, envelope=command)
         narration: str | None = None
         try:
+            turn.status = "narrating"
+            await db.commit()
             refreshed = await build_context_snapshot(
                 db, room_id=room_id, actor_id=payload.actor_id, purpose="narration"
             )
@@ -1109,6 +1444,8 @@ async def submit_free_text(
             narration=narration,
             command_result=command_result,
         )
+        turn.status = "publishing"
+        await db.commit()
         turn.status = "completed"
         turn.result_json = result.model_dump(mode="json")
         await db.commit()
@@ -1119,7 +1456,7 @@ async def submit_free_text(
             status="failed",
             revision=payload.expected_revision,
         )
-        turn.status = "failed"
+        turn.status = "paused"
         turn.result_json = result.model_dump(mode="json")
         await db.commit()
         message = "gm_unavailable" if isinstance(exc, GmModelUnavailable) else str(exc)

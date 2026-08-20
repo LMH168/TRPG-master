@@ -44,11 +44,77 @@ async def _command(
     )
 
 
-async def test_peaceful_route_and_projection_have_no_keeper_data(db_session) -> None:
+async def _reach_ghoul_encounter(db_session, room_id: str, actor_id: str):
+    """通过夜间守候和三次真实攻击推进到食尸鬼遭遇。"""
+
+    result = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        0,
+        f"{actor_id}-cemetery",
+        {"kind": "move_actor", "target_id": "cemetery"},
+    )
+    result = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        result.revision,
+        f"{actor_id}-night",
+        {"kind": "wait_until", "target_time": result.projection.world_time + timedelta(hours=3)},
+    )
+    result = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        result.revision,
+        f"{actor_id}-watch-start",
+        {
+            "kind": "start_check",
+            "check_id": f"{actor_id}-watch",
+            "skill_id": "luck",
+            "goal": "night_watch",
+        },
+    )
+    result = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        result.revision,
+        f"{actor_id}-watch-roll",
+        {"kind": "roll_check", "check_id": f"{actor_id}-watch"},
+    )
+    for index in range(3):
+        result = await _command(
+            db_session,
+            room_id,
+            actor_id,
+            result.revision,
+            f"{actor_id}-attack-start-{index}",
+            {
+                "kind": "start_check",
+                "check_id": f"{actor_id}-attack-{index}",
+                "skill_id": "brawl",
+                "goal": "attack_douglas",
+            },
+        )
+        result = await _command(
+            db_session,
+            room_id,
+            actor_id,
+            result.revision,
+            f"{actor_id}-attack-roll-{index}",
+            {"kind": "roll_check", "check_id": f"{actor_id}-attack-{index}"},
+        )
+    return result
+
+
+async def test_peaceful_route_and_projection_have_no_keeper_data(db_session, monkeypatch) -> None:
     """邻居/守墓人路线可礼貌结束，投影不暴露运行包秘密。"""
 
     room_id, actor_id = "00000000-0000-0000-0000-000000000201", "actor-201"
     await _room(db_session, room_id, actor_id)
+    monkeypatch.setattr("app.service.gm_runtime.secrets.randbelow", lambda _limit: 0)
     result = await _command(
         db_session,
         room_id,
@@ -70,8 +136,50 @@ async def test_peaceful_route_and_projection_have_no_keeper_data(db_session) -> 
         room_id,
         actor_id,
         result.revision,
-        "gravekeeper",
-        {"kind": "talk_to_npc", "target_id": "gravekeeper", "topic": "礼貌询问"},
+        "gravekeeper-start",
+        {
+            "kind": "start_check",
+            "check_id": "gravekeeper-peaceful",
+            "skill_id": "charm",
+            "goal": "gravekeeper",
+        },
+    )
+    result = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        result.revision,
+        "gravekeeper-roll",
+        {"kind": "roll_check", "check_id": "gravekeeper-peaceful"},
+    )
+    result = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        result.revision,
+        "wait-night-peaceful",
+        {"kind": "wait_until", "target_time": result.projection.world_time + timedelta(hours=3)},
+    )
+    result = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        result.revision,
+        "watch-start-peaceful",
+        {
+            "kind": "start_check",
+            "check_id": "watch-peaceful",
+            "skill_id": "luck",
+            "goal": "night_watch",
+        },
+    )
+    result = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        result.revision,
+        "watch-roll-peaceful",
+        {"kind": "roll_check", "check_id": "watch-peaceful"},
     )
     result = await _command(
         db_session,
@@ -80,6 +188,14 @@ async def test_peaceful_route_and_projection_have_no_keeper_data(db_session) -> 
         result.revision,
         "call-douglas",
         {"kind": "inspect_target", "target_id": "call_douglas"},
+    )
+    result = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        result.revision,
+        "talk-douglas",
+        {"kind": "talk_to_npc", "target_id": "talk_douglas", "topic": "礼貌交谈"},
     )
     result = await _command(
         db_session,
@@ -97,9 +213,10 @@ async def test_peaceful_route_and_projection_have_no_keeper_data(db_session) -> 
     assert "douglas_became_ghoul" not in serialized
 
 
-async def test_library_route_failure_still_recovers_to_underground(db_session) -> None:
+async def test_library_route_failure_still_recovers_to_underground(db_session, monkeypatch) -> None:
     """关键检定失败也授予替代线索，随后可以进入地下路线。"""
 
+    monkeypatch.setattr("app.service.gm_runtime.secrets.randbelow", lambda _limit: 0)
     room_id, actor_id = "00000000-0000-0000-0000-000000000202", "actor-202"
     await _room(db_session, room_id, actor_id)
     moved = await _command(
@@ -155,8 +272,21 @@ async def test_library_route_failure_still_recovers_to_underground(db_session) -
         room_id,
         actor_id,
         newspaper.revision,
-        "archive-202",
-        {"kind": "inspect_target", "target_id": "newspaper_archive"},
+        "archive-start-202",
+        {
+            "kind": "start_check",
+            "check_id": "archive-202",
+            "skill_id": "library-use",
+            "goal": "newspaper_archive",
+        },
+    )
+    researched = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        researched.revision,
+        "archive-roll-202",
+        {"kind": "roll_check", "check_id": "archive-202"},
     )
     assert "hilda_statement" in researched.projection.clues
     back_from_newspaper = await _command(
@@ -167,11 +297,48 @@ async def test_library_route_failure_still_recovers_to_underground(db_session) -
         "back-town-202",
         {"kind": "move_actor", "target_id": "arnoldsburg"},
     )
-    moved = await _command(
+    house = await _command(
         db_session,
         room_id,
         actor_id,
         back_from_newspaper.revision,
+        "house-202",
+        {"kind": "move_actor", "target_id": "kimball_house"},
+    )
+    study = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        house.revision,
+        "study-start-202",
+        {
+            "kind": "start_check",
+            "check_id": "study-202",
+            "skill_id": "spot-hidden",
+            "goal": "search_study",
+        },
+    )
+    study = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        study.revision,
+        "study-roll-202",
+        {"kind": "roll_check", "check_id": "study-202"},
+    )
+    town = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        study.revision,
+        "town-202",
+        {"kind": "move_actor", "target_id": "arnoldsburg"},
+    )
+    moved = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        town.revision,
         "cemetery-202b",
         {"kind": "move_actor", "target_id": "cemetery"},
     )
@@ -180,8 +347,21 @@ async def test_library_route_failure_still_recovers_to_underground(db_session) -
         room_id,
         actor_id,
         moved.revision,
-        "crypt-202",
-        {"kind": "inspect_target", "target_id": "open_crypt"},
+        "crypt-start-202",
+        {
+            "kind": "start_check",
+            "check_id": "crypt-202",
+            "skill_id": "strength",
+            "goal": "open_crypt",
+        },
+    )
+    opened = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        opened.revision,
+        "crypt-roll-202",
+        {"kind": "roll_check", "check_id": "crypt-202"},
     )
     ended = await _command(
         db_session,
@@ -189,32 +369,20 @@ async def test_library_route_failure_still_recovers_to_underground(db_session) -
         actor_id,
         opened.revision,
         "follow-202",
-        {"kind": "choose_option", "option_id": "follow_underground"},
+        {"kind": "inspect_target", "target_id": "follow_douglas"},
     )
     assert ended.projection.ending_id == "follow_underground"
 
 
-async def test_kill_then_flee_is_idempotent(db_session) -> None:
+async def test_kill_then_flee_is_idempotent(db_session, monkeypatch) -> None:
     """杀死道格拉斯后的食尸鬼结局和重复请求不会重复推进 revision。"""
 
     room_id, actor_id = "00000000-0000-0000-0000-000000000203", "actor-203"
+    monkeypatch.setattr(
+        "app.service.gm_runtime.secrets.randbelow", lambda limit: 0 if limit == 100 else limit - 1
+    )
     await _room(db_session, room_id, actor_id)
-    moved = await _command(
-        db_session,
-        room_id,
-        actor_id,
-        0,
-        "cemetery-203",
-        {"kind": "move_actor", "target_id": "cemetery"},
-    )
-    killed = await _command(
-        db_session,
-        room_id,
-        actor_id,
-        moved.revision,
-        "kill-203",
-        {"kind": "inspect_target", "target_id": "attack_douglas"},
-    )
+    killed = await _reach_ghoul_encounter(db_session, room_id, actor_id)
     assert killed.projection.ending_id is None
     flee = await _command(
         db_session,
@@ -241,37 +409,15 @@ async def test_night_watch_interrupt_and_failed_sanity_reach_asylum(
 ) -> None:
     """等待会被夜间人影打断，理智失败进入疗养院结局。"""
 
-    monkeypatch.setattr("app.service.gm_runtime.secrets.randbelow", lambda _limit: 99)
+    monkeypatch.setattr(
+        "app.service.gm_runtime.secrets.randbelow", lambda limit: 0 if limit == 100 else limit - 1
+    )
     room_id, actor_id = "00000000-0000-0000-0000-000000000204", "actor-204"
     await _room(db_session, room_id, actor_id)
-    moved = await _command(
-        db_session,
-        room_id,
-        actor_id,
-        0,
-        "cemetery-204",
-        {"kind": "move_actor", "target_id": "cemetery"},
+    interrupted = await _reach_ghoul_encounter(db_session, room_id, actor_id)
+    monkeypatch.setattr(
+        "app.service.gm_runtime.secrets.randbelow", lambda limit: 99 if limit == 100 else limit - 1
     )
-    watched = await _command(
-        db_session,
-        room_id,
-        actor_id,
-        moved.revision,
-        "watch-204",
-        {"kind": "inspect_target", "target_id": "night_watch"},
-    )
-    now = watched.projection.world_time
-    interrupted = await _command(
-        db_session,
-        room_id,
-        actor_id,
-        watched.revision,
-        "wait-204",
-        {"kind": "wait_until", "target_time": now + timedelta(hours=2)},
-    )
-    assert interrupted.narration_facts == ["时间从9月15日17:30推进到18:30。"]
-    assert all("T" not in fact for fact in interrupted.narration_facts)
-    assert interrupted.projection.scene_id == "confrontation"
     started = await _command(
         db_session,
         room_id,
@@ -335,31 +481,31 @@ async def test_house_surveillance_break_in_interrupts_into_chase(db_session) -> 
         "chase-205",
         {"kind": "inspect_target", "target_id": "chase_thief"},
     )
+    assert chased.projection.encounter is not None
+    assert chased.projection.encounter.kind == "chase"
+    assert chased.projection.encounter.distance == 2
+    chased = await _command(
+        db_session,
+        room_id,
+        actor_id,
+        chased.revision,
+        "close-distance-205",
+        {"kind": "inspect_target", "target_id": "close_distance"},
+    )
     assert chased.projection.location_id == "cemetery"
-    assert "tunnel_hint" in chased.projection.clues
+    assert chased.projection.encounter is not None
+    assert chased.projection.encounter.status == "won"
 
 
-async def test_killing_douglas_exposes_ghoul_encounter_state(db_session) -> None:
+async def test_killing_douglas_exposes_ghoul_encounter_state(db_session, monkeypatch) -> None:
     """攻击道格拉斯后必须留下食尸鬼遭遇状态，随后才完成该场景。"""
 
     room_id, actor_id = "00000000-0000-0000-0000-000000000206", "actor-206"
+    monkeypatch.setattr(
+        "app.service.gm_runtime.secrets.randbelow", lambda limit: 0 if limit == 100 else limit - 1
+    )
     await _room(db_session, room_id, actor_id)
-    moved = await _command(
-        db_session,
-        room_id,
-        actor_id,
-        0,
-        "cemetery-206",
-        {"kind": "move_actor", "target_id": "cemetery"},
-    )
-    killed = await _command(
-        db_session,
-        room_id,
-        actor_id,
-        moved.revision,
-        "kill-206",
-        {"kind": "inspect_target", "target_id": "attack_douglas"},
-    )
+    killed = await _reach_ghoul_encounter(db_session, room_id, actor_id)
     assert killed.projection.ending_id is None
     faced = await _command(
         db_session,

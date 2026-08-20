@@ -264,7 +264,7 @@ Phase 0 只读取已制作的 ModulePack；PDF/DOCX 自动解析不属于开工�
 
 ## 6. Phase 1C：《追书人》完整门禁
 
-当前实现进度：Phase 1C 正按四个顺序 Issue 补齐，尚未完成。Issue #53 负责完整原文、ModulePack v2、确定性 ContextSlice、事件窗口和版本冻结；其后依次完成数据驱动 Kernel 与 CoC7 子规则、Provider/Outbox/PostgreSQL 恢复、八条真实完整局门禁。现有脚本测试只证明旧纵向切片可运行，不能作为 Phase 1C 完成证据。
+当前实现进度：Phase 1C 正按四个顺序 Issue 补齐，尚未完成。Issue #53 已合并，完成完整原文、ModulePack v2、确定性 ContextSlice、事件窗口和版本冻结。Issue #55 正在实现数据驱动 Kernel 与 CoC7 子规则：剧情专名 fallback 已删除，地点/动作/检定/效果/时间线均读取冻结 ModulePack；已补成功等级、骰后幸运/强推、HP/SAN/重伤/死亡、最小战斗与追逐 Encounter、多步 revision 校验和前端恢复。后续仍需完成 Provider/Outbox/PostgreSQL 恢复和八条真实完整局门禁；现有规则测试不能作为 Phase 1C 完成证据。
 
 - 补齐该模组所需的调查路线、NPC 关系、关键线索恢复和多结局。
 - 只实现该模组需要的 CoC7 战斗、步行追逐、HP、SAN 和疯狂子集。
@@ -334,8 +334,8 @@ CommandResult: schema_version, command_id, status, committed_revision,
   events, pending_decisions, narration_facts, error
 PlayerProjection: schema_version, session_id, player_id, revision,
   world_time, actors, visible_facts, pending_decisions
-TurnState: collecting | understanding | validating | awaiting_clarification |
-  awaiting_roll | resolving | narrating | completed | failed
+TurnState: interpreting | validating | awaiting_clarification | awaiting_roll |
+  awaiting_roll_decision | resolving | narrating | publishing | completed | paused
 ```
 
 所有 ID 使用 UUID 字符串，时间使用 UTC ISO 8601；Pydantic 模型拒绝未知字段。空输入、不属于当前 Actor 的 target 和客户端骰点均在边界层拒绝。

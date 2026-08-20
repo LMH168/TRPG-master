@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, secret_value
 from app.dto.gm import (
     ActionCandidate,
+    AdjudicationProposal,
     CommandAdapter,
     CommandEnvelope,
     ContextSlice,
@@ -325,6 +326,7 @@ def _context_slice_for(
         index = {}
     owned_clues = {str(clue) for clue in state.get("clues", [])}
     flags = state.get("flags", {}) if isinstance(state.get("flags"), dict) else {}
+    npc_states = state.get("npc_states", {}) if isinstance(state.get("npc_states"), dict) else {}
 
     collections = {
         "locations": [location_id],
@@ -337,6 +339,13 @@ def _context_slice_for(
             {
                 "objects": index.get("object_ids", []),
                 "situations": index.get("situation_ids", []),
+                # 技能定义是公开规则上下文；它告诉意图模型何时应直接成功、何时需要检定，
+                # 但不包含 keeper 数值或未触发剧情结果。
+                "skills": [
+                    str(item.get("id"))
+                    for item in runtime.get("skills", [])
+                    if isinstance(item, dict) and isinstance(item.get("id"), str)
+                ],
             }
         )
     structured: dict[str, object] = {}
@@ -344,11 +353,11 @@ def _context_slice_for(
     for collection, selected_ids in collections.items():
         selected = set(selected_ids if isinstance(selected_ids, list) else [])
         items = [
-            _public_runtime_item(item)
+            _public_runtime_item(item, npc_states.get(str(item.get("id"))))
             for item in runtime.get(collection, [])
             if isinstance(item, dict)
             and item.get("id") in selected
-            and _runtime_item_is_visible(item, owned_clues, flags)
+            and _runtime_item_is_visible(item, owned_clues, flags, npc_states)
         ]
         if items:
             structured[collection] = items
@@ -367,7 +376,7 @@ def _context_slice_for(
         if isinstance(item, dict)
         and item.get("id") in fragment_ids
         and isinstance(item.get("content"), str)
-        and _runtime_item_is_visible(item, owned_clues, flags)
+        and _runtime_item_is_visible(item, owned_clues, flags, npc_states)
     ]
     selected_source_refs.extend(ref for fragment in fragments for ref in fragment.source_refs)
     return ContextSlice(
@@ -379,7 +388,10 @@ def _context_slice_for(
 
 
 def _runtime_item_is_visible(
-    item: dict[str, Any], owned_clues: set[str], flags: dict[str, Any]
+    item: dict[str, Any],
+    owned_clues: set[str],
+    flags: dict[str, Any],
+    npc_states: dict[str, Any],
 ) -> bool:
     """在模型输入边界执行可见性、线索、存活和状态条件过滤。"""
 
@@ -389,15 +401,15 @@ def _runtime_item_is_visible(
         return False
     if not all(flags.get(flag) for flag in item.get("requires_flags", [])):
         return False
-    item_id = item.get("id")
-    if item_id == "gravekeeper" and flags.get("gravekeeper_alive") is False:
-        return False
-    if item_id == "douglas" and flags.get("douglas_alive") is False:
+    item_id = str(item.get("id", ""))
+    if isinstance(npc_states.get(item_id), dict) and npc_states[item_id].get("alive") is False:
         return False
     return item.get("visibility") in {"public", "conditional"}
 
 
-def _public_runtime_item(item: dict[str, Any]) -> dict[str, object]:
+def _public_runtime_item(
+    item: dict[str, Any], current_state: dict[str, Any] | None = None
+) -> dict[str, object]:
     """移除只供 Kernel 使用的知识、数值和触发条件，只保留模型所需语义。"""
 
     hidden_fields = {
@@ -407,7 +419,14 @@ def _public_runtime_item(item: dict[str, Any]) -> dict[str, object]:
         "requires_clues",
         "requires_flags",
     }
-    return {key: value for key, value in item.items() if key not in hidden_fields}
+    public = {key: value for key, value in item.items() if key not in hidden_fields}
+    if current_state is not None:
+        public["current_state"] = {
+            key: current_state[key]
+            for key in ("alive", "relationship", "location_id")
+            if key in current_state
+        }
+    return public
 
 
 def _recent_event_for(event: GameEvent) -> RecentEvent:
@@ -437,21 +456,28 @@ def _recent_event_for(event: GameEvent) -> RecentEvent:
 def _derived_memory_for(
     state: dict[str, Any], recent_events: list[RecentEvent]
 ) -> list[DerivedMemory]:
-    """从权威标记派生《追书人》当前需要的关系记忆，并绑定事件来源。"""
+    """从 NPC 权威状态派生可重建的关系记忆，并绑定事件来源。"""
 
     if not recent_events:
         return []
     source_ids = [event.event_id for event in recent_events]
-    flags = state.get("flags", {}) if isinstance(state.get("flags"), dict) else {}
     memories: list[DerivedMemory] = []
-    if flags.get("douglas_conversation_completed"):
-        memories.append(
-            DerivedMemory(content="调查员已经与道格拉斯完成交谈。", source_event_ids=source_ids)
-        )
-    if flags.get("douglas_alive") is False:
-        memories.append(DerivedMemory(content="道格拉斯已经死亡。", source_event_ids=source_ids))
-    if flags.get("gravekeeper_alive") is False:
-        memories.append(DerivedMemory(content="守墓人已经死亡。", source_event_ids=source_ids))
+    runtime = state.get("_runtime", {})
+    npc_states = state.get("npc_states", {})
+    npc_names = {
+        item.get("id"): item.get("name", item.get("id"))
+        for item in runtime.get("npcs", [])
+        if isinstance(runtime, dict) and isinstance(item, dict)
+    }
+    if isinstance(npc_states, dict):
+        for npc_id, npc_state in npc_states.items():
+            if isinstance(npc_state, dict) and npc_state.get("alive") is False:
+                memories.append(
+                    DerivedMemory(
+                        content=f"{npc_names.get(npc_id, npc_id)}已经死亡。",
+                        source_event_ids=source_ids,
+                    )
+                )
     return memories
 
 
@@ -508,69 +534,81 @@ def _candidates_for(state: dict[str, Any], location_id: str) -> list[ActionCandi
         str(target) for checkpoint in checkpoints for target in checkpoint.get("targets", [])
     }
 
-    exits = {
-        "arnoldsburg": [
-            ("neighbors", "询问朋友和邻居"),
-            ("library", "前往图书馆"),
-            ("newspaper", "前往报社档案室"),
-            ("kimball_house", "前往金博尔旧居"),
-            ("cemetery", "前往墓园"),
-        ],
-        "library": [("arnoldsburg", "回到阿诺兹堡")],
-        "kimball_house": [("arnoldsburg", "回到阿诺兹堡")],
-        "cemetery": [("arnoldsburg", "回到阿诺兹堡")],
+    locations = {
+        item.get("id"): item
+        for item in runtime.get("locations", [])
+        if isinstance(runtime, dict) and isinstance(item, dict)
     }
-    objects = {
-        "arnoldsburg": [("town_sign", "观察城镇标牌")],
-        "library": [
-            ("old_newspapers", "查阅旧报纸"),
-            ("bookshelf", "检查书架"),
-            ("librarian", "与图书管理员交谈"),
-        ],
-        "newspaper": [
-            ("newspaper_archive", "申请查阅报社档案"),
-            ("hilda", "询问未刊证词"),
-        ],
-        "kimball_house": [
-            ("desk", "检查书桌"),
-            ("empty_shelf", "检查空书架"),
-            ("surveillance", "监视金博尔宅"),
-            ("lock_window", "锁上窗户"),
-            ("chase_thief", "追踪破窗后的身影"),
-        ],
-        "cemetery": [],
-        "chase": [("chase_thief", "追踪破窗后的身影")],
-        "crypt": [
-            ("talk_douglas", "与道格拉斯交谈"),
-            ("follow_douglas", "跟随道格拉斯进入地下"),
-        ],
-    }
+    current_location = locations.get(location_id, {})
     candidates = [
         *[
-            ActionCandidate(action="move_actor", target_id=target, label=label)
-            for target, label in exits.get(location_id, [])
-        ],
-        *[
             ActionCandidate(
-                action="talk_to_npc"
-                if target in {"librarian", "gravekeeper"}
-                else "inspect_target",
+                action="move_actor",
                 target_id=target,
-                label=label,
+                label=f"前往{locations.get(target, {}).get('label', target)}",
             )
-            for target, label in objects.get(location_id, [])
-            if target not in checked_targets
+            for target in current_location.get("exits", [])
+            if target in locations
         ],
         ActionCandidate(action="wait_until", label="等待到指定时间"),
     ]
     if isinstance(runtime, dict):
         owned_clues = set(state.get("clues", []))
+        # 未绑定固定后果的可见对象仍允许开放调查；Kernel 只提交无副作用的直接成功。
+        for item in runtime.get("objects", []):
+            if (
+                isinstance(item, dict)
+                and item.get("location_id") == location_id
+                and item.get("visibility") != "keeper"
+                and item.get("id") not in checked_targets
+                and set(item.get("requires_clues", [])) <= owned_clues
+            ):
+                candidates.append(
+                    ActionCandidate(
+                        action="inspect_target",
+                        target_id=str(item["id"]),
+                        label=f"检查{item.get('label', item['id'])}",
+                        aliases=[str(alias) for alias in item.get("aliases", [])],
+                    )
+                )
+        npc_states = state.get("npc_states", {})
+        for npc in runtime.get("npcs", []):
+            npc_id = npc.get("id") if isinstance(npc, dict) else None
+            if (
+                isinstance(npc, dict)
+                and isinstance(npc_id, str)
+                and npc.get("location_id") == location_id
+                and npc.get("visibility") != "keeper"
+                and npc_id not in checked_targets
+                and set(npc.get("requires_clues", [])) <= owned_clues
+                and not (
+                    isinstance(npc_states, dict)
+                    and npc_states.get(npc_id, {}).get("alive") is False
+                )
+            ):
+                candidates.append(
+                    ActionCandidate(
+                        action="talk_to_npc",
+                        target_id=npc_id,
+                        label=f"与{npc.get('name', npc_id)}交谈",
+                    )
+                )
         # 场景动作只公开标签和稳定目标；执行结果仍由 Kernel 决定。
         for action in runtime.get("actions", []):
             if (
                 not isinstance(action, dict)
                 or action.get("scene_id") != scene_id
+                or action.get("visibility") == "keeper"
                 or not set(action.get("requires_clues", [])) <= owned_clues
+                or action.get("target_id") in checked_targets
+            ):
+                continue
+            npc_id = action.get("npc_id")
+            npc_states = state.get("npc_states", {})
+            if (
+                isinstance(npc_id, str)
+                and isinstance(npc_states, dict)
+                and npc_states.get(npc_id, {}).get("alive") is False
             ):
                 continue
             action_kind = action.get("action")
@@ -871,6 +909,62 @@ def intent_step_to_command(
     )
 
 
+def propose_adjudication(snapshot: ContextSnapshot, step: IntentStep) -> AdjudicationProposal:
+    """把已解释步骤归一为无权威副作用的裁决提案。"""
+
+    decision = "start_check" if step.action == "start_check" else "direct_success"
+    skill = None
+    failure_consequence = None
+    if step.skill_id and snapshot.module_slice is not None:
+        skills = snapshot.module_slice.structured_data.get("skills", [])
+        skill_items = skills if isinstance(skills, list) else []
+        skill = next(
+            (
+                item
+                for item in skill_items
+                if isinstance(item, dict) and item.get("id") == step.skill_id
+            ),
+            None,
+        )
+        consequence = skill.get("failure_consequence") if isinstance(skill, dict) else None
+        if isinstance(consequence, str):
+            failure_consequence = consequence
+    return AdjudicationProposal(
+        decision=decision,
+        action_type=step.action,
+        target_id=step.target_id,
+        skill_id=step.skill_id,
+        failure_consequence=failure_consequence,
+        reason_refs=[value for value in (step.target_id, step.skill_id) if value],
+        proposal_revision=snapshot.revision,
+    )
+
+
+def validate_adjudication(
+    snapshot: ContextSnapshot, proposal: AdjudicationProposal
+) -> AdjudicationProposal:
+    """确定性验证目标可见性、技能绑定、难度和 revision。"""
+
+    if proposal.proposal_revision != snapshot.revision:
+        raise ValueError("裁决提案 revision 已过期")
+    candidate = next(
+        (
+            item
+            for item in snapshot.action_candidates
+            if item.action == proposal.action_type
+            and (item.target_id == proposal.target_id or item.target_id is None)
+        ),
+        None,
+    )
+    if candidate is None:
+        raise ValueError("裁决提案目标当前不可见")
+    if proposal.decision == "start_check" and (
+        proposal.skill_id is None or candidate.skill_id != proposal.skill_id
+    ):
+        raise ValueError("裁决提案技能与模组声明不一致")
+    return proposal
+
+
 def guard_narration(
     draft: NarrationDraft,
     *,
@@ -883,7 +977,6 @@ def guard_narration(
     allowed = set(committed_event_ids)
     if not draft.evidence_event_ids or not set(draft.evidence_event_ids) <= allowed:
         raise ValueError("叙事引用了未提交事件")
-    # 这些词在第一条路径中只可能来自 keeper 真相；文学表达不能越过事实投影。
     # Narrator 面向玩家，不得复述解释器候选、内部字段或系统约束。
     forbidden = (
         "keeper",
@@ -897,7 +990,6 @@ def guard_narration(
         "不能自行创建新行动",
         "守秘人秘密",
         "模组真相",
-        "守墓人复活",
     )
     if any(term in draft.text.lower() for term in forbidden):
         raise ValueError("叙事包含受保护的隐藏信息")

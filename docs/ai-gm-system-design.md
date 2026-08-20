@@ -292,8 +292,8 @@ flowchart TD
     F --> G["静态验证\nSchema/引用/类型/隐私"]
     G --> H["模型检查\n可达性/死锁/关键线索冗余"]
     H --> I["自动跑团仿真"]
-    I --> J["人工发布门禁"]
-    J --> K["签名 ModulePack"]
+    I --> J["可选公共发布审核"]
+    J --> K["版本化 ModulePack"]
 ```
 
 自动 Review 用于发现敏感内容、关键误读和完整性问题；作者、来源和资料状态作为元数据保留，不形成预设安装或 AI 主持的人工发布门禁。
@@ -564,14 +564,19 @@ Context Builder 为一次模型调用生成不可变快照。它记录“当时�
 
 ```json
 {
-  "resolution": "select_candidate",
-  "goal": "不惊动屋内人员进入书房",
-  "candidate_id": "stealth_hard_penalty_1_duration_10",
-  "reason_refs": ["scene.dark", "window.noisy"]
+  "decision": "direct_success | clarification | start_check",
+  "action_type": "inspect_target",
+  "target_id": "window",
+  "skill_id": "spot-hidden",
+  "difficulty": "regular",
+  "estimated_minutes": 0,
+  "failure_consequence": "耗费时间并引起注意",
+  "reason_refs": ["window", "spot-hidden"],
+  "proposal_revision": 42
 }
 ```
 
-候选由固定规则、ModulePack 和产品默认裁决表预先生成，内部已经绑定技能、难度、奖惩骰和耗时。AI 只能选择 `candidate_id` 或返回 `clarification_required`，不能自由填写这些规则参数。Kernel 重新检查候选仍适用于当前 revision；模组明确规则优先于 AI 选择。
+当前单人实现不增加第二个模型 Agent：Intent Interpreter 的结构化步骤直接归一为上述提案，确定性 Validator 校验目标可见性、技能绑定、难度和 revision 后才生成 Kernel 命令。需要更多情景判断时再扩展同一提案，不另建平行工作流。Kernel 重新检查候选仍适用于当前 revision；模组明确规则优先于 AI 建议。
 
 #### `CommandResult`
 
@@ -1007,7 +1012,7 @@ ContextSnapshot
   -> 模型调用 B：只根据已提交事件生成叙事
 ```
 
-如果固定规则无法裁决，才在 A 与 Kernel 之间增加 Adjudication Advisor；如果需要澄清或骰后选择，本回合持久化暂停，收到玩家回复后继续，而不是把所有步骤塞进一次超长调用。
+如果固定规则无法裁决，A 的结构化输出先形成最小 `AdjudicationProposal`，由 Validator 校验；只有真实模型评测证明单次解释不足时才拆出独立 Advisor 调用。如果需要澄清或骰后选择，本回合持久化暂停，收到玩家回复后继续，而不是把所有步骤塞进一次超长调用。
 
 ### 8.4 现成框架的取舍
 

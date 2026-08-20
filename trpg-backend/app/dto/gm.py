@@ -64,6 +64,15 @@ class RollCheck(StrictCamelModel):
     check_id: str = Field(min_length=1, max_length=100)
 
 
+class ResolveCheck(StrictCamelModel):
+    """提交检定后的选择；成功与状态变化仍由 Kernel 权威结算。"""
+
+    kind: Literal["resolve_check"]
+    check_id: str = Field(min_length=1, max_length=100)
+    option: Literal["accept_failure", "spend_luck", "push"]
+    revised_method: str | None = Field(default=None, max_length=500)
+
+
 class ChooseOption(StrictCamelModel):
     """提交模组声明的不可逆剧情选择，不能由模型直接写结局。"""
 
@@ -72,7 +81,14 @@ class ChooseOption(StrictCamelModel):
 
 
 Command = Annotated[
-    MoveActor | InspectTarget | TalkToNpc | WaitUntil | StartCheck | RollCheck | ChooseOption,
+    MoveActor
+    | InspectTarget
+    | TalkToNpc
+    | WaitUntil
+    | StartCheck
+    | RollCheck
+    | ResolveCheck
+    | ChooseOption,
     Field(discriminator="kind"),
 ]
 CommandAdapter = TypeAdapter(Command)
@@ -126,6 +142,11 @@ class PlayerProjection(StrictCamelModel):
     clues: list[str] = Field(default_factory=list)
     hp: int | None = Field(default=None, ge=0)
     san: int | None = Field(default=None, ge=0)
+    luck: int | None = Field(default=None, ge=0)
+    major_wound: bool = False
+    unconscious: bool = False
+    temporary_insanity: bool = False
+    encounter: EncounterRead | None = None
     ending_id: str | None = None
 
 
@@ -133,7 +154,7 @@ class PendingDecision(StrictCamelModel):
     """玩家必须完成的 Kernel 决策点，例如投骰。"""
 
     decision_id: str
-    kind: Literal["roll_check"]
+    kind: Literal["roll_check", "roll_decision"]
     check_id: str
     options: list[str]
 
@@ -145,10 +166,31 @@ class CheckRead(StrictCamelModel):
     skill_id: str
     skill_label: str | None = None
     difficulty: Literal["regular", "hard", "extreme"]
-    status: Literal["awaiting_roll", "resolved"]
+    status: Literal["awaiting_roll", "awaiting_roll_decision", "resolved"]
     roll: int | None = Field(default=None, ge=1, le=100)
     target_value: int = Field(ge=1, le=100)
     success: bool | None = None
+    success_level: Literal["critical", "extreme", "hard", "regular", "failure", "fumble"] | None = (
+        None
+    )
+    bonus_dice: int = Field(default=0, ge=-2, le=2)
+    roll_values: list[int] = Field(default_factory=list)
+    luck_spent: int = Field(default=0, ge=0)
+    pushed: bool = False
+    final_result: bool | None = None
+
+
+class EncounterRead(StrictCamelModel):
+    """玩家可见的最小战斗或追逐状态。"""
+
+    encounter_id: str
+    kind: Literal["combat", "chase"]
+    status: Literal["active", "won", "lost", "escaped"]
+    round: int = Field(ge=1)
+    opponent_id: str | None = None
+    opponent_hp: int | None = Field(default=None, ge=0)
+    progress: int | None = Field(default=None, ge=0)
+    distance: int | None = Field(default=None, ge=0)
 
 
 class CommandResult(StrictCamelModel):
@@ -188,15 +230,16 @@ class TurnState(StrictCamelModel):
     """回合生命周期的最小判别状态。"""
 
     value: Literal[
-        "collecting",
-        "understanding",
+        "interpreting",
         "validating",
         "awaiting_clarification",
         "awaiting_roll",
+        "awaiting_roll_decision",
         "resolving",
         "narrating",
+        "publishing",
         "completed",
-        "failed",
+        "paused",
     ]
 
 
@@ -322,6 +365,20 @@ class IntentResult(StrictCamelModel):
     clarification_question: str | None = None
     clarification_options: list[str] = Field(default_factory=list)
     source_revision: int = Field(ge=0)
+
+
+class AdjudicationProposal(StrictCamelModel):
+    """AI 对开放行动的最小裁决提案；不包含任何状态修改。"""
+
+    decision: Literal["direct_success", "clarification", "start_check"]
+    action_type: str = Field(min_length=1, max_length=100)
+    target_id: str | None = Field(default=None, max_length=100)
+    skill_id: str | None = Field(default=None, max_length=100)
+    difficulty: Literal["regular", "hard", "extreme"] = "regular"
+    estimated_minutes: int = Field(default=0, ge=0, le=1440)
+    failure_consequence: str | None = Field(default=None, max_length=500)
+    reason_refs: list[str] = Field(default_factory=list)
+    proposal_revision: int = Field(ge=0)
 
 
 class TurnInputBody(StrictCamelModel):
