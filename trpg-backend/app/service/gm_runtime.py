@@ -554,28 +554,32 @@ async def _narrate_committed_result(
     session = await db.get(GameSession, room_id)
     if session is None:
         return result
-    _interpreter, narrator = _agents()
     narration: str | None = None
-    # 只重试无副作用的叙事生成；权威检定、事件和回执已经提交，绝不重复执行。
-    for _attempt in range(2):
-        try:
-            draft = await narrator.narrate(
-                snapshot.model_copy(update={"action_candidates": []}),
-                [event.event_id for event in result.events],
-                result.narration_facts,
-            )
-            narration = guard_narration(
-                draft,
-                committed_event_ids=[event.event_id for event in result.events],
-                visible_facts=[*snapshot.visible_facts, *result.narration_facts],
-                forbidden_terms=[
-                    *_forbidden_narration_terms(session.state_json),
-                    *_time_narration_forbidden_terms(snapshot.world_time),
-                ],
-            ).text
-            break
-        except (GmModelUnavailable, ValueError):
-            continue
+    try:
+        _interpreter, narrator = _agents()
+    except GmModelUnavailable:
+        narrator = None
+    if narrator is not None:
+        # 只重试无副作用的叙事生成；权威检定、事件和回执已经提交，绝不重复执行。
+        for _attempt in range(2):
+            try:
+                draft = await narrator.narrate(
+                    snapshot.model_copy(update={"action_candidates": []}),
+                    [event.event_id for event in result.events],
+                    result.narration_facts,
+                )
+                narration = guard_narration(
+                    draft,
+                    committed_event_ids=[event.event_id for event in result.events],
+                    visible_facts=[*snapshot.visible_facts, *result.narration_facts],
+                    forbidden_terms=[
+                        *_forbidden_narration_terms(session.state_json),
+                        *_time_narration_forbidden_terms(snapshot.world_time),
+                    ],
+                ).text
+                break
+            except (GmModelUnavailable, ValueError):
+                continue
     if narration is None:
         # 模型失败或被安全门禁拒绝时，仍用已提交的公开后果继续对话；
         # 不重新投骰，也不把未验证的模型文本发给玩家。

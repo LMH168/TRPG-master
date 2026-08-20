@@ -78,7 +78,12 @@ test('Phase 1C：HTTP 回合可以完成《追书人》和平结局并安全回�
     kind: 'inspect_target',
     targetId: 'call_douglas',
   })
-  const ended = await command('phase1c-ending', identified.revision, {
+  const talked = await command('phase1c-talk', identified.revision, {
+    kind: 'talk_to_npc',
+    targetId: 'talk_douglas',
+    topic: '询问他是否愿意回到地面',
+  })
+  const ended = await command('phase1c-ending', talked.revision, {
     kind: 'choose_option',
     optionId: 'peaceful_resolution',
   })
