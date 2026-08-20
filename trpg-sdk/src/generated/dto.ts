@@ -324,6 +324,19 @@ export interface CommandResult {
 }
 
 /**
+ * 由权威状态确定性选出的结构化模组数据和必要原文片段。
+ */
+export interface ContextSlice {
+  structuredData?: {
+    [k: string]: unknown;
+  };
+  sourceFragments?: SourceFragmentRead[];
+  sourceRefs?: string[];
+  visibility?: "player";
+  revision: number;
+}
+
+/**
  * 一次模型调用的不可变安全快照，记录模型实际被允许看到的内容。
  */
 export interface ContextSnapshot {
@@ -337,6 +350,21 @@ export interface ContextSnapshot {
   visibleFacts?: string[];
   actionCandidates?: ActionCandidate[];
   recentEventIds?: string[];
+  moduleSlice?: ContextSlice | null;
+  recentEvents?: RecentEvent[];
+  derivedMemory?: DerivedMemory[];
+  promptPack?: PromptPack | null;
+}
+
+/**
+ * 从事件和权威状态派生的长期记忆，可按来源事件重新构建。
+ */
+export interface DerivedMemory {
+  content: string;
+  /**
+   * @minItems 1
+   */
+  sourceEventIds: [string, ...string[]];
 }
 
 /**
@@ -748,6 +776,16 @@ export interface PortraitGenerationTaskRead {
 }
 
 /**
+ * 记录本次模型输入选择与裁剪结果，便于复现上下文。
+ */
+export interface PromptPack {
+  purpose: "intent" | "narration";
+  estimatedTokens: number;
+  selectedIds?: string[];
+  trimmedIds?: string[];
+}
+
+/**
  * 可选的玩家身份信息；旧客户端不传时仍使用确定性默认资料。
  */
 export interface QuickGenerateRequest {
@@ -765,6 +803,15 @@ export interface QuickGenerateResult {
   character: CharacterRead;
   occupationId: number;
   compute: CharacterComputeResult;
+}
+
+/**
+ * 最近事件窗口中的玩家可见事件，不包含内部命令载荷。
+ */
+export interface RecentEvent {
+  eventId: string;
+  eventType: string;
+  visibleContent: string;
 }
 
 /**
@@ -988,6 +1035,18 @@ export interface SkillSpec {
   base: number | string;
   category: string;
   relatedAttr?: string | null;
+}
+
+/**
+ * 当前职责获准读取的一小段模组原文及其人工可追溯坐标。
+ */
+export interface SourceFragmentRead {
+  fragmentId: string;
+  content: string;
+  /**
+   * @minItems 1
+   */
+  sourceRefs: [string, ...string[]];
 }
 
 /**

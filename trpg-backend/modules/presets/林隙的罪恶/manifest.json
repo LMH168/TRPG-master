@@ -8,8 +8,10 @@
   "runtime_pack_status": "not_built",
   "catalog_file": "catalog.json",
   "authors": ["Butterrr"],
+  "source_origin": "用户提供的作者文档",
   "source_file": "source/林隙的罪恶-Butterrr.doc",
   "source_sha256": "3651ecb6c46ea6d38793bb13193369def6ff9487b852ed7c1a99b528dff435f4",
   "license_status": "unconfirmed",
+  "license_notice": "保留作者署名；公开分发状态待项目方确认。",
   "capabilities": ["multiplayer", "private_information", "sound", "patrol", "combat"]
 }

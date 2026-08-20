@@ -10,7 +10,7 @@ import re
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from agents import Agent, ModelSettings, OpenAIChatCompletionsModel, OpenAIResponsesModel, Runner
 from openai import AsyncOpenAI
@@ -22,10 +22,15 @@ from app.dto.gm import (
     ActionCandidate,
     CommandAdapter,
     CommandEnvelope,
+    ContextSlice,
     ContextSnapshot,
+    DerivedMemory,
     IntentResult,
     IntentStep,
     NarrationDraft,
+    PromptPack,
+    RecentEvent,
+    SourceFragmentRead,
 )
 from app.models.gm import GameEvent, GameSession, RuntimeActor
 
@@ -159,10 +164,7 @@ class AgentsSdkInterpreter:
                     self._agent,
                     json.dumps(
                         {
-                            # 事件 ID 对语义匹配没有作用，不交给模型可减少内部标识泄露面。
-                            "snapshot": snapshot.model_copy(
-                                update={"recent_event_ids": []}
-                            ).model_dump(mode="json"),
+                            "snapshot": snapshot.model_dump(mode="json"),
                             "player_input": player_input,
                         },
                         ensure_ascii=False,
@@ -237,10 +239,7 @@ class AgentsSdkNarrator:
                 self._agent,
                 json.dumps(
                     {
-                        # Narrator 只需要当前公开状态和本回合证据，不需要历史内部事件 ID。
-                        "snapshot": snapshot.model_copy(update={"recent_event_ids": []}).model_dump(
-                            mode="json"
-                        ),
+                        "snapshot": snapshot.model_dump(mode="json"),
                         "committed_event_ids": list(event_ids),
                         "visible_facts": list(facts),
                     },
@@ -265,21 +264,31 @@ async def build_context_snapshot(
     *,
     room_id: str,
     actor_id: str,
+    purpose: Literal["intent", "narration"] = "intent",
 ) -> ContextSnapshot:
-    """从权威会话构造只含玩家公开信息的不可变上下文快照。"""
+    """按当前状态和模型职责构造只含玩家公开信息的不可变快照。"""
 
     session = await db.get(GameSession, room_id)
     actor = await db.get(RuntimeActor, actor_id)
     if session is None or actor is None or actor.room_id != room_id:
         raise ValueError("GM 会话或调查员不存在")
-    event_ids = list(
+    events = list(
         await db.scalars(
-            select(GameEvent.id)
-            .where(GameEvent.room_id == room_id)
+            select(GameEvent)
+            .where(GameEvent.room_id == room_id, GameEvent.visibility != "hidden")
             .order_by(GameEvent.sequence.desc())
             .limit(20)
         )
     )
+    events.reverse()
+    recent_events = [_recent_event_for(event) for event in events]
+    module_slice = _context_slice_for(
+        session.state_json,
+        location_id=actor.location_id,
+        revision=session.state_version,
+        purpose=purpose,
+    )
+    prompt_pack = _prompt_pack_for(module_slice, recent_events, purpose=purpose)
     return ContextSnapshot(
         snapshot_id=str(uuid.uuid4()),
         session_id=room_id,
@@ -290,7 +299,190 @@ async def build_context_snapshot(
         location_id=actor.location_id,
         visible_facts=_public_facts_for(session.state_json),
         action_candidates=_candidates_for(session.state_json, actor.location_id),
-        recent_event_ids=list(reversed(event_ids)),
+        recent_event_ids=[event.event_id for event in recent_events],
+        module_slice=module_slice,
+        recent_events=recent_events,
+        derived_memory=_derived_memory_for(session.state_json, recent_events),
+        prompt_pack=prompt_pack,
+    )
+
+
+def _context_slice_for(
+    state: dict[str, Any],
+    *,
+    location_id: str,
+    revision: int,
+    purpose: Literal["intent", "narration"],
+) -> ContextSlice:
+    """通过运行索引和权威条件选择当前职责可见的数据及原文片段。"""
+
+    runtime = state.get("_runtime", {})
+    if not isinstance(runtime, dict):
+        return ContextSlice(revision=revision)
+    scene_id = str(state.get("scene_id", ""))
+    index = runtime.get("runtime_index", {}).get(scene_id, {})
+    if not isinstance(index, dict):
+        index = {}
+    owned_clues = {str(clue) for clue in state.get("clues", [])}
+    flags = state.get("flags", {}) if isinstance(state.get("flags"), dict) else {}
+
+    collections = {
+        "locations": [location_id],
+        "scenes": [scene_id],
+        "facts": index.get("fact_ids", []),
+        "npcs": index.get("npc_ids", []),
+    }
+    if purpose == "intent":
+        collections.update(
+            {
+                "objects": index.get("object_ids", []),
+                "situations": index.get("situation_ids", []),
+            }
+        )
+    structured: dict[str, object] = {}
+    selected_source_refs: list[str] = []
+    for collection, selected_ids in collections.items():
+        selected = set(selected_ids if isinstance(selected_ids, list) else [])
+        items = [
+            _public_runtime_item(item)
+            for item in runtime.get(collection, [])
+            if isinstance(item, dict)
+            and item.get("id") in selected
+            and _runtime_item_is_visible(item, owned_clues, flags)
+        ]
+        if items:
+            structured[collection] = items
+            for item in runtime.get(collection, []):
+                if isinstance(item, dict) and item.get("id") in {value["id"] for value in items}:
+                    selected_source_refs.extend(str(ref) for ref in item.get("source_refs", []))
+
+    fragment_ids = set(index.get("source_fragment_ids", []))
+    fragments = [
+        SourceFragmentRead(
+            fragment_id=str(item["id"]),
+            content=str(item["content"]),
+            source_refs=[str(ref) for ref in item.get("source_refs", [])],
+        )
+        for item in runtime.get("source_fragments", [])
+        if isinstance(item, dict)
+        and item.get("id") in fragment_ids
+        and isinstance(item.get("content"), str)
+        and _runtime_item_is_visible(item, owned_clues, flags)
+    ]
+    selected_source_refs.extend(ref for fragment in fragments for ref in fragment.source_refs)
+    return ContextSlice(
+        structured_data=structured,
+        source_fragments=fragments,
+        source_refs=list(dict.fromkeys(selected_source_refs)),
+        revision=revision,
+    )
+
+
+def _runtime_item_is_visible(
+    item: dict[str, Any], owned_clues: set[str], flags: dict[str, Any]
+) -> bool:
+    """在模型输入边界执行可见性、线索、存活和状态条件过滤。"""
+
+    if item.get("visibility") == "keeper":
+        return False
+    if not set(item.get("requires_clues", [])) <= owned_clues:
+        return False
+    if not all(flags.get(flag) for flag in item.get("requires_flags", [])):
+        return False
+    item_id = item.get("id")
+    if item_id == "gravekeeper" and flags.get("gravekeeper_alive") is False:
+        return False
+    if item_id == "douglas" and flags.get("douglas_alive") is False:
+        return False
+    return item.get("visibility") in {"public", "conditional"}
+
+
+def _public_runtime_item(item: dict[str, Any]) -> dict[str, object]:
+    """移除只供 Kernel 使用的知识、数值和触发条件，只保留模型所需语义。"""
+
+    hidden_fields = {
+        "knowledge_fact_ids",
+        "stats",
+        "source_refs",
+        "requires_clues",
+        "requires_flags",
+    }
+    return {key: value for key, value in item.items() if key not in hidden_fields}
+
+
+def _recent_event_for(event: GameEvent) -> RecentEvent:
+    """把内部事件投影成不含秘密结果的简短玩家可见记录。"""
+
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    if event.event_type == "actor_moved":
+        content = (
+            f"调查员从 {payload.get('from', '未知地点')} 前往 {payload.get('to', '未知地点')}。"
+        )
+    elif event.event_type == "npc_contacted":
+        topic = str(payload.get("topic", "")).strip()
+        content = f"调查员与 {payload.get('target_id', 'NPC')} 交谈。"
+        if topic:
+            content += f"话题：{topic}"
+    elif event.event_type == "target_inspected":
+        content = f"调查员检查了 {payload.get('target_id', '当前目标')}。"
+    elif event.event_type == "time_advanced":
+        content = f"世界时间推进到 {payload.get('to', '新的时间')}。"
+    elif event.event_type in {"check_started", "check_resolved"}:
+        content = f"检定状态已更新：{event.event_type}。"
+    else:
+        content = f"已发生公开事件：{event.event_type}。"
+    return RecentEvent(event_id=event.id, event_type=event.event_type, visible_content=content)
+
+
+def _derived_memory_for(
+    state: dict[str, Any], recent_events: list[RecentEvent]
+) -> list[DerivedMemory]:
+    """从权威标记派生《追书人》当前需要的关系记忆，并绑定事件来源。"""
+
+    if not recent_events:
+        return []
+    source_ids = [event.event_id for event in recent_events]
+    flags = state.get("flags", {}) if isinstance(state.get("flags"), dict) else {}
+    memories: list[DerivedMemory] = []
+    if flags.get("douglas_conversation_completed"):
+        memories.append(
+            DerivedMemory(content="调查员已经与道格拉斯完成交谈。", source_event_ids=source_ids)
+        )
+    if flags.get("douglas_alive") is False:
+        memories.append(DerivedMemory(content="道格拉斯已经死亡。", source_event_ids=source_ids))
+    if flags.get("gravekeeper_alive") is False:
+        memories.append(DerivedMemory(content="守墓人已经死亡。", source_event_ids=source_ids))
+    return memories
+
+
+def _prompt_pack_for(
+    module_slice: ContextSlice,
+    recent_events: list[RecentEvent],
+    *,
+    purpose: Literal["intent", "narration"],
+) -> PromptPack:
+    """记录已选择对象和粗略 Token 预算；本阶段没有发生候选裁剪。"""
+
+    selected_ids = [fragment.fragment_id for fragment in module_slice.source_fragments]
+    for values in module_slice.structured_data.values():
+        if isinstance(values, list):
+            for item in values:
+                if not isinstance(item, dict):
+                    continue
+                item_id = item.get("id")
+                if isinstance(item_id, str):
+                    selected_ids.append(item_id)
+    packed = json.dumps(
+        {
+            "slice": module_slice.model_dump(mode="json"),
+            "events": [e.model_dump() for e in recent_events],
+        },
+        ensure_ascii=False,
+    )
+    return PromptPack(
+        purpose=purpose,
+        estimated_tokens=(len(packed) + 3) // 4,
+        selected_ids=list(dict.fromkeys(selected_ids)),
     )
 
 

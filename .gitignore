@@ -7,8 +7,7 @@ dist/
 # CoC7 规则书仅保留在本机，仓库提交 manifest 和说明，不提交原始 PDF。
 trpg-backend/rulesets/coc7/source/*
 
-# 预设模组原文仅供本机离线参考；Git 只保存结构化 catalog/runtime 和 manifest。
-trpg-backend/modules/presets/*/source/*
+# 四个预设模组原文属于可追溯的开发输入，和 manifest 一起进入仓库。
 
 .venv/
 __pycache__/

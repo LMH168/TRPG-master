@@ -450,6 +450,13 @@ async def test_context_and_free_text_turn_never_expose_keeper_data(db_session) -
     snapshot = await build_context_snapshot(db_session, room_id=room_id, actor_id="actor-1")
     assert "keeper" not in snapshot.model_dump_json()
     assert "道格拉斯已经失踪一年。" in snapshot.visible_facts
+    assert snapshot.module_slice is not None
+    assert [fragment.fragment_id for fragment in snapshot.module_slice.source_fragments] == [
+        "briefing"
+    ]
+    assert "食尸鬼的昏暗世界" not in snapshot.model_dump_json()
+    assert snapshot.prompt_pack is not None
+    assert "briefing" in snapshot.prompt_pack.selected_ids
     narrator = _RecordingNarrator()
     set_agents_for_testing(
         ScriptedIntentInterpreter(
@@ -481,6 +488,70 @@ async def test_context_and_free_text_turn_never_expose_keeper_data(db_session) -
     assert result.narration == "你观察了当前地点。"
     assert "keeper" not in result.model_dump_json()
     assert narrator.snapshot is not None and narrator.snapshot.action_candidates == []
+    turn = await db_session.scalar(select(TurnRun).where(TurnRun.client_request_id == "turn-p1b-1"))
+    assert turn is not None and turn.context_json is not None
+    assert turn.context_json["module_slice"]["source_fragments"][0]["fragment_id"] == "briefing"
+
+
+async def test_context_unlocks_source_fragment_and_recent_event(db_session) -> None:
+    """墓地原文只在获得对应线索后进入快照，移动事件同时进入公开事件窗口。"""
+
+    room_id = "00000000-0000-0000-0000-000000000197"
+    actor_id = "actor-197"
+    db_session.add(Room(id=room_id, room_code="P1CTX", room_name="来源切片", max_players=1))
+    await db_session.commit()
+    await create_session(
+        db_session,
+        room_id=room_id,
+        module_id="paper-chase",
+        actor_id=actor_id,
+        display_name="调查员",
+    )
+    moved = await submit_command(
+        db_session,
+        room_id=room_id,
+        envelope=CommandEnvelope(
+            client_request_id="move-context-197",
+            expected_revision=0,
+            actor_id=actor_id,
+            command={"kind": "move_actor", "target_id": "cemetery"},
+        ),
+    )
+    before = await build_context_snapshot(db_session, room_id=room_id, actor_id=actor_id)
+    assert before.module_slice is not None
+    assert before.module_slice.source_fragments == []
+    assert any(event.event_type == "actor_moved" for event in before.recent_events)
+
+    started = await submit_command(
+        db_session,
+        room_id=room_id,
+        envelope=CommandEnvelope(
+            client_request_id="start-context-197",
+            expected_revision=moved.revision,
+            actor_id=actor_id,
+            command={
+                "kind": "start_check",
+                "check_id": "gravekeeper-context-197",
+                "skill_id": "charm",
+                "goal": "gravekeeper",
+            },
+        ),
+    )
+    await submit_command(
+        db_session,
+        room_id=room_id,
+        envelope=CommandEnvelope(
+            client_request_id="roll-context-197",
+            expected_revision=started.revision,
+            actor_id=actor_id,
+            command={"kind": "roll_check", "check_id": "gravekeeper-context-197"},
+        ),
+    )
+    after = await build_context_snapshot(db_session, room_id=room_id, actor_id=actor_id)
+    assert after.module_slice is not None
+    fragment_ids = {fragment.fragment_id for fragment in after.module_slice.source_fragments}
+    assert "gravekeeper" in fragment_ids
+    assert "keeper_background" not in fragment_ids
 
 
 async def test_projection_does_not_restore_superseded_clarification(db_session) -> None:

@@ -7,9 +7,11 @@
   "content_status": "source_only",
   "runtime_pack_status": "not_built",
   "catalog_file": "catalog.json",
-  "authors": [],
+  "authors": ["未确认"],
+  "source_origin": "用户提供的模组正文",
   "source_file": "source/模组正文.pdf",
   "source_sha256": "d830f463c921f1b556259a69cc4cb8baaf730eccd6515defa7292a4703f4a881",
   "license_status": "unconfirmed",
+  "license_notice": "作者和公开分发状态待项目方确认。",
   "capabilities": ["multiplayer", "sandbox", "timeline", "factions", "capture_and_rescue"]
 }
