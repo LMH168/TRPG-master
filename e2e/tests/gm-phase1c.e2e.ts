@@ -60,7 +60,21 @@ test('Phase 1C：HTTP 回合可以完成《追书人》和平结局并安全回�
     kind: 'move_actor',
     targetId: 'cemetery',
   })
-  const identified = await command('phase1c-identify', moved.revision, {
+  const night = await command('phase1c-night', moved.revision, {
+    kind: 'wait_until',
+    targetTime: '1920-09-15T20:00:00-04:00',
+  })
+  const started = await command('phase1c-watch-start', night.revision, {
+    kind: 'start_check',
+    checkId: 'phase1c-night-watch',
+    skillId: 'luck',
+    goal: 'night_watch',
+  })
+  const watched = await command('phase1c-watch-roll', started.revision, {
+    kind: 'roll_check',
+    checkId: 'phase1c-night-watch',
+  })
+  const identified = await command('phase1c-identify', watched.revision, {
     kind: 'inspect_target',
     targetId: 'call_douglas',
   })
@@ -76,4 +90,3 @@ test('Phase 1C：HTTP 回合可以完成《追书人》和平结局并安全回�
   assert.equal(replay.revision, ended.revision)
   assert.equal(replay.projection.endingId, ended.projection.endingId)
 })
-
