@@ -180,14 +180,7 @@ def _validate_runtime(runtime: dict[str, Any]) -> None:
         if outcome is not None:
             if not isinstance(outcome, dict):
                 raise ModulePackError("运行包 action.outcome 必须是对象")
-            for field in ("clues", "facts"):
-                value = outcome.get(field, [])
-                if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-                    raise ModulePackError(f"运行包 action.outcome.{field} 必须是字符串数组")
-            for field in ("scene_id", "location_id", "ending_id"):
-                value = outcome.get(field)
-                if value is not None and not isinstance(value, str):
-                    raise ModulePackError(f"运行包 action.outcome.{field} 必须是字符串")
+            _validate_effect_shape(outcome, "action.outcome")
     # 披露门禁属于模组语义，不写死在主持代码中；未配置的旧运行包保持兼容。
     for guard in runtime.get("disclosure_guards", []):
         if not isinstance(guard, dict) or not isinstance(guard.get("term"), str):
@@ -223,18 +216,58 @@ def _validate_runtime(runtime: dict[str, Any]) -> None:
                 continue
             if not isinstance(outcome, dict):
                 raise ModulePackError(f"运行包 checkpoint.{field} 必须是对象")
-            for list_field in ("clues", "facts"):
-                value = outcome.get(list_field, [])
-                if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-                    raise ModulePackError(
-                        f"运行包 checkpoint.{field}.{list_field} 必须是字符串数组"
-                    )
-            scene_id = outcome.get("scene_id")
-            if scene_id is not None and not isinstance(scene_id, str):
-                raise ModulePackError(f"运行包 checkpoint.{field}.scene_id 必须是字符串")
-            advance_minutes = outcome.get("advance_minutes", 0)
-            if not isinstance(advance_minutes, int) or advance_minutes < 0:
-                raise ModulePackError(f"运行包 checkpoint.{field}.advance_minutes 必须是非负整数")
+            _validate_effect_shape(outcome, f"checkpoint.{field}")
+    for event in runtime.get("timeline", []):
+        if isinstance(event, dict) and isinstance(event.get("effect"), dict):
+            _validate_effect_shape(event["effect"], "timeline.effect")
+
+
+def _validate_effect_shape(effect: dict[str, Any], label: str) -> None:
+    """校验 Kernel 支持的通用效果字段，拒绝拼错或越权扩展。"""
+
+    allowed = {
+        "clues",
+        "facts",
+        "scene_id",
+        "location_id",
+        "ending_id",
+        "flags",
+        "advance_minutes",
+        "schedule_events",
+        "npc_state",
+        "encounter",
+        "encounter_update",
+        "damage_actor",
+        "damage_npc",
+        "san_loss",
+        "temporary_insanity_ending",
+        "on_npc_death",
+    }
+    unknown = set(effect) - allowed
+    if unknown:
+        raise ModulePackError(f"运行包 {label} 包含未知效果：{','.join(sorted(unknown))}")
+    for field in ("clues", "facts", "schedule_events"):
+        value = effect.get(field, [])
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ModulePackError(f"运行包 {label}.{field} 必须是字符串数组")
+    for field in ("scene_id", "location_id", "ending_id", "temporary_insanity_ending"):
+        value = effect.get(field)
+        if value is not None and not isinstance(value, str):
+            raise ModulePackError(f"运行包 {label}.{field} 必须是字符串")
+    advance_minutes = effect.get("advance_minutes", 0)
+    if not isinstance(advance_minutes, int) or advance_minutes < 0:
+        raise ModulePackError(f"运行包 {label}.advance_minutes 必须是非负整数")
+    for field in ("flags", "npc_state", "encounter", "encounter_update", "damage_npc"):
+        value = effect.get(field)
+        if value is not None and not isinstance(value, dict):
+            raise ModulePackError(f"运行包 {label}.{field} 必须是对象")
+    for field in ("damage_actor", "san_loss"):
+        value = effect.get(field)
+        if value is not None and not isinstance(value, (int, str)):
+            raise ModulePackError(f"运行包 {label}.{field} 必须是整数或骰式")
+    nested = effect.get("on_npc_death")
+    if isinstance(nested, dict):
+        _validate_effect_shape(nested, f"{label}.on_npc_death")
 
 
 def _validate_v2_objects(runtime: dict[str, Any], collection_fields: tuple[str, ...]) -> None:
@@ -321,6 +354,8 @@ def _validate_v2_references(
     clue_ids = ids_by_collection["clues"]
     fact_ids = ids_by_collection["facts"]
     ending_ids = ids_by_collection["endings"]
+    npc_ids = ids_by_collection["npcs"]
+    timeline_ids = ids_by_collection["timeline"]
     for item in runtime["objects"] + runtime["npcs"]:
         if item.get("location_id") not in location_ids:
             raise ModulePackError(f"运行对象 {item['id']} 引用了不存在的地点")
@@ -341,12 +376,43 @@ def _validate_v2_references(
         if not set(action.get("requires_clues", [])) <= clue_ids:
             raise ModulePackError(f"动作 {action['id']} 引用了不存在的线索")
         if isinstance(outcome, dict):
-            if not set(outcome.get("clues", [])) <= clue_ids:
-                raise ModulePackError(f"动作 {action['id']} 产生不存在的线索")
-            if outcome.get("scene_id") not in {None, *scene_ids}:
-                raise ModulePackError(f"动作 {action['id']} 进入不存在的场景")
-            if outcome.get("ending_id") not in {None, *ending_ids}:
-                raise ModulePackError(f"动作 {action['id']} 进入不存在的结局")
+            _validate_effect_references(
+                outcome,
+                label=f"动作 {action['id']}",
+                clue_ids=clue_ids,
+                scene_ids=scene_ids,
+                location_ids=location_ids,
+                ending_ids=ending_ids,
+                npc_ids=npc_ids,
+                timeline_ids=timeline_ids,
+            )
+    for checkpoint in runtime["checkpoints"]:
+        for field in ("success_outcome", "failure_outcome"):
+            outcome = checkpoint.get(field)
+            if isinstance(outcome, dict):
+                _validate_effect_references(
+                    outcome,
+                    label=f"检定 {checkpoint['id']}.{field}",
+                    clue_ids=clue_ids,
+                    scene_ids=scene_ids,
+                    location_ids=location_ids,
+                    ending_ids=ending_ids,
+                    npc_ids=npc_ids,
+                    timeline_ids=timeline_ids,
+                )
+    for event in runtime["timeline"]:
+        effect = event.get("effect")
+        if isinstance(effect, dict):
+            _validate_effect_references(
+                effect,
+                label=f"定时事件 {event['id']}",
+                clue_ids=clue_ids,
+                scene_ids=scene_ids,
+                location_ids=location_ids,
+                ending_ids=ending_ids,
+                npc_ids=npc_ids,
+                timeline_ids=timeline_ids,
+            )
 
     index_targets = {
         "object_ids": ids_by_collection["objects"],
@@ -362,3 +428,47 @@ def _validate_v2_references(
             values = entry.get(field, [])
             if not isinstance(values, list) or not set(values) <= valid_ids:
                 raise ModulePackError(f"runtime_index.{scene_id}.{field} 引用无效")
+
+
+def _validate_effect_references(
+    effect: dict[str, Any],
+    *,
+    label: str,
+    clue_ids: set[str],
+    scene_ids: set[str],
+    location_ids: set[str],
+    ending_ids: set[str],
+    npc_ids: set[str],
+    timeline_ids: set[str],
+) -> None:
+    """解析通用效果中的跨对象引用，防止悬空 ID 进入房间快照。"""
+
+    if not set(effect.get("clues", [])) <= clue_ids:
+        raise ModulePackError(f"{label} 产生不存在的线索")
+    if effect.get("scene_id") not in {None, *scene_ids}:
+        raise ModulePackError(f"{label} 进入不存在的场景")
+    if effect.get("location_id") not in {None, *location_ids}:
+        raise ModulePackError(f"{label} 进入不存在的地点")
+    for field in ("ending_id", "temporary_insanity_ending"):
+        if effect.get(field) not in {None, *ending_ids}:
+            raise ModulePackError(f"{label} 进入不存在的结局")
+    if not set(effect.get("schedule_events", [])) <= timeline_ids:
+        raise ModulePackError(f"{label} 调度不存在的定时事件")
+    npc_state = effect.get("npc_state", {})
+    if isinstance(npc_state, dict) and not set(npc_state) <= npc_ids:
+        raise ModulePackError(f"{label} 修改不存在的 NPC")
+    damage_npc = effect.get("damage_npc", {})
+    if isinstance(damage_npc, dict) and damage_npc.get("npc_id") not in {None, *npc_ids}:
+        raise ModulePackError(f"{label} 伤害不存在的 NPC")
+    nested = effect.get("on_npc_death")
+    if isinstance(nested, dict):
+        _validate_effect_references(
+            nested,
+            label=f"{label}.on_npc_death",
+            clue_ids=clue_ids,
+            scene_ids=scene_ids,
+            location_ids=location_ids,
+            ending_ids=ending_ids,
+            npc_ids=npc_ids,
+            timeline_ids=timeline_ids,
+        )

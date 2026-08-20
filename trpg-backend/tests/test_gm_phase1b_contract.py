@@ -16,7 +16,7 @@ from app.dto.gm import (
     NarrationDraft,
     TurnInputBody,
 )
-from app.models.gm import GameEvent, RuntimeActor, TurnRun
+from app.models.gm import GameEvent, GameSession, RuntimeActor, TurnRun
 from app.models.room import Character, Player, Room
 from app.service.gm_ai import (
     GmModelUnavailable,
@@ -737,7 +737,7 @@ async def test_failed_model_turn_can_resume_without_duplicate_kernel_effect(db_s
     failed_turn = await db_session.scalar(
         select(TurnRun).where(TurnRun.client_request_id == payload.client_request_id)
     )
-    assert failed_turn is not None and failed_turn.status == "failed"
+    assert failed_turn is not None and failed_turn.status == "paused"
 
     set_agents_for_testing(
         ScriptedIntentInterpreter(
@@ -826,6 +826,15 @@ async def test_pending_roll_is_restored_and_blocks_new_intent(db_session) -> Non
         actor_id="actor-3",
         display_name="调查员",
     )
+    session = await db_session.get(GameSession, room_id)
+    actor = await db_session.get(RuntimeActor, "actor-3")
+    assert session is not None and actor is not None
+    state = dict(session.state_json)
+    state["scene_id"] = "cemetery"
+    state["location_id"] = "cemetery"
+    session.state_json = state
+    actor.location_id = "cemetery"
+    await db_session.commit()
     started = await submit_command(
         db_session,
         room_id=room_id,
@@ -836,8 +845,8 @@ async def test_pending_roll_is_restored_and_blocks_new_intent(db_session) -> Non
             command={
                 "kind": "start_check",
                 "check_id": "check-p1b",
-                "skill_id": "spot-hidden",
-                "goal": "观察墓碑",
+                "skill_id": "charm",
+                "goal": "gravekeeper",
             },
         ),
     )
@@ -885,6 +894,15 @@ async def test_roll_narration_is_saved_in_idempotent_receipt(db_session, monkeyp
         actor_id=actor_id,
         display_name="调查员",
     )
+    session = await db_session.get(GameSession, room_id)
+    actor = await db_session.get(RuntimeActor, actor_id)
+    assert session is not None and actor is not None
+    state = dict(session.state_json)
+    state["scene_id"] = "cemetery"
+    state["location_id"] = "cemetery"
+    session.state_json = state
+    actor.location_id = "cemetery"
+    await db_session.commit()
     started = await submit_command(
         db_session,
         room_id=room_id,
@@ -895,8 +913,8 @@ async def test_roll_narration_is_saved_in_idempotent_receipt(db_session, monkeyp
             command={
                 "kind": "start_check",
                 "check_id": "check-210",
-                "skill_id": "spot-hidden",
-                "goal": "观察当前场景",
+                "skill_id": "charm",
+                "goal": "gravekeeper",
             },
         ),
     )
@@ -965,6 +983,16 @@ async def test_session_actor_uses_completed_character_values(db_session) -> None
     assert actor.state_json["luck"] == 45
     assert actor.state_json["items"] == ["手电筒"]
 
+    session = await db_session.get(GameSession, room_id)
+    assert session is not None
+    state = dict(session.state_json)
+    state["scene_id"] = "cemetery"
+    state["location_id"] = "cemetery"
+    state["world_time"] = "1920-01-01T21:00:00+00:00"
+    session.state_json = state
+    actor.location_id = "cemetery"
+    await db_session.commit()
+
     luck_check = await submit_command(
         db_session,
         room_id=room_id,
@@ -976,7 +1004,7 @@ async def test_session_actor_uses_completed_character_values(db_session) -> None
                 "kind": "start_check",
                 "check_id": "luck-check-212",
                 "skill_id": "luck",
-                "goal": "测试角色幸运值",
+                "goal": "night_watch",
             },
         ),
     )

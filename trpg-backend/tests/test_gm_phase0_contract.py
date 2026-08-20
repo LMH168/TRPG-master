@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.dto.gm import CommandEnvelope
-from app.models.gm import CheckRun, PendingDecisionRecord
+from app.models.gm import CheckRun, GameSession, PendingDecisionRecord, RuntimeActor
 from app.models.room import Room
 from app.service.gm_runtime import create_session, submit_command
 from app.service.module_runtime import ModulePackError, _validate_runtime, load_preset
@@ -300,6 +300,15 @@ async def test_kernel_check_roll_is_server_owned_and_idempotent(db_session) -> N
         actor_id="actor-1b",
         display_name="调查员",
     )
+    session = await db_session.get(GameSession, room_id)
+    actor = await db_session.get(RuntimeActor, "actor-1b")
+    assert session is not None and actor is not None
+    state = dict(session.state_json)
+    state["scene_id"] = "library"
+    state["location_id"] = "library"
+    session.state_json = state
+    actor.location_id = "library"
+    await db_session.commit()
     start = await submit_command(
         db_session,
         room_id=room_id,
@@ -311,7 +320,7 @@ async def test_kernel_check_roll_is_server_owned_and_idempotent(db_session) -> N
                 "kind": "start_check",
                 "checkId": "check-1a",
                 "skillId": "library-use",
-                "goal": "检索旧报纸",
+                "goal": "library_research",
             },
         ),
     )

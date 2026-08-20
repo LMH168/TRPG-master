@@ -171,6 +171,8 @@ class CheckRun(Base):
     roll: Mapped[int | None] = mapped_column(Integer, nullable=True)
     target_value: Mapped[int] = mapped_column(Integer, nullable=False)
     success: Mapped[bool | None] = mapped_column(nullable=True)
+    # 检定扩展状态集中保存，避免为奖惩骰、幸运和强推增加一组稀疏列。
+    details_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

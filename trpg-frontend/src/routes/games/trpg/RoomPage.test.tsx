@@ -592,6 +592,52 @@ describe('RoomPage conversation history', () => {
     expect(screen.getByRole('button', { name: '观察墓园入口' })).toBeInTheDocument()
   })
 
+  it('restores a post-roll decision and submits the selected option', async () => {
+    const projection = {
+      sessionId: 'room-1',
+      actorId: 'player-1',
+      revision: 3,
+      worldTime: '2026-08-19T12:00:00Z',
+      locationId: 'cemetery',
+      visibleFacts: [],
+      checks: [{
+        checkId: 'check-1',
+        skillId: 'strength',
+        skillLabel: '力量',
+        difficulty: 'regular',
+        status: 'awaiting_roll_decision',
+        roll: 61,
+        targetValue: 50,
+      }],
+      pendingDecisions: [{
+        decisionId: 'decision-1',
+        kind: 'roll_decision',
+        checkId: 'check-1',
+        options: ['accept_failure', 'spend_luck', 'push'],
+      }],
+    }
+    const submitCommand = vi.fn().mockResolvedValue({
+      revision: 4,
+      projection: { ...projection, revision: 4, checks: [], pendingDecisions: [] },
+      narrationFacts: ['花费 11 点幸运后检定成功。'],
+    })
+    ;(sdk as unknown as { gm: unknown }).gm = {
+      createSession: vi.fn().mockResolvedValue({ projection, openingNarration: null }),
+      getProjection: vi.fn().mockResolvedValue(projection),
+      submitCommand,
+    }
+
+    renderRoomPage()
+    fireEvent.click(await screen.findByRole('button', { name: '花幸运' }))
+
+    await waitFor(() => expect(submitCommand).toHaveBeenCalled())
+    expect(submitCommand.mock.calls[0][1].command).toMatchObject({
+      kind: 'resolve_check',
+      checkId: 'check-1',
+      option: 'spend_luck',
+    })
+  })
+
   it('clears a terminal failed turn so the same room can accept a new action', async () => {
     sessionStorage.setItem(
       'trpg:pending-turn:room-1:player-1',

@@ -274,10 +274,16 @@ export interface CheckRead {
   skillId: string;
   skillLabel?: string | null;
   difficulty: "regular" | "hard" | "extreme";
-  status: "awaiting_roll" | "resolved";
+  status: "awaiting_roll" | "awaiting_roll_decision" | "resolved";
   roll?: number | null;
   targetValue: number;
   success?: boolean | null;
+  successLevel?: ("critical" | "extreme" | "hard" | "regular" | "failure" | "fumble") | null;
+  bonusDice?: number;
+  rollValues?: number[];
+  luckSpent?: number;
+  pushed?: boolean;
+  finalResult?: boolean | null;
 }
 
 /**
@@ -305,7 +311,7 @@ export interface CommandEnvelope {
   clientRequestId: string;
   expectedRevision: number;
   actorId: string;
-  command: MoveActor | InspectTarget | TalkToNpc | WaitUntil | StartCheck | RollCheck | ChooseOption;
+  command: MoveActor | InspectTarget | TalkToNpc | WaitUntil | StartCheck | RollCheck | ResolveCheck | ChooseOption;
 }
 
 /**
@@ -379,6 +385,20 @@ export interface DomainEventEnvelope {
   payload: {
     [k: string]: unknown;
   };
+}
+
+/**
+ * 玩家可见的最小战斗或追逐状态。
+ */
+export interface EncounterRead {
+  encounterId: string;
+  kind: "combat" | "chase";
+  status: "active" | "won" | "lost" | "escaped";
+  round: number;
+  opponentId?: string | null;
+  opponentHp?: number | null;
+  progress?: number | null;
+  distance?: number | null;
 }
 
 export interface EquipmentItem {
@@ -715,7 +735,7 @@ export interface OccupationSpec {
  */
 export interface PendingDecision {
   decisionId: string;
-  kind: "roll_check";
+  kind: "roll_check" | "roll_decision";
   checkId: string;
   options: string[];
 }
@@ -740,6 +760,11 @@ export interface PlayerProjection {
   clues?: string[];
   hp?: number | null;
   san?: number | null;
+  luck?: number | null;
+  majorWound?: boolean;
+  unconscious?: boolean;
+  temporaryInsanity?: boolean;
+  encounter?: EncounterRead | null;
   endingId?: string | null;
 }
 
@@ -821,6 +846,16 @@ export interface RegisterBody {
   account: string;
   password: string;
   nickname: string;
+}
+
+/**
+ * 提交检定后的选择；成功与状态变化仍由 Kernel 权威结算。
+ */
+export interface ResolveCheck {
+  kind: "resolve_check";
+  checkId: string;
+  option: "accept_failure" | "spend_luck" | "push";
+  revisedMethod?: string | null;
 }
 
 /**
@@ -1102,15 +1137,16 @@ export interface TurnInputBody {
  */
 export interface TurnState {
   value:
-    | "collecting"
-    | "understanding"
+    | "interpreting"
     | "validating"
     | "awaiting_clarification"
     | "awaiting_roll"
+    | "awaiting_roll_decision"
     | "resolving"
     | "narrating"
+    | "publishing"
     | "completed"
-    | "failed";
+    | "paused";
 }
 
 /**

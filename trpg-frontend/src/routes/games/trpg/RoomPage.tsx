@@ -188,6 +188,9 @@ interface GmPendingCheck {
   skillId: string
   skillLabel?: string | null
   targetValue: number
+  status: 'awaiting_roll' | 'awaiting_roll_decision' | 'resolved'
+  roll?: number | null
+  successLevel?: string | null
 }
 
 interface GmClarification {
@@ -2113,7 +2116,9 @@ export default function RoomPage() {
               time: formatRoomTime(new Date()),
             }, ...current])
       }
-      const pending = projection.checks?.find((check) => check.status === 'awaiting_roll')
+      const pending = projection.checks?.find((check) =>
+        check.status === 'awaiting_roll' || check.status === 'awaiting_roll_decision'
+      )
       setGmPendingCheck(pending ?? null)
       setGmClarification(
         projection.pendingClarification
@@ -2207,7 +2212,11 @@ export default function RoomPage() {
             setGmProjection(typedResult.commandResult.projection)
           }
           const check = typedResult.commandResult?.check
-          setGmPendingCheck(check?.status === 'awaiting_roll' ? check : null)
+          setGmPendingCheck(
+            check?.status === 'awaiting_roll' || check?.status === 'awaiting_roll_decision'
+              ? check
+              : null,
+          )
           if (typedResult.status === 'clarification') {
             const question = typedResult.clarificationQuestion ?? '请补充你要调查的目标'
             setGmClarification({ question, options: typedResult.clarificationOptions ?? [] })
@@ -2306,7 +2315,7 @@ export default function RoomPage() {
         submitCommand: (room: string, payload: Record<string, unknown>, token: string) => Promise<{
           revision: number
           projection: PlayerProjection
-          check?: { roll?: number | null; success?: boolean | null; skillId: string } | null
+          check?: (GmPendingCheck & { success?: boolean | null }) | null
           narrationFacts?: string[]
           narration?: string | null
         }>
@@ -2327,7 +2336,9 @@ export default function RoomPage() {
     ).then((result) => {
       gmRevisionRef.current = result.revision
       setGmProjection(result.projection)
-      setGmPendingCheck(null)
+      setGmPendingCheck(
+        result.check?.status === 'awaiting_roll_decision' ? result.check : null,
+      )
       setTyping(false)
       const text = (result.narration ? result.narrationFacts?.[0] : result.narrationFacts?.join(' ')) ?? (
         result.check?.roll != null
@@ -2361,6 +2372,60 @@ export default function RoomPage() {
     }).catch((error: unknown) => {
       setTyping(false)
       setActionError(friendlyErrorMessage(error, '投骰失败，请重试'))
+      setActionErrorRetryable(true)
+    })
+  }
+
+  const resolveGmPendingCheck = (option: 'accept_failure' | 'spend_luck' | 'push') => {
+    // 骰后选择只提交选项；幸运扣除、强推重掷和最终后果都由服务端结算。
+    if (!gmPendingCheck || !roomId || !playerId || !reconnectToken) return
+    const revisedMethod = option === 'push'
+      ? window.prompt('请说明改变后的做法')?.trim()
+      : undefined
+    if (option === 'push' && !revisedMethod) return
+    const gmApi = (sdk as unknown as {
+      gm?: {
+        submitCommand: (room: string, payload: Record<string, unknown>, token: string) => Promise<{
+          revision: number
+          projection: PlayerProjection
+          check?: GmPendingCheck | null
+          narrationFacts?: string[]
+        }>
+      }
+    }).gm
+    if (!gmApi) return
+    setTyping(true)
+    void gmApi.submitCommand(
+      roomId,
+      {
+        clientRequestId: randomActionId(),
+        expectedRevision: gmRevisionRef.current,
+        actorId: playerId,
+        command: {
+          kind: 'resolve_check',
+          checkId: gmPendingCheck.checkId,
+          option,
+          revisedMethod,
+        },
+      },
+      reconnectToken,
+    ).then((result) => {
+      gmRevisionRef.current = result.revision
+      setGmProjection(result.projection)
+      setGmPendingCheck(null)
+      setTyping(false)
+      setMessages((current) => appendLiveMessage(current, {
+        type: 'dice',
+        channel: 'action',
+        messageId: conversationMessageId('check.result', randomActionId()),
+        sender: senderName,
+        content: result.narrationFacts?.join(' ') ?? '检定已经结算',
+        time: formatRoomTime(new Date()),
+        isSelf: true,
+      }))
+    }).catch((error: unknown) => {
+      setTyping(false)
+      setActionError(friendlyErrorMessage(error, '检定选择提交失败，请重试'))
       setActionErrorRetryable(true)
     })
   }
@@ -2762,7 +2827,7 @@ export default function RoomPage() {
             <p className="mt-0.5 text-[11px] text-text-muted">本局调查已经结束，权威状态不会再继续推进。</p>
           </div>
         )}
-        {isActionChannel && gmPendingCheck && !suspended && !gmEndingLabel && (
+        {isActionChannel && gmPendingCheck?.status === 'awaiting_roll' && !suspended && !gmEndingLabel && (
           <button
             type="button"
             onClick={rollGmPendingCheck}
@@ -2770,6 +2835,39 @@ export default function RoomPage() {
           >
             投掷 D100 · {gmPendingCheck.skillLabel ?? gmPendingCheck.skillId}（目标值 {gmPendingCheck.targetValue}）
           </button>
+        )}
+        {isActionChannel && gmPendingCheck?.status === 'awaiting_roll_decision' && !suspended && !gmEndingLabel && (
+          <div className="mb-2 grid grid-cols-3 gap-2" aria-label="检定结果选择">
+            <button
+              type="button"
+              onClick={() => resolveGmPendingCheck('accept_failure')}
+              className="rounded-sm border border-border-light bg-white py-2 text-xs font-semibold text-text-muted"
+            >
+              接受失败
+            </button>
+            {gmProjection?.pendingDecisions?.some((decision) =>
+              decision.checkId === gmPendingCheck.checkId && decision.options.includes('spend_luck')
+            ) && (
+              <button
+                type="button"
+                onClick={() => resolveGmPendingCheck('spend_luck')}
+                className="rounded-sm border border-brass bg-white py-2 text-xs font-semibold text-brass-dark"
+              >
+                花幸运
+              </button>
+            )}
+            {gmProjection?.pendingDecisions?.some((decision) =>
+              decision.checkId === gmPendingCheck.checkId && decision.options.includes('push')
+            ) && (
+              <button
+                type="button"
+                onClick={() => resolveGmPendingCheck('push')}
+                className="rounded-sm border border-[#9b3f35] bg-white py-2 text-xs font-semibold text-[#9b3f35]"
+              >
+                强推
+              </button>
+            )}
+          </div>
         )}
         {isActionChannel && !gmReady && !suspended && (
           <p className="text-[11px] text-[#9a6a30] text-center pb-1.5">
